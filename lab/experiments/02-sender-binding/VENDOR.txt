@@ -1,0 +1,7 @@
+pydpop 0.2.1
+wheel sha256 f43a300638461857d9a5e8a51cc2829ed9385821c80c0cd40e79d819023f959c
+source https://pypi.org/project/pydpop/0.2.1/
+license MIT, kept in vendor/pydpop/LICENSE
+The vendored package verifies RFC 9449 proofs: typ, alg, JWS signature, htm, htu, iat, jti replay, nonce, and ath.
+The experiment entry compares the resulting RFC 7638 thumbprint with the access token cnf.jkt claim.
+ES256 only. Composite algorithms advertised by the package are not used.

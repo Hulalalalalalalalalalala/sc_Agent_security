@@ -1,0 +1,9 @@
+# Local-only workaround: registry-1.docker.io is unreachable from this network
+# (connection reset / DNS answers that do not complete a TLS handshake).
+# containerd in the Kind node resolves docker.io pulls through the DaoCloud
+# public mirror. Image digests pinned by the installer are still requested by
+# digest when the reference includes one.
+server = "https://docker.m.daocloud.io"
+
+[host."https://docker.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]

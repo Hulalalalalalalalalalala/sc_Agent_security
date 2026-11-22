@@ -1,0 +1,71 @@
+{
+  "scenario": "4_a2a_v1_canceltask_cross_domain_cascade_fagin_dag_concurrency_and_loopback_isolation",
+  "status": "PASS",
+  "cross_pod_loopback_isolation": {
+    "orchestrator-alpha": {
+      "pod_ip": "10.241.0.10",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "inbound_8443_forged_loopback_header_status": 401
+  },
+  "a2a_canceltask_cross_3domain_proof": {
+    "task_id": "task-k8s-s4-bob-cancel-20261119T105349Z-multicluster",
+    "unauthorized_carol_cancel_http": 403,
+    "unauthorized_carol_cancel_rpc_code": -32003,
+    "bob_canceled_state": "TASK_STATE_CANCELED",
+    "cascaded_revocation_target": "/task-k8s-s4-bob-cancel-20261119T105349Z-multicluster/OrchestratorAlpha",
+    "federated_to_beta_and_payment_revocation": true,
+    "post_cancel_token_replay_http": 403,
+    "post_cancel_token_replay_error": "LINEAGE_REVOKED"
+  },
+  "alice_revoked_branch": "/task-k8s-s4-alice-20261119T105349Z-multicluster/OrchestratorAlpha/FlightB1",
+  "alice_revocation_version": 5,
+  "alice_surviving_hotel_settlement": {
+    "settlement_id": "STL-5D9249FC",
+    "target": "hotel-escrow",
+    "settled_usd": 360.0,
+    "reference_id": "HTL-182D53D8",
+    "city": "Tokyo",
+    "task_id": "task-k8s-s4-alice-20261119T105349Z-multicluster",
+    "sub": "user:alice@org-alpha.io",
+    "lineage_path": "/task-k8s-s4-alice-20261119T105349Z-multicluster/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-alice-20261119T105349Z-multicluster/OrchestratorAlpha/FlightB1/SettlementC",
+    "lineage_decision": "ALLOW_DEGRADED_DAG"
+  },
+  "alice_degraded_llm_answer": "The hotel reservation and hotel escrow settlement for the Shinjuku Grand Palace in Tokyo (hotel_id: HTL-TYO-09, reservation_ref: HTL-182D53D8) were executed under degraded authorization. The settled amount was $360.00 USD (settlement_id: STL-5D9249FC).",
+  "alice_revoked_airline_rejection": {
+    "error": "REVOKED_DEPENDENCY_INSUFFICIENT_SURVIVING_PATHS",
+    "detail": "Surviving DAG branches insufficient: {'/task-k8s-s4-alice-20261119T105349Z-multicluster/OrchestratorAlpha/hotel-specialist-primary/SettlementC': \"parameter 'amount'=580.0 violates [0, 360.0]\"}",
+    "decision": "DENY",
+    "pruned_revoked_paths": [
+      "/task-k8s-s4-alice-20261119T105349Z-multicluster/OrchestratorAlpha/FlightB1/SettlementC"
+    ]
+  },
+  "carol_concurrent_london_settlements": {
+    "airline-escrow": {
+      "settlement_id": "STL-E5618C65",
+      "target": "airline-escrow",
+      "settled_usd": 510.0,
+      "reference_id": "FLT-DE84AF11",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-20261119T105349Z-multicluster",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-20261119T105349Z-multicluster/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-carol-20261119T105349Z-multicluster/OrchestratorAlpha/FlightB1/SettlementC",
+      "lineage_decision": "ALLOW"
+    },
+    "hotel-escrow": {
+      "settlement_id": "STL-6A132DF4",
+      "target": "hotel-escrow",
+      "settled_usd": 340.0,
+      "reference_id": "HTL-C1BDBA0D",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-20261119T105349Z-multicluster",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-20261119T105349Z-multicluster/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-carol-20261119T105349Z-multicluster/OrchestratorAlpha/FlightB1/SettlementC",
+      "lineage_decision": "ALLOW"
+    }
+  },
+  "carol_final_answer": "Confirmation for the completed flight booking and hotel reservation, along with the escrow settlements, in Verified MCP JSON:\n\n- **Flight Booking**: \n  - Flight No: BA-284\n  - Booking Ref: FLT-DE84AF11\n  - Settled USD: 510.0\n- **Hotel Reservation**: \n  - Hotel ID: HTL-LON-04\n  - Hotel Name: Westminster Savoy Suites\n  - Reservation Ref: HTL-C1BDBA0D\n  - Settled USD: 340.0\n- **Escrow Settlements**:\n  - Airline Escrow: Settlement ID: STL-E5618C65, Settled USD: 510.0\n  - Hotel Escrow: Settlement ID: STL-6A132DF4, Settled USD: 340.0\n\nAll tasks and lineage decisions are marked as ALLOW."
+}

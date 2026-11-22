@@ -1,0 +1,19 @@
+# Supersedes weather-agent-answer-hint.patch.yaml. The mounted script quotes
+# unit and timezone fields and forwards the A2A task id to the tool.
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          command:
+            - sh
+            - -c
+            - python3 /opt/lab-patch/patch_agent.py && exec uv run --no-sync server
+          volumeMounts:
+            - name: lab-patch
+              mountPath: /opt/lab-patch
+              readOnly: true
+      volumes:
+        - name: lab-patch
+          configMap:
+            name: lab-agent-patch

@@ -1,0 +1,109 @@
+[15:31:49] === Step 0: Pre-flight Checks (Kind Node, Baseline Namespace 'team1', Host Ollama) ===
+[15:31:50] Baseline 'team1' before run:
+NAME                                        READY   STATUS    RESTARTS      AGE    IP            NODE                               NOMINATED NODE   READINESS GATES
+weather-coordinator-5c695b6f76-9jxp2        2/2     Running   2 (33h ago)   3d1h   10.244.0.23   agent-identity-lab-control-plane   <none>           <none>
+weather-service-advanced-68b94b6749-l4jqz   2/2     Running   2 (33h ago)   3d1h   10.244.0.21   agent-identity-lab-control-plane   <none>           <none>
+weather-tool-advanced-6c6d4fc977-p9z8d      2/2     Running   2 (33h ago)   3d1h   10.244.0.22   agent-identity-lab-control-plane   <none>           <none>
+[15:31:50] Verified host Ollama serving qwen2.5:3b on :11434
+[15:31:50] === Step 1: Build Local Zero-Pull Image (lineage-lct:m2) & Load into Kind ===
+[15:31:53] Image lineage-lct:m2 built and loaded into agent-identity-lab
+[15:31:53] === Step 2: Deploy Isolated LCT Namespaces (lineage-ctrl, lineage-alpha, lineage-beta, lineage-pay) ===
+namespace "lineage-pay" deleted
+namespace "lineage-beta" deleted
+namespace "lineage-alpha" deleted
+namespace "lineage-ctrl" deleted
+namespace/lineage-ctrl created
+namespace/lineage-alpha created
+namespace/lineage-beta created
+namespace/lineage-pay created
+serviceaccount/federation-ca created
+deployment.apps/federation-ca created
+service/federation-ca created
+serviceaccount/revocation-svc created
+deployment.apps/revocation-svc created
+service/revocation-svc created
+serviceaccount/audit-collector created
+deployment.apps/audit-collector created
+service/audit-collector created
+serviceaccount/directory-svc created
+deployment.apps/directory-svc created
+service/directory-svc created
+[15:32:36] Waiting for distributed control plane in 'lineage-ctrl'...
+serviceaccount/orchestrator-alpha created
+deployment.apps/orchestrator-alpha created
+service/orchestrator-alpha created
+serviceaccount/e2e-user-gateway created
+deployment.apps/e2e-user-gateway created
+serviceaccount/flight-specialist created
+deployment.apps/flight-specialist created
+service/flight-specialist created
+serviceaccount/hotel-specialist-primary created
+deployment.apps/hotel-specialist-primary created
+service/hotel-specialist-primary created
+serviceaccount/hotel-specialist-backup created
+deployment.apps/hotel-specialist-backup created
+service/hotel-specialist-backup created
+serviceaccount/settlement-converger created
+deployment.apps/settlement-converger created
+service/settlement-converger created
+serviceaccount/travel-ops-mcp created
+deployment.apps/travel-ops-mcp created
+service/travel-ops-mcp created
+serviceaccount/payment-vault-mcp created
+deployment.apps/payment-vault-mcp created
+service/payment-vault-mcp created
+[15:32:42] Waiting for all 2/2 Dual-Container Agent & MCP Pods across lineage-alpha / lineage-beta / lineage-pay...
+NAME                               READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+audit-collector-657b65f59c-bgf2f   1/1     Running   0          10s   10.244.0.164   agent-identity-lab-control-plane   <none>           <none>
+directory-svc-dd8bbf6dd-wsg72      1/1     Running   0          10s   10.244.0.165   agent-identity-lab-control-plane   <none>           <none>
+federation-ca-bfbd58d8b-h922s      1/1     Running   0          11s   10.244.0.162   agent-identity-lab-control-plane   <none>           <none>
+revocation-svc-c5ddc4f45-f46ff     1/1     Running   0          10s   10.244.0.163   agent-identity-lab-control-plane   <none>           <none>
+NAME                                 READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+e2e-user-gateway-5b77b779b4-2vx84    1/1     Running   0          5s    10.244.0.167   agent-identity-lab-control-plane   <none>           <none>
+orchestrator-alpha-7b5479498-9rcxw   2/2     Running   0          5s    10.244.0.166   agent-identity-lab-control-plane   <none>           <none>
+NAME                                       READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+flight-specialist-7fbc78dcd6-2999f         2/2     Running   0          4s    10.244.0.169   agent-identity-lab-control-plane   <none>           <none>
+hotel-specialist-backup-5868577c8d-pbq6f   2/2     Running   0          4s    10.244.0.171   agent-identity-lab-control-plane   <none>           <none>
+hotel-specialist-primary-7ff8b9b79-f86tn   2/2     Running   0          4s    10.244.0.170   agent-identity-lab-control-plane   <none>           <none>
+NAME                                    READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+payment-vault-mcp-9bb67c597-tbcr7       2/2     Running   0          4s    10.244.0.173   agent-identity-lab-control-plane   <none>           <none>
+settlement-converger-5f55d89dcb-hgjgg   2/2     Running   0          4s    10.244.0.168   agent-identity-lab-control-plane   <none>           <none>
+travel-ops-mcp-c687c67df-q59t4          2/2     Running   0          4s    10.244.0.172   agent-identity-lab-control-plane   <none>           <none>
+PASS: orchestrator-alpha/app holds ZERO Kubernetes ServiceAccount tokens (only /var/run/lct-loopback/secret)
+[15:32:48] === Scenario 1: Normal Full Chain (qwen2.5:3b + 1-to-N Fan-Out + N-to-1 Diamond DAG + MCP Grounding) ===
+[15:32:53] Scenario 1 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261118T153149Z/scenario1_normal_dag.json
+[15:32:53] === Scenario 2A: Downward Atomic Prune-and-Graft (Slow Primary Zombie Wakes -> 403 LINEAGE_REVOKED, Backup Epoch+1 Succeeds) ===
+[15:33:07] Scenario 2A PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261118T153149Z/scenario2a_zombie_prune_graft.json
+[15:33:07] === Scenario 2B: Real K8s Pod Scale-to-Zero Fault Injection (hotel-specialist-primary replicas=0 -> Backup Epoch+1) ===
+deployment.apps/hotel-specialist-primary scaled
+pod/hotel-specialist-primary-7ff8b9b79-f86tn condition met
+[15:33:12] Scenario 2B PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261118T153149Z/scenario2b_pod_down_prune_graft.json
+[15:33:12] Restoring hotel-specialist-primary (replicas=1, 2/2 Ready) for Scenario 3...
+deployment.apps/hotel-specialist-primary scaled
+Waiting for deployment "hotel-specialist-primary" rollout to finish: 0 of 1 updated replicas are available...
+deployment "hotel-specialist-primary" successfully rolled out
+[15:33:17] === Scenario 3A: Adversarial Forged Skip-Level Blocked by Live K8s /healthz Probe (403 INTERMEDIATE_ANCESTOR_ALIVE) ===
+[15:33:18] Scenario 3A PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261118T153149Z/scenario3a_false_skip_blocked.json
+[15:33:18] === Scenario 3B: Genuine Mid-Flight K8s Pod Kill -> Authenticated Skip-Level Return (200 SKIP_LEVEL_MERGE) ===
+[15:33:19] Mid-flight trigger hit: scaling deploy/hotel-specialist-primary to 0 & force-terminating Pod...
+deployment.apps/hotel-specialist-primary scaled
+Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
+pod "hotel-specialist-primary-7ff8b9b79-rfctb" force deleted from lineage-beta namespace
+[15:33:21] Scenario 3B PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261118T153149Z/scenario3b_skip_level_return.json
+[15:33:21] Restoring hotel-specialist-primary (replicas=1, 2/2 Ready) for Scenario 4...
+deployment.apps/hotel-specialist-primary scaled
+Waiting for deployment "hotel-specialist-primary" rollout to finish: 0 of 1 updated replicas are available...
+deployment "hotel-specialist-primary" successfully rolled out
+[15:33:25] === Scenario 4: Cross-Pod Loopback Bypass Block + Multi-User Concurrency + Online Fagin DAG Degradation ===
+[15:33:32] Scenario 4 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261118T153149Z/scenario4_fagin_degradation_and_isolation.json
+[15:33:32] === Scenario 5: Cluster-Wide Signed Audit Export & 100% CausalChainAuditor Reconstruction ===
+[15:33:33] Scenario 5 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261118T153149Z/scenario5_causal_audit_report.json
+[15:33:33] Baseline 'team1' after run (100% untouched Running 2/2):
+NAME                                        READY   STATUS    RESTARTS      AGE    IP            NODE                               NOMINATED NODE   READINESS GATES
+weather-coordinator-5c695b6f76-9jxp2        2/2     Running   2 (33h ago)   3d1h   10.244.0.23   agent-identity-lab-control-plane   <none>           <none>
+weather-service-advanced-68b94b6749-l4jqz   2/2     Running   2 (33h ago)   3d2h   10.244.0.21   agent-identity-lab-control-plane   <none>           <none>
+weather-tool-advanced-6c6d4fc977-p9z8d      2/2     Running   2 (33h ago)   3d2h   10.244.0.22   agent-identity-lab-control-plane   <none>           <none>
+[15:33:33] ============================================================================
+[15:33:33]  ALL 5 MILESTONE-2 K8S + OLLAMA (qwen2.5:3b) SCENARIOS PASSED!
+[15:33:33]  Evidence directory: /Users/hulalala/Desktop/A/lineage/k8s/runs/20261118T153149Z
+[15:33:33] ============================================================================

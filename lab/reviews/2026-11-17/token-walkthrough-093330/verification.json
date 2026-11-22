@@ -1,0 +1,65 @@
+{
+  "inspection_utc": "2026-11-17T12:27:49.127230Z",
+  "historical_run_id": "learn-auth-20261117T093330Z",
+  "t1": {
+    "header": {
+      "alg": "RS256",
+      "typ": "JWT",
+      "kid": "NDzIA686KpLmhLSCVw6RZYWJDQma4LH8pM9F8lNu5AA"
+    },
+    "issued_at_utc": "2026-11-17T09:33:31Z",
+    "expires_at_utc": "2026-11-17T10:03:31Z",
+    "token_sha256": "4bbd8eb9b01347a067dcf3a5e1d3dfc36960f83ab6b49f2c17d00e61325442f5",
+    "public_key": {
+      "kid": "NDzIA686KpLmhLSCVw6RZYWJDQma4LH8pM9F8lNu5AA",
+      "kty": "RSA",
+      "bits": 2048,
+      "spki_sha256": "343cc803af3a2a92e684b482570e916585890d099ae0b1fca4cf45f2536ee400"
+    },
+    "checks": {
+      "cryptographic_signature_valid": true,
+      "tampered_payload_signature_valid": false,
+      "expected_issuer_matches": true,
+      "expected_audience_present": true,
+      "expired_at_inspection": true
+    }
+  },
+  "a_current_svid": {
+    "header": {
+      "alg": "RS256",
+      "kid": "g1JLQ7Vve0rGU8Fi217ccAInVrHYWbtm",
+      "typ": "JWT"
+    },
+    "issued_at_utc": "2026-11-17T12:24:32Z",
+    "expires_at_utc": "2026-11-17T12:29:32Z",
+    "token_sha256": "8e765ae715278c87dbe47262c230636a3e52560f3037d13f1d4061cbc58b9949",
+    "public_key": {
+      "kid": "g1JLQ7Vve0rGU8Fi217ccAInVrHYWbtm",
+      "kty": "RSA",
+      "bits": 2048,
+      "spki_sha256": "d01ed8f77de7c8e51bc18252f5c9537c77e6b9e1dc3b5eb874b210a41617caa4"
+    },
+    "checks": {
+      "cryptographic_signature_valid": true,
+      "tampered_payload_signature_valid": false,
+      "expected_issuer_matches": true,
+      "expected_audience_present": true,
+      "expired_at_inspection": false
+    }
+  },
+  "limits": [
+    "Signature verification does not link a token cryptographically to an application task or a specific Pod sender.",
+    "Historical T1 is expired: signature-valid does not mean currently acceptable.",
+    "Current A JWT-SVID is not the one originally used for the historical exchange.",
+    "Public keys only; no signing private key was read or exported."
+  ],
+  "historical_token_business_association": {
+    "source": "Same B debug log line contains task ID, request ID and exact T1",
+    "task_id": "4a6ae2c3-275b-4ad5-bdf9-afbf9057a736",
+    "request_id": "learn-auth-20261117T093330Z",
+    "observed_at": "2026-11-17T09:33:31.963340055Z",
+    "token_sha256": "4bbd8eb9b01347a067dcf3a5e1d3dfc36960f83ab6b49f2c17d00e61325442f5",
+    "cryptographically_bound_to_task": false,
+    "reason": "Task and request IDs are log context, not signed JWT claims"
+  }
+}

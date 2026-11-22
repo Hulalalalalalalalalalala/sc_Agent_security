@@ -1,0 +1,57 @@
+{
+  "scenario": "2a_atomic_prune_and_graft_plus_zombie_403_proof",
+  "status": "PASS",
+  "task_id": "task-k8s-s2a-20261118T142439Z",
+  "grafted_epoch": 1,
+  "grafted_lineage_path": "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-backup-e1",
+  "handled_by_instance": "backup",
+  "failover_receipt": {
+    "receipt_id": "failover-09201c2bb09c46c3a85419494adf24fb",
+    "task_id": "task-k8s-s2a-20261118T142439Z",
+    "parent_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+    "pruned_lineage_path": "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary",
+    "revocation_version": 1,
+    "revocation_event_sig": "[REDACTED_JWS_SHA256:4ebbc3372a1b]",
+    "failed_delegate_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+    "substitute_delegate_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup",
+    "new_lineage_path": "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-backup-e1",
+    "old_epoch": 0,
+    "new_epoch": 1,
+    "failure_evidence": {
+      "failed_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "failed_endpoint": "http://hotel-specialist-primary.lineage-beta.svc.cluster.local:8080/a2a/task",
+      "fault_type": "TIMEOUT",
+      "error_detail": "ReadTimeout: timed out",
+      "attempt_count": 1,
+      "observed_at": 1795011949.626614
+    },
+    "timestamp": 1795011949.6972446,
+    "revocation_event": {
+      "version": 1,
+      "kind": "SUBTREE",
+      "target": "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary",
+      "reason": "atomic_prune:TIMEOUT",
+      "requested_by": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "timestamp": 1795011949.6495101,
+      "trust_domain": "org-alpha.io",
+      "service_signature": "[REDACTED_JWS_SHA256:4ebbc3372a1b]",
+      "service_svid": "[REDACTED_JWS_SHA256:d75e32c11fcd]"
+    },
+    "revocation_service_svid": "[REDACTED_JWS_SHA256:d75e32c11fcd]",
+    "parent_svid": "[REDACTED_JWS_SHA256:a3378978c9b5]",
+    "jws_signature": "[REDACTED_JWS_SHA256:e4a3786739d2]"
+  },
+  "zombie_revocation_proof": {
+    "task_id": "task-k8s-s2a-20261118T142439Z",
+    "pruned_lineage_path": "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary",
+    "zombie_mcp_http_status": 403,
+    "zombie_mcp_body": {
+      "error": "LINEAGE_REVOKED",
+      "detail": "Lineage revoked via SUBTREE on '/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary' (v1)",
+      "decision": "DENY",
+      "pruned_revoked_paths": []
+    },
+    "recorded_at": 1795011951.211908
+  },
+  "final_answer": "For booking with traveler alice@org-alpha.io in Paris, flight booking with flight_no AF-065 and charged USD 490.0 was null. Only the hotel settlement with hotel_id HTL-PAR-07 and settled USD 320.0 was executed."
+}

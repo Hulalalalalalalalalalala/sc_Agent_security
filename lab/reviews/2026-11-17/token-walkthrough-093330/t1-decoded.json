@@ -1,0 +1,62 @@
+{
+  "header": {
+    "alg": "RS256",
+    "typ": "JWT",
+    "kid": "NDzIA686KpLmhLSCVw6RZYWJDQma4LH8pM9F8lNu5AA"
+  },
+  "payload": {
+    "exp": 1794909811,
+    "iat": 1794908011,
+    "jti": "ntrtte:d25df078-48f9-061a-75da-7415adf9245e",
+    "iss": "http://keycloak.localtest.me:8080/realms/rossoctl",
+    "aud": "spiffe://localtest.me/ns/team1/sa/weather-service-advanced",
+    "sub": "87d55f09-1648-49af-ab6c-103acd884ae4",
+    "typ": "Bearer",
+    "azp": "spiffe://localtest.me/ns/team1/sa/weather-coordinator",
+    "sid": "MzhncskGAcIVDb87DbS1BFv4",
+    "scope": "profile email openid agent-team1-weather-tool-advanced-aud agent-team1-weather-service-advanced-aud agent-team1-weather-coordinator-aud",
+    "name": "Lab Ny",
+    "preferred_username": "lab-ny",
+    "email": "lab-ny@localtest.me"
+  },
+  "issued_at_utc": "2026-11-17T09:33:31Z",
+  "expires_at_utc": "2026-11-17T10:03:31Z",
+  "token_sha256": "4bbd8eb9b01347a067dcf3a5e1d3dfc36960f83ab6b49f2c17d00e61325442f5",
+  "signature": {
+    "encoding": "base64url",
+    "byte_length": 256,
+    "prefix": "Ucp2_WHJ6U0S84mBp0jdd__ZEdKz4gjF",
+    "suffix": "McSVFG17uvf1CKwg",
+    "sha256": "4e88c6beb9ce8c088e0966e1a107885e06c9f225226340dee0cdbd54c7ac6991",
+    "full_base64url": "Ucp2_WHJ6U0S84mBp0jdd__ZEdKz4gjFjHqmICuYo3k01KMX8uR6p56GolrqG-ml_9uQRcAGBi8JQ3Of2x9JP9dBv4ooxpZXxf-E23VsBvAs9VXc4qBa92NYMTBKKK47yatvEij1Q30EGWP8sj3e2OCnBXvneR5fdIdtoijgepUdZpjYbIB8OMNJL8mCPdWnCksBokgB7DNi6HzkGGK7oWAGzopLiZCgd7mPeHEonsmeb2gDMEL_QGN1-ujfP0WD4c742EjzWf7N8CL9f81T-m0cgqzZ23GUo3yXmAruIB2OZHwcGnlBQYGKyANm7ZIKV-NEnvMcSVFG17uvf1CKwg"
+  },
+  "public_key": {
+    "kid": "NDzIA686KpLmhLSCVw6RZYWJDQma4LH8pM9F8lNu5AA",
+    "kty": "RSA",
+    "bits": 2048,
+    "spki_sha256": "343cc803af3a2a92e684b482570e916585890d099ae0b1fca4cf45f2536ee400"
+  },
+  "checks": {
+    "cryptographic_signature_valid": true,
+    "tampered_payload_signature_valid": false,
+    "expected_issuer_matches": true,
+    "expected_audience_present": true,
+    "expired_at_inspection": true
+  },
+  "provenance": {
+    "run_id": "learn-auth-20261117T093330Z",
+    "source": "B agent container debug log",
+    "first_seen_utc": "2026-11-17T09:33:31.963340055Z",
+    "relation_to_exchange_log": "Same time window and client/audience; AuthBridge exchange log has no token fingerprint or task identifier",
+    "jwks_source": "http://keycloak.localtest.me:8080/realms/rossoctl/protocol/openid-connect/certs",
+    "business_task_association": {
+      "source": "Same B debug log line contains task ID, request ID and exact T1",
+      "task_id": "4a6ae2c3-275b-4ad5-bdf9-afbf9057a736",
+      "request_id": "learn-auth-20261117T093330Z",
+      "observed_at": "2026-11-17T09:33:31.963340055Z",
+      "token_sha256": "4bbd8eb9b01347a067dcf3a5e1d3dfc36960f83ab6b49f2c17d00e61325442f5",
+      "cryptographically_bound_to_task": false,
+      "reason": "Task and request IDs are log context, not signed JWT claims"
+    }
+  }
+}

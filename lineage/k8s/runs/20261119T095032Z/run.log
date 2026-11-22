@@ -1,0 +1,166 @@
+[09:50:32] === Step 0: Pre-flight Checks (Kind Node, Baseline Namespace 'team1', Host Ollama) ===
+[09:50:32] Baseline 'team1' before run:
+NAME                                        READY   STATUS    RESTARTS      AGE     IP            NODE                               NOMINATED NODE   READINESS GATES
+weather-coordinator-5c695b6f76-9jxp2        2/2     Running   4 (89m ago)   3d19h   10.244.0.34   agent-identity-lab-control-plane   <none>           <none>
+weather-service-advanced-68b94b6749-l4jqz   2/2     Running   4 (89m ago)   3d20h   10.244.0.35   agent-identity-lab-control-plane   <none>           <none>
+weather-tool-advanced-6c6d4fc977-p9z8d      2/2     Running   4 (89m ago)   3d20h   10.244.0.33   agent-identity-lab-control-plane   <none>           <none>
+[09:50:32] Verified host Ollama serving qwen2.5:3b on :11434
+[09:50:32] === Step 1: Build Local Zero-Pull Image (lineage-lct:m3) & Load into Kind ===
+[09:50:36] Image lineage-lct:m3 built and loaded into agent-identity-lab
+[09:50:36] === Step 2: Deploy Isolated Autonomous 3-Domain Namespaces + Keyless lineage-ctrl ===
+namespace "lineage-pay" deleted
+namespace "lineage-beta" deleted
+namespace "lineage-alpha" deleted
+namespace "lineage-ctrl" deleted
+namespace/lineage-ctrl created
+namespace/lineage-alpha created
+namespace/lineage-beta created
+namespace/lineage-pay created
+serviceaccount/alpha-ca created
+deployment.apps/alpha-ca created
+service/alpha-ca created
+serviceaccount/alpha-revocation created
+deployment.apps/alpha-revocation created
+service/alpha-revocation created
+serviceaccount/alpha-directory created
+deployment.apps/alpha-directory created
+service/alpha-directory created
+serviceaccount/beta-ca created
+deployment.apps/beta-ca created
+service/beta-ca created
+serviceaccount/beta-revocation created
+deployment.apps/beta-revocation created
+service/beta-revocation created
+serviceaccount/beta-directory created
+deployment.apps/beta-directory created
+service/beta-directory created
+serviceaccount/payment-ca created
+deployment.apps/payment-ca created
+service/payment-ca created
+serviceaccount/payment-revocation created
+deployment.apps/payment-revocation created
+service/payment-revocation created
+serviceaccount/payment-directory created
+deployment.apps/payment-directory created
+service/payment-directory created
+serviceaccount/audit-collector created
+deployment.apps/audit-collector created
+service/audit-collector created
+[09:51:19] Waiting for 3-Domain Autonomous CAs, Federated Revocation/Directory Peers, and Keyless Audit Collector...
+serviceaccount/orchestrator-alpha created
+deployment.apps/orchestrator-alpha created
+service/orchestrator-alpha created
+serviceaccount/e2e-user-gateway created
+deployment.apps/e2e-user-gateway created
+serviceaccount/flight-specialist created
+deployment.apps/flight-specialist created
+service/flight-specialist created
+serviceaccount/hotel-specialist-primary created
+deployment.apps/hotel-specialist-primary created
+service/hotel-specialist-primary created
+serviceaccount/hotel-specialist-backup created
+deployment.apps/hotel-specialist-backup created
+service/hotel-specialist-backup created
+serviceaccount/settlement-converger created
+deployment.apps/settlement-converger created
+service/settlement-converger created
+serviceaccount/travel-ops-mcp created
+deployment.apps/travel-ops-mcp created
+service/travel-ops-mcp created
+serviceaccount/payment-vault-mcp created
+deployment.apps/payment-vault-mcp created
+service/payment-vault-mcp created
+[09:51:27] Waiting for all 2/2 Dual-Container mTLS 1.3 (:8443) Agent & MCP Pods across lineage-alpha / lineage-beta / lineage-pay...
+=== [lineage-ctrl] Keyless Independent Audit Center (ZERO CA Pods!) ===
+NAME                                   READY   STATUS    RESTARTS   AGE   IP            NODE                               NOMINATED NODE   READINESS GATES
+pod/audit-collector-576bbf8f54-q42ch   1/1     Running   0          14s   10.244.0.94   agent-identity-lab-control-plane   <none>           <none>
+
+NAME                      TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/audit-collector   ClusterIP   10.96.176.90   <none>        8093/TCP   14s   app=audit-collector
+
+=== [lineage-alpha] Autonomous org-alpha.io Control & Data Plane ===
+NAME                                      READY   STATUS    RESTARTS   AGE   IP            NODE                               NOMINATED NODE   READINESS GATES
+pod/alpha-ca-569c88cc9b-vfq8j             1/1     Running   0          14s   10.244.0.86   agent-identity-lab-control-plane   <none>           <none>
+pod/alpha-directory-8b764877d-bdmfr       1/1     Running   0          14s   10.244.0.88   agent-identity-lab-control-plane   <none>           <none>
+pod/alpha-revocation-7b7bdb4574-cpzff     1/1     Running   0          14s   10.244.0.87   agent-identity-lab-control-plane   <none>           <none>
+pod/e2e-user-gateway-9b4df5796-2j8hp      1/1     Running   0          6s    10.244.0.97   agent-identity-lab-control-plane   <none>           <none>
+pod/orchestrator-alpha-7dc8446d96-9m2fg   2/2     Running   0          6s    10.244.0.96   agent-identity-lab-control-plane   <none>           <none>
+
+NAME                         TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/alpha-ca             ClusterIP   10.96.20.120    <none>        8090/TCP   14s   app=alpha-ca
+service/alpha-directory      ClusterIP   10.96.14.199    <none>        8091/TCP   14s   app=alpha-directory
+service/alpha-revocation     ClusterIP   10.96.110.230   <none>        8092/TCP   14s   app=alpha-revocation
+service/orchestrator-alpha   ClusterIP   10.96.226.226   <none>        8443/TCP   6s    app=orchestrator-alpha
+
+=== [lineage-beta] Autonomous org-beta.io Control & Data Plane ===
+NAME                                            READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+pod/beta-ca-64cf675479-jjmwq                    1/1     Running   0          14s   10.244.0.90    agent-identity-lab-control-plane   <none>           <none>
+pod/beta-directory-55bcf5bb9b-d7n5r             1/1     Running   0          14s   10.244.0.89    agent-identity-lab-control-plane   <none>           <none>
+pod/beta-revocation-76ddbb8dd-rcm62             1/1     Running   0          14s   10.244.0.91    agent-identity-lab-control-plane   <none>           <none>
+pod/flight-specialist-7b7c545c84-4v2nx          2/2     Running   0          6s    10.244.0.98    agent-identity-lab-control-plane   <none>           <none>
+pod/hotel-specialist-backup-f96768788-qwp48     2/2     Running   0          6s    10.244.0.102   agent-identity-lab-control-plane   <none>           <none>
+pod/hotel-specialist-primary-5f7c9f99d7-m7xhv   2/2     Running   0          6s    10.244.0.99    agent-identity-lab-control-plane   <none>           <none>
+
+NAME                               TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/beta-ca                    ClusterIP   10.96.84.63     <none>        8090/TCP   14s   app=beta-ca
+service/beta-directory             ClusterIP   10.96.101.111   <none>        8091/TCP   14s   app=beta-directory
+service/beta-revocation            ClusterIP   10.96.149.67    <none>        8092/TCP   14s   app=beta-revocation
+service/flight-specialist          ClusterIP   10.96.168.228   <none>        8443/TCP   6s    app=flight-specialist
+service/hotel-specialist-backup    ClusterIP   10.96.133.109   <none>        8443/TCP   6s    app=hotel-specialist-backup
+service/hotel-specialist-primary   ClusterIP   10.96.11.244    <none>        8443/TCP   6s    app=hotel-specialist-primary
+
+=== [lineage-pay] Autonomous org-payment.io Control & Data Plane ===
+NAME                                        READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+pod/payment-ca-7cc594c8c9-s9scs             1/1     Running   0          14s   10.244.0.92    agent-identity-lab-control-plane   <none>           <none>
+pod/payment-directory-6f74c66c4d-hjnp4      1/1     Running   0          14s   10.244.0.95    agent-identity-lab-control-plane   <none>           <none>
+pod/payment-revocation-69947f9456-xn5wz     1/1     Running   0          14s   10.244.0.93    agent-identity-lab-control-plane   <none>           <none>
+pod/payment-vault-mcp-f5df68fcf-qpphx       2/2     Running   0          6s    10.244.0.103   agent-identity-lab-control-plane   <none>           <none>
+pod/settlement-converger-65d47bfc58-9qs4g   2/2     Running   0          6s    10.244.0.100   agent-identity-lab-control-plane   <none>           <none>
+pod/travel-ops-mcp-5b5d58c895-rnj92         2/2     Running   0          6s    10.244.0.101   agent-identity-lab-control-plane   <none>           <none>
+
+NAME                           TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/payment-ca             ClusterIP   10.96.34.57     <none>        8090/TCP   14s   app=payment-ca
+service/payment-directory      ClusterIP   10.96.176.216   <none>        8091/TCP   14s   app=payment-directory
+service/payment-revocation     ClusterIP   10.96.3.46      <none>        8092/TCP   14s   app=payment-revocation
+service/payment-vault-mcp      ClusterIP   10.96.254.206   <none>        8443/TCP   6s    app=payment-vault-mcp
+service/settlement-converger   ClusterIP   10.96.190.201   <none>        8443/TCP   6s    app=settlement-converger
+service/travel-ops-mcp         ClusterIP   10.96.110.80    <none>        8443/TCP   6s    app=travel-ops-mcp
+PASS: orchestrator-alpha/app holds ZERO K8s SA tokens and ZERO mTLS material (only /var/run/lct-loopback/secret)
+PASS: lineage-ctrl/audit-collector is 100% keyless & mounts ZERO Kubernetes SA tokens
+[09:51:35] === Scenario 1: Official A2A v1.0 SendStreamingMessage (SSE) + Autonomous 3-Domain CA Isolation + mTLS 1.3 + qwen2.5:3b Grounding ===
+[09:51:43] Scenario 1 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T095032Z/scenario1_normal_dag.json
+[09:51:43] === Scenario 2A: A2A v1.0 Downward Atomic Prune-and-Graft over mTLS 1.3 (Slow Primary Zombie Wakes -> Federated 403 LINEAGE_REVOKED) ===
+[09:51:56] Scenario 2A PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T095032Z/scenario2a_zombie_prune_graft.json
+[09:51:56] === Scenario 2B: Real K8s Pod Scale-to-Zero Fault Injection (hotel-specialist-primary replicas=0 -> Backup Epoch+1) ===
+deployment.apps/hotel-specialist-primary scaled
+pod/hotel-specialist-primary-5f7c9f99d7-m7xhv condition met
+[09:52:02] Scenario 2B PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T095032Z/scenario2b_pod_down_prune_graft.json
+[09:52:02] Restoring hotel-specialist-primary (replicas=1, 2/2 Ready) for Scenario 3...
+deployment.apps/hotel-specialist-primary scaled
+Waiting for deployment "hotel-specialist-primary" rollout to finish: 0 of 1 updated replicas are available...
+deployment "hotel-specialist-primary" successfully rolled out
+[09:52:06] === Scenario 3A: Adversarial Forged Skip-Level Blocked by Live mTLS 1.3 /healthz Probe (403 INTERMEDIATE_ANCESTOR_ALIVE) ===
+[09:52:07] Scenario 3A PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T095032Z/scenario3a_false_skip_blocked.json
+[09:52:07] === Scenario 3B: Genuine Mid-Flight K8s Pod Kill -> Authenticated mTLS 1.3 Skip-Level Return (200 SKIP_LEVEL_MERGE) ===
+[09:52:08] Mid-flight trigger hit: scaling deploy/hotel-specialist-primary to 0 & force-terminating Pod...
+deployment.apps/hotel-specialist-primary scaled
+Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
+pod "hotel-specialist-primary-5f7c9f99d7-7zt6k" force deleted from lineage-beta namespace
+[09:52:10] Scenario 3B PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T095032Z/scenario3b_skip_level_return.json
+[09:52:10] Restoring hotel-specialist-primary (replicas=1, 2/2 Ready) for Scenario 4...
+deployment.apps/hotel-specialist-primary scaled
+Waiting for deployment "hotel-specialist-primary" rollout to finish: 0 of 1 updated replicas are available...
+deployment "hotel-specialist-primary" successfully rolled out
+[09:52:15] === Scenario 4: A2A v1.0 CancelTask Cross-3-Domain Cascading Revocation + Multi-User Concurrency + Fagin DAG Degradation + Loopback Guard ===
+[09:52:25] Scenario 4 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T095032Z/scenario4_fagin_degradation_and_isolation.json
+[09:52:25] === Scenario 5: Keyless Audit Collector Export & 100% 3-Domain CausalChainAuditor Reconstruction ===
+[09:52:26] Scenario 5 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T095032Z/scenario5_causal_audit_report.json
+[09:52:26] Baseline 'team1' after run (100% untouched Running 2/2):
+NAME                                        READY   STATUS    RESTARTS      AGE     IP            NODE                               NOMINATED NODE   READINESS GATES
+weather-coordinator-5c695b6f76-9jxp2        2/2     Running   4 (91m ago)   3d19h   10.244.0.34   agent-identity-lab-control-plane   <none>           <none>
+weather-service-advanced-68b94b6749-l4jqz   2/2     Running   4 (91m ago)   3d20h   10.244.0.35   agent-identity-lab-control-plane   <none>           <none>
+weather-tool-advanced-6c6d4fc977-p9z8d      2/2     Running   4 (91m ago)   3d20h   10.244.0.33   agent-identity-lab-control-plane   <none>           <none>
+[09:52:26] ============================================================================
+[09:52:26]  ALL MILESTONE-3 K8S + A2A v1.0 + 3-DOMAIN mTLS 1.3 + OLLAMA SCENARIOS PASSED!
+[09:52:26]  Evidence directory: /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T095032Z
+[09:52:26] ============================================================================

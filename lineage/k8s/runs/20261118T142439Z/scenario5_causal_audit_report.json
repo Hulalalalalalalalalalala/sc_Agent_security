@@ -1,0 +1,164 @@
+{
+  "scenario": "5_cluster_audit_export_and_100pct_causal_reconstruction",
+  "status": "PASS",
+  "total_signed_entries": 193,
+  "distinct_streams_verified": 10,
+  "stream_hash_chain_integrity_ok": true,
+  "clean": true,
+  "reconstructed_tasks_numerator": 9,
+  "total_tasks_denominator": 9,
+  "reconstruction_rate_pct": 100.0,
+  "resilience_classifications_verified": [
+    "VERIFIED_FAILOVER_GRAFT",
+    "VERIFIED_SKIP_LEVEL_MERGE"
+  ],
+  "tasks": {
+    "task-k8s-s1-20261118T142439Z": {
+      "sub": "user:alice@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 6,
+      "lineage_paths_observed": [
+        "/task-k8s-s1-20261118T142439Z/OrchestratorAlpha",
+        "/task-k8s-s1-20261118T142439Z/OrchestratorAlpha/FlightB1",
+        "/task-k8s-s1-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC",
+        "/task-k8s-s1-20261118T142439Z/OrchestratorAlpha/SettleTrigger",
+        "/task-k8s-s1-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary",
+        "/task-k8s-s1-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC"
+      ],
+      "verified_hops": 12,
+      "tool_invocations_verified": 6,
+      "resilience_classifications": [],
+      "anomalies": []
+    },
+    "task-k8s-s2a-20261118T142439Z": {
+      "sub": "user:alice@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 7,
+      "lineage_paths_observed": [
+        "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha",
+        "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/FlightB1",
+        "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC",
+        "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/SettleTrigger",
+        "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-backup-e1",
+        "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-backup-e1/SettlementC",
+        "/task-k8s-s2a-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary"
+      ],
+      "verified_hops": 13,
+      "tool_invocations_verified": 6,
+      "resilience_classifications": [
+        "VERIFIED_FAILOVER_GRAFT"
+      ],
+      "anomalies": []
+    },
+    "task-k8s-s2a-diag-20261118T142439Z": {
+      "sub": "user:alice@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 1,
+      "lineage_paths_observed": [
+        "/task-k8s-s2a-diag-20261118T142439Z/DiagPrimary"
+      ],
+      "verified_hops": 1,
+      "tool_invocations_verified": 0,
+      "resilience_classifications": [],
+      "anomalies": []
+    },
+    "task-k8s-s2b-20261118T142439Z": {
+      "sub": "user:alice@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 7,
+      "lineage_paths_observed": [
+        "/task-k8s-s2b-20261118T142439Z/OrchestratorAlpha",
+        "/task-k8s-s2b-20261118T142439Z/OrchestratorAlpha/FlightB1",
+        "/task-k8s-s2b-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC",
+        "/task-k8s-s2b-20261118T142439Z/OrchestratorAlpha/SettleTrigger",
+        "/task-k8s-s2b-20261118T142439Z/OrchestratorAlpha/hotel-specialist-backup-e1",
+        "/task-k8s-s2b-20261118T142439Z/OrchestratorAlpha/hotel-specialist-backup-e1/SettlementC",
+        "/task-k8s-s2b-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary"
+      ],
+      "verified_hops": 12,
+      "tool_invocations_verified": 6,
+      "resilience_classifications": [
+        "VERIFIED_FAILOVER_GRAFT"
+      ],
+      "anomalies": []
+    },
+    "task-k8s-s3a-20261118T142439Z": {
+      "sub": "user:alice@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 3,
+      "lineage_paths_observed": [
+        "/task-k8s-s3a-20261118T142439Z/OrchestratorAlpha",
+        "/task-k8s-s3a-20261118T142439Z/OrchestratorAlpha/HotelPrimaryRelay",
+        "/task-k8s-s3a-20261118T142439Z/OrchestratorAlpha/HotelPrimaryRelay/LeafSettlementC"
+      ],
+      "verified_hops": 5,
+      "tool_invocations_verified": 1,
+      "resilience_classifications": [],
+      "anomalies": []
+    },
+    "task-k8s-s3b-20261118T142439Z": {
+      "sub": "user:alice@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 3,
+      "lineage_paths_observed": [
+        "/task-k8s-s3b-20261118T142439Z/OrchestratorAlpha",
+        "/task-k8s-s3b-20261118T142439Z/OrchestratorAlpha/HotelPrimaryRelay",
+        "/task-k8s-s3b-20261118T142439Z/OrchestratorAlpha/HotelPrimaryRelay/LeafSettlementC"
+      ],
+      "verified_hops": 4,
+      "tool_invocations_verified": 1,
+      "resilience_classifications": [
+        "VERIFIED_SKIP_LEVEL_MERGE"
+      ],
+      "anomalies": []
+    },
+    "task-k8s-s3b-insp-20261118T142439Z": {
+      "sub": "user:alice@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 1,
+      "lineage_paths_observed": [
+        "/task-k8s-s3b-insp-20261118T142439Z/OrchestratorAlpha"
+      ],
+      "verified_hops": 4,
+      "tool_invocations_verified": 0,
+      "resilience_classifications": [],
+      "anomalies": []
+    },
+    "task-k8s-s4-alice-20261118T142439Z": {
+      "sub": "user:alice@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 7,
+      "lineage_paths_observed": [
+        "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha",
+        "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/FlightB1",
+        "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC",
+        "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/SettleAirlineRevoked",
+        "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/SettleHotelSurviving",
+        "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary",
+        "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC"
+      ],
+      "verified_hops": 14,
+      "tool_invocations_verified": 5,
+      "resilience_classifications": [],
+      "anomalies": []
+    },
+    "task-k8s-s4-carol-20261118T142439Z": {
+      "sub": "user:carol@org-alpha.io",
+      "reconstructed_complete": true,
+      "lineage_paths_count": 6,
+      "lineage_paths_observed": [
+        "/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha",
+        "/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/FlightB1",
+        "/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC",
+        "/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/SettleTrigger",
+        "/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary",
+        "/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC"
+      ],
+      "verified_hops": 12,
+      "tool_invocations_verified": 6,
+      "resilience_classifications": [],
+      "anomalies": []
+    }
+  },
+  "redacted_audit_sample_count": 193
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@lineage-lct/node-sidecar-sdk",
+  "version": "1.0.0",
+  "description": "Zero-dependency Node.js 18+ / TypeScript Sidecar Adapter for Lineage Capability Tree (LCT)",
+  "type": "module",
+  "main": "./lct_sdk.mjs",
+  "types": "./lct_sdk.d.ts",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "check": "node --check ./lct_sdk.mjs && node --check ./example_agent.mjs",
+    "start": "node ./example_agent.mjs --port 9001"
+  }
+}

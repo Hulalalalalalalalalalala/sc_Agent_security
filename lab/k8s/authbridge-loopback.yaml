@@ -1,0 +1,36 @@
+# Diagnostic listeners bind to localhost. Business reverse proxy stays on :8000.
+# The webhook regenerates this ConfigMap when the Pod is recreated; reapply
+# with lab/scripts/isolate-diag-ports.sh after a Pod restart.
+listener:
+  bind_loopback_only: false
+  health_addr: 127.0.0.1:9091
+  session_api_addr: 127.0.0.1:9094
+  forward_proxy_addr: :8081
+  reverse_proxy_addr: :8000
+  reverse_proxy_backend: http://127.0.0.1:8001
+session:
+  id_headers:
+    - X-Lab-Task-Id
+mode: proxy-sidecar
+mtls:
+  mode: permissive
+pipeline:
+  inbound:
+    plugins:
+      - config:
+          issuer: http://keycloak.localtest.me:8080/realms/rossoctl
+          keycloak_realm: rossoctl
+          keycloak_url: http://keycloak-service.keycloak.svc:8080
+        name: jwt-validation
+  outbound:
+    plugins:
+      - config:
+          default_policy: passthrough
+          identity:
+            jwt_audience: http://keycloak.localtest.me:8080/realms/rossoctl
+            type: spiffe
+          keycloak_realm: rossoctl
+          keycloak_url: http://keycloak-service.keycloak.svc:8080
+        name: token-exchange
+spiffe:
+  socket: unix:///spiffe-workload-api/spire-agent.sock

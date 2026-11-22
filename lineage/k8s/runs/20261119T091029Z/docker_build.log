@@ -1,0 +1,84 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.26kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for ghcr.io/rossoctl/examples/weather_tool:pinned
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [ 1/18] FROM ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700
+#4 resolve ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700 0.0s done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 55.10kB 0.0s done
+#5 DONE 0.0s
+
+#6 [ 4/18] COPY lineage/common /opt/lct/lineage/common
+#6 CACHED
+
+#7 [ 2/18] WORKDIR /opt/lct
+#7 CACHED
+
+#8 [16/18] COPY lineage/k8s/__init__.py /opt/lct/lineage/k8s/__init__.py
+#8 CACHED
+
+#9 [15/18] COPY lineage/agents /opt/lct/lineage/agents
+#9 CACHED
+
+#10 [ 8/18] COPY lineage/registry /opt/lct/lineage/registry
+#10 CACHED
+
+#11 [12/18] COPY lineage/audit /opt/lct/lineage/audit
+#11 CACHED
+
+#12 [ 3/18] COPY lineage/__init__.py /opt/lct/lineage/__init__.py
+#12 CACHED
+
+#13 [11/18] COPY lineage/verifier /opt/lct/lineage/verifier
+#13 CACHED
+
+#14 [ 5/18] COPY lineage/a2a /opt/lct/lineage/a2a
+#14 CACHED
+
+#15 [ 7/18] COPY lineage/identity /opt/lct/lineage/identity
+#15 CACHED
+
+#16 [14/18] COPY lineage/sidecar /opt/lct/lineage/sidecar
+#16 CACHED
+
+#17 [10/18] COPY lineage/revocation /opt/lct/lineage/revocation
+#17 CACHED
+
+#18 [ 6/18] COPY lineage/federation /opt/lct/lineage/federation
+#18 CACHED
+
+#19 [ 9/18] COPY lineage/protocol /opt/lct/lineage/protocol
+#19 CACHED
+
+#20 [13/18] COPY lineage/resilience /opt/lct/lineage/resilience
+#20 CACHED
+
+#21 [17/18] COPY lineage/k8s/bootstrap_services.py /opt/lct/lineage/k8s/bootstrap_services.py
+#21 CACHED
+
+#22 [18/18] COPY lineage/k8s/e2e_driver.py /opt/lct/lineage/k8s/e2e_driver.py
+#22 DONE 0.0s
+
+#23 exporting to image
+#23 exporting layers 0.0s done
+#23 exporting manifest sha256:4959c7ac4ec332215e5cd4a2de03dc1b8507de883888094fae48abae551a29d7 done
+#23 exporting config sha256:e87f5b8d14162ba43832d48d77b6afa50909bbe72319cbd07966eb1eface62ce done
+#23 exporting attestation manifest sha256:7d21a0ed538437ad93cd69fd0b8f4c7897a4bf78bee6c4a068ffa5737ab9d7ff done
+#23 exporting manifest list sha256:82c47aade9bed39f52feb64f1a7808c8360f7f6a824953543b96d60e6975f4e5 done
+#23 naming to docker.io/library/lineage-lct:m3 done
+#23 unpacking to docker.io/library/lineage-lct:m3 0.0s done
+#23 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/x2xch0f8snje9tp9mghbzdrsg
+Image: "lineage-lct:m3" with ID "sha256:82c47aade9bed39f52feb64f1a7808c8360f7f6a824953543b96d60e6975f4e5" not yet present on node "agent-identity-lab-control-plane", loading...

@@ -1,0 +1,92 @@
+{
+  "scenario": "4_a2a_v1_canceltask_cross_domain_cascade_fagin_dag_concurrency_and_loopback_isolation",
+  "status": "PASS",
+  "cross_pod_loopback_isolation": {
+    "orchestrator-alpha": {
+      "pod_ip": "10.244.0.96",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "settlement-converger": {
+      "pod_ip": "10.244.0.100",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "travel-ops-mcp": {
+      "pod_ip": "10.244.0.101",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "payment-vault-mcp": {
+      "pod_ip": "10.244.0.103",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "inbound_8443_forged_loopback_header_status": 401
+  },
+  "a2a_canceltask_cross_3domain_proof": {
+    "task_id": "task-k8s-s4-bob-cancel-20261119T095032Z",
+    "unauthorized_carol_cancel_http": 403,
+    "unauthorized_carol_cancel_rpc_code": -32003,
+    "bob_canceled_state": "TASK_STATE_CANCELED",
+    "cascaded_revocation_target": "/task-k8s-s4-bob-cancel-20261119T095032Z/OrchestratorAlpha",
+    "federated_to_beta_and_payment_revocation": true,
+    "post_cancel_token_replay_http": 403,
+    "post_cancel_token_replay_error": "LINEAGE_REVOKED"
+  },
+  "alice_revoked_branch": "/task-k8s-s4-alice-20261119T095032Z/OrchestratorAlpha/FlightB1",
+  "alice_revocation_version": 5,
+  "alice_surviving_hotel_settlement": {
+    "settlement_id": "STL-5867FAA3",
+    "target": "hotel-escrow",
+    "settled_usd": 360.0,
+    "reference_id": "HTL-4C99FDD3",
+    "city": "Tokyo",
+    "task_id": "task-k8s-s4-alice-20261119T095032Z",
+    "sub": "user:alice@org-alpha.io",
+    "lineage_path": "/task-k8s-s4-alice-20261119T095032Z/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s4-alice-20261119T095032Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+    "lineage_decision": "ALLOW_DEGRADED_DAG"
+  },
+  "alice_degraded_llm_answer": "The hotel reservation and hotel escrow settlement for the hotel with ID \"HTL-TYO-09\" and reference \"HTL-4C99FDD3\" were executed under degraded authorization, with a settled amount of 360.0 USD.",
+  "alice_revoked_airline_rejection": {
+    "error": "REVOKED_DEPENDENCY_INSUFFICIENT_SURVIVING_PATHS",
+    "detail": "Surviving DAG branches insufficient: {'/task-k8s-s4-alice-20261119T095032Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC': \"parameter 'amount'=580.0 violates [0, 360.0]\"}",
+    "decision": "DENY",
+    "pruned_revoked_paths": [
+      "/task-k8s-s4-alice-20261119T095032Z/OrchestratorAlpha/FlightB1/SettlementC"
+    ]
+  },
+  "carol_concurrent_london_settlements": {
+    "airline-escrow": {
+      "settlement_id": "STL-C7DDD312",
+      "target": "airline-escrow",
+      "settled_usd": 510.0,
+      "reference_id": "FLT-80B242D6",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-20261119T095032Z",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-20261119T095032Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-carol-20261119T095032Z/OrchestratorAlpha/FlightB1/SettlementC",
+      "lineage_decision": "ALLOW"
+    },
+    "hotel-escrow": {
+      "settlement_id": "STL-19BE316F",
+      "target": "hotel-escrow",
+      "settled_usd": 340.0,
+      "reference_id": "HTL-077706AD",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-20261119T095032Z",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-20261119T095032Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-carol-20261119T095032Z/OrchestratorAlpha/FlightB1/SettlementC",
+      "lineage_decision": "ALLOW"
+    }
+  },
+  "carol_final_answer": "Here is the confirmation for the completed flight booking, hotel reservation, and both escrow settlements in the Verified MCP JSON format:\n\n- **Flight Booking**: \n  - Flight No: BA-284\n  - Booking Ref: FLT-80B242D6\n  - Charged USD: 510.0\n  - Settled USD: 510.0\n  - Escrow Target: airline-escrow\n  - Reference ID: FLT-80B242D6\n\n- **Hotel Reservation**: \n  - Hotel ID: HTL-LON-04\n  - Hotel Name: Westminster Savoy Suites\n  - Reservation Ref: HTL-077706AD\n  - Nights: 3\n  - Charged USD: 340.0\n  - Settled USD: 340.0\n  - Escrow Target: hotel-escrow\n  - Reference ID: HTL-077706AD\n\n- **Completed Settles**:\n  - Airline Escrow Settlement:\n    - Settlement ID: STL-C7DDD312\n    - Target: airline-escrow\n    - Settled USD: 510.0\n    - Reference ID: FLT-80B242D6\n    - Task ID: task-k8s-s4-carol-20261119T095032Z\n    - Sub"
+}

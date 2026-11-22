@@ -1,0 +1,64 @@
+=== Cluster 1: kind-lct-org-alpha (Node IP 172.19.0.3 | Pod CIDR 10.241.0.0/16 | Svc CIDR 10.97.0.0/16) ===
+NAME                                      READY   STATUS    RESTARTS   AGE   IP            NODE                          NOMINATED NODE   READINESS GATES
+pod/alpha-ca-6459d7c78f-p576q             1/1     Running   0          12s   10.241.0.7    lct-org-alpha-control-plane   <none>           <none>
+pod/alpha-directory-7dd5988ccd-6mrnk      1/1     Running   0          12s   10.241.0.9    lct-org-alpha-control-plane   <none>           <none>
+pod/alpha-revocation-857fbb7bc9-f52vq     1/1     Running   0          12s   10.241.0.8    lct-org-alpha-control-plane   <none>           <none>
+pod/e2e-user-gateway-7995f9655f-jlgjr     1/1     Running   0          12s   10.241.0.11   lct-org-alpha-control-plane   <none>           <none>
+pod/orchestrator-alpha-65c595b895-n77p5   2/2     Running   0          12s   10.241.0.10   lct-org-alpha-control-plane   <none>           <none>
+
+NAME                                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)           AGE   SELECTOR
+service/alpha-ca                      ClusterIP   10.97.29.169    <none>        8090/TCP          12s   app=alpha-ca
+service/alpha-ca-federation           NodePort    10.97.210.61    <none>        8094:30094/TCP    12s   app=alpha-ca
+service/alpha-directory               ClusterIP   10.97.180.241   <none>        8091/TCP          12s   app=alpha-directory
+service/alpha-directory-federation    NodePort    10.97.247.45    <none>        8491:30491/TCP    12s   app=alpha-directory
+service/alpha-revocation              ClusterIP   10.97.178.173   <none>        8092/TCP          12s   app=alpha-revocation
+service/alpha-revocation-federation   NodePort    10.97.244.134   <none>        8492:30492/TCP    12s   app=alpha-revocation
+service/e2e-user-gateway-sync         NodePort    10.97.89.13     <none>        19090:30990/TCP   12s   app=e2e-user-gateway
+service/orchestrator-alpha            NodePort    10.97.193.7     <none>        8443:30441/TCP    12s   app=orchestrator-alpha
+
+=== Cluster 2: kind-lct-org-beta (Node IP 172.19.0.4 | Pod CIDR 10.242.0.0/16 | Svc CIDR 10.98.0.0/16) ===
+NAME                                            READY   STATUS    RESTARTS   AGE   IP            NODE                         NOMINATED NODE   READINESS GATES
+pod/beta-ca-7d46cc475d-qgn6w                    1/1     Running   0          12s   10.242.0.7    lct-org-beta-control-plane   <none>           <none>
+pod/beta-directory-95fffcc76-f8845              1/1     Running   0          12s   10.242.0.9    lct-org-beta-control-plane   <none>           <none>
+pod/beta-revocation-54f88cd6d9-qvnkm            1/1     Running   0          12s   10.242.0.8    lct-org-beta-control-plane   <none>           <none>
+pod/flight-specialist-66665d6565-m4zvl          2/2     Running   0          12s   10.242.0.10   lct-org-beta-control-plane   <none>           <none>
+pod/hotel-specialist-backup-5797797b4f-mwqdj    2/2     Running   0          12s   10.242.0.12   lct-org-beta-control-plane   <none>           <none>
+pod/hotel-specialist-primary-7d74548855-9s9sj   2/2     Running   0          12s   10.242.0.11   lct-org-beta-control-plane   <none>           <none>
+
+NAME                                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE   SELECTOR
+service/beta-ca                      ClusterIP   10.98.40.250    <none>        8090/TCP         12s   app=beta-ca
+service/beta-ca-federation           NodePort    10.98.235.202   <none>        8094:31094/TCP   12s   app=beta-ca
+service/beta-directory               ClusterIP   10.98.200.161   <none>        8091/TCP         12s   app=beta-directory
+service/beta-directory-federation    NodePort    10.98.192.69    <none>        8491:31491/TCP   12s   app=beta-directory
+service/beta-revocation              ClusterIP   10.98.89.61     <none>        8092/TCP         12s   app=beta-revocation
+service/beta-revocation-federation   NodePort    10.98.192.161   <none>        8492:31492/TCP   12s   app=beta-revocation
+service/flight-specialist            NodePort    10.98.116.28    <none>        8443:31441/TCP   12s   app=flight-specialist
+service/hotel-specialist-backup      NodePort    10.98.235.232   <none>        8443:31443/TCP   12s   app=hotel-specialist-backup
+service/hotel-specialist-primary     NodePort    10.98.211.76    <none>        8443:31442/TCP   12s   app=hotel-specialist-primary
+
+=== Cluster 3: kind-lct-org-pay (Node IP 172.19.0.5 | Pod CIDR 10.243.0.0/16 | Svc CIDR 10.99.0.0/16) ===
+NAME                                        READY   STATUS    RESTARTS   AGE   IP            NODE                        NOMINATED NODE   READINESS GATES
+pod/payment-ca-fdbbd6454-9nhl7              1/1     Running   0          11s   10.243.0.7    lct-org-pay-control-plane   <none>           <none>
+pod/payment-directory-68646fbbc4-56r7b      1/1     Running   0          11s   10.243.0.9    lct-org-pay-control-plane   <none>           <none>
+pod/payment-revocation-7bbb58bd8f-zwls5     1/1     Running   0          11s   10.243.0.8    lct-org-pay-control-plane   <none>           <none>
+pod/payment-vault-mcp-68c8c86f86-djwhs      2/2     Running   0          11s   10.243.0.12   lct-org-pay-control-plane   <none>           <none>
+pod/settlement-converger-6b86c444d8-4zxxl   2/2     Running   0          11s   10.243.0.10   lct-org-pay-control-plane   <none>           <none>
+pod/travel-ops-mcp-7944cc6f5c-hht2j         2/2     Running   0          11s   10.243.0.11   lct-org-pay-control-plane   <none>           <none>
+
+NAME                                    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE   SELECTOR
+service/payment-ca                      ClusterIP   10.99.104.23    <none>        8090/TCP         11s   app=payment-ca
+service/payment-ca-federation           NodePort    10.99.103.137   <none>        8094:32094/TCP   11s   app=payment-ca
+service/payment-directory               ClusterIP   10.99.179.91    <none>        8091/TCP         11s   app=payment-directory
+service/payment-directory-federation    NodePort    10.99.59.111    <none>        8491:32491/TCP   11s   app=payment-directory
+service/payment-revocation              ClusterIP   10.99.3.26      <none>        8092/TCP         11s   app=payment-revocation
+service/payment-revocation-federation   NodePort    10.99.75.209    <none>        8492:32492/TCP   11s   app=payment-revocation
+service/payment-vault-mcp               NodePort    10.99.46.72     <none>        8443:32443/TCP   11s   app=payment-vault-mcp
+service/settlement-converger            NodePort    10.99.82.90     <none>        8443:32441/TCP   11s   app=settlement-converger
+service/travel-ops-mcp                  NodePort    10.99.209.190   <none>        8443:32442/TCP   11s   app=travel-ops-mcp
+
+=== Cluster 4: kind-lct-audit (Node IP 172.19.0.6 | Pod CIDR 10.244.0.0/16 | Svc CIDR 10.100.0.0/16 | Keyless!) ===
+NAME                                   READY   STATUS    RESTARTS   AGE   IP           NODE                      NOMINATED NODE   READINESS GATES
+pod/audit-collector-544b88899c-xhc52   1/1     Running   0          10s   10.244.0.7   lct-audit-control-plane   <none>           <none>
+
+NAME                      TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE   SELECTOR
+service/audit-collector   NodePort   10.100.20.230   <none>        8093:30893/TCP   10s   app=audit-collector

@@ -1,0 +1,4 @@
+# Zero external cryptographic dependencies required inside the `app` container!
+# `lct_sdk.py` uses Python 3.11+ stdlib (`http.server`, `urllib.request`, `hmac`).
+# Optional HTTP client for custom business logic:
+httpx>=0.27.0

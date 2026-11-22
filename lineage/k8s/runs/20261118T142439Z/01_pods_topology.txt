@@ -1,0 +1,16 @@
+NAME                              READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+audit-collector-57776ff5-jjq7n    1/1     Running   0          8s    10.244.0.138   agent-identity-lab-control-plane   <none>           <none>
+directory-svc-594d7dd576-j5l6v    1/1     Running   0          8s    10.244.0.139   agent-identity-lab-control-plane   <none>           <none>
+federation-ca-7bbdf9dcd6-mdr97    1/1     Running   0          8s    10.244.0.136   agent-identity-lab-control-plane   <none>           <none>
+revocation-svc-5d479bf659-46mzf   1/1     Running   0          8s    10.244.0.137   agent-identity-lab-control-plane   <none>           <none>
+NAME                                  READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+e2e-user-gateway-85f8b7f5fd-5s826     1/1     Running   0          4s    10.244.0.140   agent-identity-lab-control-plane   <none>           <none>
+orchestrator-alpha-64f48d6764-pxs7g   2/2     Running   0          4s    10.244.0.146   agent-identity-lab-control-plane   <none>           <none>
+NAME                                        READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+flight-specialist-d6744bbd4-qt7ts           2/2     Running   0          4s    10.244.0.142   agent-identity-lab-control-plane   <none>           <none>
+hotel-specialist-backup-84bb44c87c-zczjm    2/2     Running   0          4s    10.244.0.143   agent-identity-lab-control-plane   <none>           <none>
+hotel-specialist-primary-85b9f47f4c-jmd4f   2/2     Running   0          4s    10.244.0.147   agent-identity-lab-control-plane   <none>           <none>
+NAME                                    READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+payment-vault-mcp-5666b84c8c-czqvj      2/2     Running   0          4s    10.244.0.145   agent-identity-lab-control-plane   <none>           <none>
+settlement-converger-75dc54d946-ppgzg   2/2     Running   0          4s    10.244.0.141   agent-identity-lab-control-plane   <none>           <none>
+travel-ops-mcp-c74979447-mdw7j          2/2     Running   0          4s    10.244.0.144   agent-identity-lab-control-plane   <none>           <none>

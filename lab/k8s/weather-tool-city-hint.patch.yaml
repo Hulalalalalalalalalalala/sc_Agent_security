@@ -1,0 +1,13 @@
+# Live-only hint. The geocoding API indexes English place names and returns
+# no result for 纽约. This does not change authentication or the forecast URL.
+spec:
+  template:
+    spec:
+      containers:
+        - name: mcp
+          command:
+            - sh
+            - -c
+            - |
+              sed -i 's/Get weather info for a city/Get weather info for a city. Pass city as the English place name indexed by the geocoding service, for example New York./' /app/weather_tool.py
+              exec uv run --no-sync weather_tool.py

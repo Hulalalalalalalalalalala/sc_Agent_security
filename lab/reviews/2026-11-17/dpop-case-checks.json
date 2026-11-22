@@ -1,0 +1,142 @@
+[
+  {
+    "run": "ny-1",
+    "case": "holder-b",
+    "expected_http_for_experiment": 200,
+    "actual_http": 200,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "copied-no-proof",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "copied-own-proof",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "unbound-with-proof",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "no-token",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "raw-t0",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "legacy-bound",
+    "expected_http_for_experiment": 200,
+    "actual_http": 200,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "legacy-unbound",
+    "expected_http_for_experiment": 200,
+    "actual_http": 200,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "legacy-none",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "ny-1",
+    "case": "legacy-t0",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "holder-b",
+    "expected_http_for_experiment": 200,
+    "actual_http": 200,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "copied-no-proof",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "copied-own-proof",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "unbound-with-proof",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "no-token",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "raw-t0",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "legacy-bound",
+    "expected_http_for_experiment": 200,
+    "actual_http": 200,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "legacy-unbound",
+    "expected_http_for_experiment": 200,
+    "actual_http": 200,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "legacy-none",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  },
+  {
+    "run": "lon-1",
+    "case": "legacy-t0",
+    "expected_http_for_experiment": 401,
+    "actual_http": 401,
+    "matched_expectation": true
+  }
+]

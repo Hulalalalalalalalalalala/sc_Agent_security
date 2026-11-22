@@ -1,0 +1,6 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: lct-org-beta
+networking:
+  podSubnet: "10.242.0.0/16"
+  serviceSubnet: "10.98.0.0/16"

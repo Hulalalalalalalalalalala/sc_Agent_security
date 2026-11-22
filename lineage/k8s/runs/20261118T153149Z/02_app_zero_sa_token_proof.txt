@@ -1,0 +1,1 @@
+PASS: orchestrator-alpha/app holds ZERO Kubernetes ServiceAccount tokens (only /var/run/lct-loopback/secret)

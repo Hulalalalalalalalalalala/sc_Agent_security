@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lineage-ctrl
+  labels:
+    app.kubernetes.io/part-of: lineage-capability-tree
+    lct.io/role: control-plane
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lineage-alpha
+  labels:
+    app.kubernetes.io/part-of: lineage-capability-tree
+    lct.io/trust-domain: org-alpha.io
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lineage-beta
+  labels:
+    app.kubernetes.io/part-of: lineage-capability-tree
+    lct.io/trust-domain: org-beta.io
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lineage-pay
+  labels:
+    app.kubernetes.io/part-of: lineage-capability-tree
+    lct.io/trust-domain: org-payment.io

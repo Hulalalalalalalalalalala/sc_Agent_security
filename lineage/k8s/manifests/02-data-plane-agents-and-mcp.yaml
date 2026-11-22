@@ -1,0 +1,916 @@
+# =============================================================================
+# Milestone 3: Official A2A v1.0 + Full-Chain Bidirectional SPIFFE X.509 mTLS 1.3
+# Cross-Domain Dual-Container (2/2) Agent & MCP Data Plane (`https://...:8443`)
+#
+# Strict Least-Privilege & In-Memory Isolation Invariants:
+#   - Every Pod sets `automountServiceAccountToken: false`
+#   - Projected audience-bound ServiceAccount token (`audience: lct-federation-ca`)
+#     and `lct-mtls-ram` (`emptyDir: {medium: Memory}`) are mounted ONLY into
+#     `lct-sidecar`, NEVER into `app`!
+#   - Container 1 (`app`): binds ONLY `127.0.0.1:9001`, mounts ONLY `lct-loopback`
+#     (readOnly), holds ZERO private keys and ZERO Kubernetes SA tokens!
+#   - Container 2 (`lct-sidecar`): bootstraps from its OWN domain's autonomous CA,
+#     binds `0.0.0.0:8443` with bidirectional X.509 mTLS 1.3 (`ssl.CERT_REQUIRED`
+#     + Channel-Token Dual Binding) and `127.0.0.1:8081` (loopback outbound proxy).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Trust Domain 1: `lineage-alpha` (`org-alpha.io`)
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator-alpha
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-alpha
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator-alpha
+  template:
+    metadata:
+      labels:
+        app: orchestrator-alpha
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: orchestrator-alpha
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: app
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "app-orchestrator"]
+          env:
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434/v1"
+            - name: LLM_MODEL
+              value: "qwen2.5:3b"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "sidecar"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://alpha-ca.lineage-alpha.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: DIRECTORY_URL
+              value: "http://alpha-directory.lineage-alpha.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+            - name: PUBLIC_ORIGIN
+              value: "https://orchestrator-alpha.lineage-alpha.svc.cluster.local:8443"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: AGENT_SKILLS
+              value: "travel.orchestrate"
+            - name: AGENT_PRIORITY
+              value: "10"
+            - name: AGENT_DISPLAY_NAME
+              value: "Orchestrator Alpha"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8443
+              name: lct-mtls
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /app/.venv/bin/python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-alpha
+  namespace: lineage-alpha
+spec:
+  selector:
+    app: orchestrator-alpha
+  ports:
+    - name: lct-mtls
+      port: 8443
+      targetPort: 8443
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: e2e-user-gateway
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-user-gateway
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: e2e-user-gateway
+  template:
+    metadata:
+      labels:
+        app: e2e-user-gateway
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: e2e-user-gateway
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: gateway
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          command: ["/bin/sh", "-c", "sleep 86400"]
+          env:
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434/v1"
+            - name: LLM_MODEL
+              value: "qwen2.5:3b"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+
+# -----------------------------------------------------------------------------
+# Trust Domain 2: `lineage-beta` (`org-beta.io`)
+# -----------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flight-specialist
+  namespace: lineage-beta
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flight-specialist
+  namespace: lineage-beta
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flight-specialist
+  template:
+    metadata:
+      labels:
+        app: flight-specialist
+        lct.io/trust-domain: org-beta.io
+    spec:
+      serviceAccountName: flight-specialist
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: app
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "app-flight"]
+          env:
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434/v1"
+            - name: LLM_MODEL
+              value: "qwen2.5:3b"
+            - name: TRAVEL_MCP_URL
+              value: "https://travel-ops-mcp.lineage-pay.svc.cluster.local:8443/mcp"
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "sidecar"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: DIRECTORY_URL
+              value: "http://beta-directory.lineage-beta.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://beta-revocation.lineage-beta.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+            - name: PUBLIC_ORIGIN
+              value: "https://flight-specialist.lineage-beta.svc.cluster.local:8443"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: AGENT_SKILLS
+              value: "travel.flight"
+            - name: AGENT_PRIORITY
+              value: "10"
+            - name: AGENT_DISPLAY_NAME
+              value: "Flight Specialist B1"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8443
+              name: lct-mtls
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /app/.venv/bin/python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flight-specialist
+  namespace: lineage-beta
+spec:
+  selector:
+    app: flight-specialist
+  ports:
+    - name: lct-mtls
+      port: 8443
+      targetPort: 8443
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hotel-specialist-primary
+  namespace: lineage-beta
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hotel-specialist-primary
+  namespace: lineage-beta
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hotel-specialist-primary
+  template:
+    metadata:
+      labels:
+        app: hotel-specialist-primary
+        lct.io/trust-domain: org-beta.io
+    spec:
+      serviceAccountName: hotel-specialist-primary
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: app
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "app-hotel"]
+          env:
+            - name: SPECIALIST_INSTANCE
+              value: "primary"
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434/v1"
+            - name: LLM_MODEL
+              value: "qwen2.5:3b"
+            - name: TRAVEL_MCP_URL
+              value: "https://travel-ops-mcp.lineage-pay.svc.cluster.local:8443/mcp"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "sidecar"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: DIRECTORY_URL
+              value: "http://beta-directory.lineage-beta.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://beta-revocation.lineage-beta.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+            - name: PUBLIC_ORIGIN
+              value: "https://hotel-specialist-primary.lineage-beta.svc.cluster.local:8443"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: AGENT_SKILLS
+              value: "travel.hotel"
+            - name: AGENT_PRIORITY
+              value: "10"
+            - name: AGENT_DISPLAY_NAME
+              value: "Hotel Specialist Primary B2"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8443
+              name: lct-mtls
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /app/.venv/bin/python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hotel-specialist-primary
+  namespace: lineage-beta
+spec:
+  selector:
+    app: hotel-specialist-primary
+  ports:
+    - name: lct-mtls
+      port: 8443
+      targetPort: 8443
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hotel-specialist-backup
+  namespace: lineage-beta
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hotel-specialist-backup
+  namespace: lineage-beta
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hotel-specialist-backup
+  template:
+    metadata:
+      labels:
+        app: hotel-specialist-backup
+        lct.io/trust-domain: org-beta.io
+    spec:
+      serviceAccountName: hotel-specialist-backup
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: app
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "app-hotel"]
+          env:
+            - name: SPECIALIST_INSTANCE
+              value: "backup"
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434/v1"
+            - name: LLM_MODEL
+              value: "qwen2.5:3b"
+            - name: TRAVEL_MCP_URL
+              value: "https://travel-ops-mcp.lineage-pay.svc.cluster.local:8443/mcp"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "sidecar"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: DIRECTORY_URL
+              value: "http://beta-directory.lineage-beta.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://beta-revocation.lineage-beta.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+            - name: PUBLIC_ORIGIN
+              value: "https://hotel-specialist-backup.lineage-beta.svc.cluster.local:8443"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: AGENT_SKILLS
+              value: "travel.hotel"
+            - name: AGENT_PRIORITY
+              value: "20"
+            - name: AGENT_DISPLAY_NAME
+              value: "Hotel Specialist Backup B2-Sub"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8443
+              name: lct-mtls
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /app/.venv/bin/python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hotel-specialist-backup
+  namespace: lineage-beta
+spec:
+  selector:
+    app: hotel-specialist-backup
+  ports:
+    - name: lct-mtls
+      port: 8443
+      targetPort: 8443
+
+# -----------------------------------------------------------------------------
+# Trust Domain 3: `lineage-pay` (`org-payment.io`)
+# -----------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: settlement-converger
+  namespace: lineage-pay
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settlement-converger
+  namespace: lineage-pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: settlement-converger
+  template:
+    metadata:
+      labels:
+        app: settlement-converger
+        lct.io/trust-domain: org-payment.io
+    spec:
+      serviceAccountName: settlement-converger
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: app
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "app-converger"]
+          env:
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434/v1"
+            - name: LLM_MODEL
+              value: "qwen2.5:3b"
+            - name: PAYMENT_MCP_URL
+              value: "https://payment-vault-mcp.lineage-pay.svc.cluster.local:8443/mcp"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "sidecar"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: DIRECTORY_URL
+              value: "http://payment-directory.lineage-pay.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://payment-revocation.lineage-pay.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+            - name: PUBLIC_ORIGIN
+              value: "https://settlement-converger.lineage-pay.svc.cluster.local:8443"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: AGENT_SKILLS
+              value: "settlement.converge"
+            - name: AGENT_PRIORITY
+              value: "10"
+            - name: AGENT_DISPLAY_NAME
+              value: "Settlement Converger C"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8443
+              name: lct-mtls
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /app/.venv/bin/python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: settlement-converger
+  namespace: lineage-pay
+spec:
+  selector:
+    app: settlement-converger
+  ports:
+    - name: lct-mtls
+      port: 8443
+      targetPort: 8443
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: travel-ops-mcp
+  namespace: lineage-pay
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: travel-ops-mcp
+  namespace: lineage-pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: travel-ops-mcp
+  template:
+    metadata:
+      labels:
+        app: travel-ops-mcp
+        lct.io/trust-domain: org-payment.io
+    spec:
+      serviceAccountName: travel-ops-mcp
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: app
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "app-travel-mcp"]
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "sidecar"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: DIRECTORY_URL
+              value: "http://payment-directory.lineage-pay.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://payment-revocation.lineage-pay.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+            - name: PUBLIC_ORIGIN
+              value: "https://travel-ops-mcp.lineage-pay.svc.cluster.local:8443"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: IS_TOOL_SERVER
+              value: "true"
+            - name: VERIFICATION_MODE
+              value: "ADAPTIVE_RISK_ANCHORED"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8443
+              name: lct-mtls
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /app/.venv/bin/python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: travel-ops-mcp
+  namespace: lineage-pay
+spec:
+  selector:
+    app: travel-ops-mcp
+  ports:
+    - name: lct-mtls
+      port: 8443
+      targetPort: 8443
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payment-vault-mcp
+  namespace: lineage-pay
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-vault-mcp
+  namespace: lineage-pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-vault-mcp
+  template:
+    metadata:
+      labels:
+        app: payment-vault-mcp
+        lct.io/trust-domain: org-payment.io
+    spec:
+      serviceAccountName: payment-vault-mcp
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: app
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "app-payment-mcp"]
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "sidecar"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: DIRECTORY_URL
+              value: "http://payment-directory.lineage-pay.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://payment-revocation.lineage-pay.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+            - name: PUBLIC_ORIGIN
+              value: "https://payment-vault-mcp.lineage-pay.svc.cluster.local:8443"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: IS_TOOL_SERVER
+              value: "true"
+            - name: VERIFICATION_MODE
+              value: "ADAPTIVE_RISK_ANCHORED"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8443
+              name: lct-mtls
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /app/.venv/bin/python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-vault-mcp
+  namespace: lineage-pay
+spec:
+  selector:
+    app: payment-vault-mcp
+  ports:
+    - name: lct-mtls
+      port: 8443
+      targetPort: 8443

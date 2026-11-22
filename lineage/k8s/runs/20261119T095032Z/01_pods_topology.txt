@@ -1,0 +1,54 @@
+=== [lineage-ctrl] Keyless Independent Audit Center (ZERO CA Pods!) ===
+NAME                                   READY   STATUS    RESTARTS   AGE   IP            NODE                               NOMINATED NODE   READINESS GATES
+pod/audit-collector-576bbf8f54-q42ch   1/1     Running   0          14s   10.244.0.94   agent-identity-lab-control-plane   <none>           <none>
+
+NAME                      TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/audit-collector   ClusterIP   10.96.176.90   <none>        8093/TCP   14s   app=audit-collector
+
+=== [lineage-alpha] Autonomous org-alpha.io Control & Data Plane ===
+NAME                                      READY   STATUS    RESTARTS   AGE   IP            NODE                               NOMINATED NODE   READINESS GATES
+pod/alpha-ca-569c88cc9b-vfq8j             1/1     Running   0          14s   10.244.0.86   agent-identity-lab-control-plane   <none>           <none>
+pod/alpha-directory-8b764877d-bdmfr       1/1     Running   0          14s   10.244.0.88   agent-identity-lab-control-plane   <none>           <none>
+pod/alpha-revocation-7b7bdb4574-cpzff     1/1     Running   0          14s   10.244.0.87   agent-identity-lab-control-plane   <none>           <none>
+pod/e2e-user-gateway-9b4df5796-2j8hp      1/1     Running   0          6s    10.244.0.97   agent-identity-lab-control-plane   <none>           <none>
+pod/orchestrator-alpha-7dc8446d96-9m2fg   2/2     Running   0          6s    10.244.0.96   agent-identity-lab-control-plane   <none>           <none>
+
+NAME                         TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/alpha-ca             ClusterIP   10.96.20.120    <none>        8090/TCP   14s   app=alpha-ca
+service/alpha-directory      ClusterIP   10.96.14.199    <none>        8091/TCP   14s   app=alpha-directory
+service/alpha-revocation     ClusterIP   10.96.110.230   <none>        8092/TCP   14s   app=alpha-revocation
+service/orchestrator-alpha   ClusterIP   10.96.226.226   <none>        8443/TCP   6s    app=orchestrator-alpha
+
+=== [lineage-beta] Autonomous org-beta.io Control & Data Plane ===
+NAME                                            READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+pod/beta-ca-64cf675479-jjmwq                    1/1     Running   0          14s   10.244.0.90    agent-identity-lab-control-plane   <none>           <none>
+pod/beta-directory-55bcf5bb9b-d7n5r             1/1     Running   0          14s   10.244.0.89    agent-identity-lab-control-plane   <none>           <none>
+pod/beta-revocation-76ddbb8dd-rcm62             1/1     Running   0          14s   10.244.0.91    agent-identity-lab-control-plane   <none>           <none>
+pod/flight-specialist-7b7c545c84-4v2nx          2/2     Running   0          6s    10.244.0.98    agent-identity-lab-control-plane   <none>           <none>
+pod/hotel-specialist-backup-f96768788-qwp48     2/2     Running   0          6s    10.244.0.102   agent-identity-lab-control-plane   <none>           <none>
+pod/hotel-specialist-primary-5f7c9f99d7-m7xhv   2/2     Running   0          6s    10.244.0.99    agent-identity-lab-control-plane   <none>           <none>
+
+NAME                               TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/beta-ca                    ClusterIP   10.96.84.63     <none>        8090/TCP   14s   app=beta-ca
+service/beta-directory             ClusterIP   10.96.101.111   <none>        8091/TCP   14s   app=beta-directory
+service/beta-revocation            ClusterIP   10.96.149.67    <none>        8092/TCP   14s   app=beta-revocation
+service/flight-specialist          ClusterIP   10.96.168.228   <none>        8443/TCP   6s    app=flight-specialist
+service/hotel-specialist-backup    ClusterIP   10.96.133.109   <none>        8443/TCP   6s    app=hotel-specialist-backup
+service/hotel-specialist-primary   ClusterIP   10.96.11.244    <none>        8443/TCP   6s    app=hotel-specialist-primary
+
+=== [lineage-pay] Autonomous org-payment.io Control & Data Plane ===
+NAME                                        READY   STATUS    RESTARTS   AGE   IP             NODE                               NOMINATED NODE   READINESS GATES
+pod/payment-ca-7cc594c8c9-s9scs             1/1     Running   0          14s   10.244.0.92    agent-identity-lab-control-plane   <none>           <none>
+pod/payment-directory-6f74c66c4d-hjnp4      1/1     Running   0          14s   10.244.0.95    agent-identity-lab-control-plane   <none>           <none>
+pod/payment-revocation-69947f9456-xn5wz     1/1     Running   0          14s   10.244.0.93    agent-identity-lab-control-plane   <none>           <none>
+pod/payment-vault-mcp-f5df68fcf-qpphx       2/2     Running   0          6s    10.244.0.103   agent-identity-lab-control-plane   <none>           <none>
+pod/settlement-converger-65d47bfc58-9qs4g   2/2     Running   0          6s    10.244.0.100   agent-identity-lab-control-plane   <none>           <none>
+pod/travel-ops-mcp-5b5d58c895-rnj92         2/2     Running   0          6s    10.244.0.101   agent-identity-lab-control-plane   <none>           <none>
+
+NAME                           TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/payment-ca             ClusterIP   10.96.34.57     <none>        8090/TCP   14s   app=payment-ca
+service/payment-directory      ClusterIP   10.96.176.216   <none>        8091/TCP   14s   app=payment-directory
+service/payment-revocation     ClusterIP   10.96.3.46      <none>        8092/TCP   14s   app=payment-revocation
+service/payment-vault-mcp      ClusterIP   10.96.254.206   <none>        8443/TCP   6s    app=payment-vault-mcp
+service/settlement-converger   ClusterIP   10.96.190.201   <none>        8443/TCP   6s    app=settlement-converger
+service/travel-ops-mcp         ClusterIP   10.96.110.80    <none>        8443/TCP   6s    app=travel-ops-mcp

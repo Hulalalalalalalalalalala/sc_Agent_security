@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: custom-go-agent
+  namespace: lineage-alpha
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: custom-go-agent
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: custom-go-agent
+  template:
+    metadata:
+      labels:
+        app: custom-go-agent
+    spec:
+      serviceAccountName: custom-go-agent
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  audience: lct-federation-ca
+      containers:
+        - name: app
+          image: custom-go-agent:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LCT_LOOPBACK_SECRET_FILE
+              value: "/var/run/lct-loopback/secret"
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m4
+          imagePullPolicy: IfNotPresent
+          args: ["--role", "sidecar"]
+          ports:
+            - containerPort: 8443
+              name: https-a2a
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://alpha-ca.lineage-alpha.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-beta.io=http://beta-ca.org-beta.io:31094,org-payment.io=http://payment-ca.org-payment.io:32094"
+            - name: DIRECTORY_URL
+              value: "http://alpha-directory.lineage-alpha.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.org-audit.io:30893"
+            - name: PUBLIC_ORIGIN
+              value: "https://custom-go-agent.org-alpha.io:30450"
+            - name: AGENT_SKILLS
+              value: "custom.go.skill"
+            - name: APP_PORT
+              value: "9001"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: SIDECAR_OUTBOUND_PORT
+              value: "8081"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa
+              mountPath: /var/run/lct-sa
+              readOnly: true

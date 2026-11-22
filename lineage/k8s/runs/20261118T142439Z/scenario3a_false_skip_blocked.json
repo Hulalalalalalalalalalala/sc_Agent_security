@@ -1,0 +1,8 @@
+{
+  "scenario": "3a_false_skip_level_rejected_by_k8s_healthz_probe",
+  "status": "PASS",
+  "task_id": "task-k8s-s3a-20261118T142439Z",
+  "intermediate_healthz_http": 200,
+  "rogue_leaf_return_status": 502,
+  "accepted_skip_level_results": 0
+}

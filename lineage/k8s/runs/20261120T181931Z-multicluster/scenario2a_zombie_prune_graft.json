@@ -1,0 +1,59 @@
+{
+  "scenario": "2a_a2a_v1_atomic_prune_and_graft_plus_cross_domain_zombie_403_proof",
+  "status": "PASS",
+  "task_id": "task-k8s-s2a-20261120T181931Z-multicluster",
+  "a2a_task_state": "TASK_STATE_COMPLETED",
+  "grafted_epoch": 1,
+  "grafted_lineage_path": "/task-k8s-s2a-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-backup-e1",
+  "handled_by_instance": "backup",
+  "failover_receipt": {
+    "receipt_id": "failover-1cfe05be45ee4396804d4681c143e6a7",
+    "task_id": "task-k8s-s2a-20261120T181931Z-multicluster",
+    "parent_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+    "pruned_lineage_path": "/task-k8s-s2a-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-primary",
+    "revocation_version": 1,
+    "revocation_event_sig": "[REDACTED_JWS_SHA256:e91ca25fe10e]",
+    "failed_delegate_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+    "substitute_delegate_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup",
+    "new_lineage_path": "/task-k8s-s2a-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-backup-e1",
+    "old_epoch": 0,
+    "new_epoch": 1,
+    "failure_evidence": {
+      "failed_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "failed_endpoint": "https://hotel-specialist-primary.org-beta.io:31442/a2a",
+      "fault_type": "TIMEOUT",
+      "error_detail": "ReadTimeout: The read operation timed out",
+      "attempt_count": 1,
+      "observed_at": 1795198963.3404732
+    },
+    "timestamp": 1795198963.4814842,
+    "revocation_event": {
+      "version": 1,
+      "kind": "SUBTREE",
+      "target": "/task-k8s-s2a-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-primary",
+      "reason": "atomic_prune:TIMEOUT",
+      "requested_by": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "timestamp": 1795198963.3681803,
+      "trust_domain": "org-alpha.io",
+      "service_signature": "[REDACTED_JWS_SHA256:e91ca25fe10e]",
+      "service_svid": "[REDACTED_JWS_SHA256:05e513f57875]"
+    },
+    "revocation_service_svid": "[REDACTED_JWS_SHA256:05e513f57875]",
+    "parent_svid": "[REDACTED_JWS_SHA256:31badbdbf41a]",
+    "jws_signature": "[REDACTED_JWS_SHA256:0be817595389]"
+  },
+  "zombie_revocation_proof": {
+    "task_id": "task-k8s-s2a-20261120T181931Z-multicluster",
+    "sub": "user:alice@org-alpha.io",
+    "pruned_lineage_path": "/task-k8s-s2a-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-primary",
+    "zombie_mcp_http_status": 403,
+    "zombie_mcp_body": {
+      "error": "LINEAGE_REVOKED",
+      "detail": "Lineage revoked via SUBTREE on '/task-k8s-s2a-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-primary' (v1)",
+      "decision": "DENY",
+      "pruned_revoked_paths": []
+    },
+    "recorded_at": 1795198964.9708862
+  },
+  "final_answer": "Here is the confirmation for the completed flight booking, hotel reservation, and both escrow settlements in the Verified MCP JSON:\n\n- **Flight Booking**: \n  - Flight No: AF-065\n  - Booking Ref: FLT-F7D8A75C\n  - Charged USD: 490.0\n  - Escrow Target: airline-escrow\n  - Settled USD: 490.0\n  - Reference ID: FLT-F7D8A75C\n\n- **Hotel Reservation**: \n  - Hotel ID: HTL-PAR-07\n  - Hotel Name: Vendome Boutique Hotel\n  - Reservation Ref: HTL-F3B4FAFE\n  - Nights: 3\n  - Charged USD: 320.0\n  - Escrow Target: hotel-escrow\n  - Settled USD: 320.0\n  - Reference ID: HTL-F3B4FAFE\n\nBoth escrow settlements have been successfully processed as per the OrchestratorAlpha's lineage paths and decisions."
+}

@@ -1,0 +1,4 @@
+NAME                                        READY   STATUS    RESTARTS      AGE     IP            NODE                               NOMINATED NODE   READINESS GATES
+weather-coordinator-5c695b6f76-9jxp2        2/2     Running   4 (91m ago)   3d19h   10.244.0.34   agent-identity-lab-control-plane   <none>           <none>
+weather-service-advanced-68b94b6749-l4jqz   2/2     Running   4 (91m ago)   3d20h   10.244.0.35   agent-identity-lab-control-plane   <none>           <none>
+weather-tool-advanced-6c6d4fc977-p9z8d      2/2     Running   4 (91m ago)   3d20h   10.244.0.33   agent-identity-lab-control-plane   <none>           <none>

@@ -1,0 +1,82 @@
+{
+  "scenario": "4_online_revocation_fagin_dag_degradation_concurrency_and_loopback_isolation",
+  "status": "PASS",
+  "cross_pod_loopback_isolation": {
+    "orchestrator-alpha": {
+      "pod_ip": "10.244.0.146",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "settlement-converger": {
+      "pod_ip": "10.244.0.141",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "travel-ops-mcp": {
+      "pod_ip": "10.244.0.144",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "payment-vault-mcp": {
+      "pod_ip": "10.244.0.145",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "inbound_8080_forged_loopback_header_status": 401
+  },
+  "alice_revoked_branch": "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/FlightB1",
+  "alice_revocation_version": 4,
+  "alice_surviving_hotel_settlement": {
+    "settlement_id": "STL-DEAE80ED",
+    "target": "hotel-escrow",
+    "settled_usd": 360.0,
+    "reference_id": "HTL-82B5DBDE",
+    "city": "Tokyo",
+    "task_id": "task-k8s-s4-alice-20261118T142439Z",
+    "sub": "user:alice@org-alpha.io",
+    "lineage_path": "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+    "lineage_decision": "ALLOW_DEGRADED_DAG"
+  },
+  "alice_degraded_llm_answer": "Confirmed MCP JSON:\n- Flight Booking is null.\n- Non-null details:\n  - Flight No: Omitted (null)\n  - Booking Ref: Omitted (null)\n  - Hotel ID: HTL-TYO-09\n  - Hotel Name: Shinjuku Grand Palace\n  - Reservation Ref: HTL-82B5DBDE\n  - Settlement ID: STL-DEAE80ED\n  - Settled USD: 360.0",
+  "alice_revoked_airline_rejection": {
+    "error": "REVOKED_DEPENDENCY_INSUFFICIENT_SURVIVING_PATHS",
+    "detail": "Surviving DAG branches insufficient: {'/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC': \"parameter 'amount'=580.0 violates [0, 360.0]\"}",
+    "decision": "DENY",
+    "pruned_revoked_paths": [
+      "/task-k8s-s4-alice-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC"
+    ]
+  },
+  "carol_concurrent_london_settlements": {
+    "airline-escrow": {
+      "settlement_id": "STL-160B62D9",
+      "target": "airline-escrow",
+      "settled_usd": 510.0,
+      "reference_id": "FLT-0EAC00F4",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-20261118T142439Z",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "lineage_decision": "ALLOW"
+    },
+    "hotel-escrow": {
+      "settlement_id": "STL-D7E568D2",
+      "target": "hotel-escrow",
+      "settled_usd": 340.0,
+      "reference_id": "HTL-523EA620",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-20261118T142439Z",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s4-carol-20261118T142439Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "lineage_decision": "ALLOW"
+    }
+  },
+  "carol_final_answer": "For booking with reference \"FLT-0EAC00F4\", flight number \"BA-284\", and settled USD amount $510.0, only the hotel reservation with reference \"HTL-523EA620\" and settled USD amount $340.0 was executed in completed_settlements."
+}

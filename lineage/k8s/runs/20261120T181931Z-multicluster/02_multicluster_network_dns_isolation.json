@@ -1,0 +1,49 @@
+{
+  "check": "multicluster_physical_l3_dns_and_boundary_isolation",
+  "status": "PASS",
+  "private_cluster_local_dns_isolation": {
+    "flight-specialist.lineage-beta.svc.cluster.local": {
+      "nxdomain_isolated": true,
+      "detail": "gaierror: [Errno -2] Name or service not known"
+    },
+    "payment-vault-mcp.lineage-pay.svc.cluster.local": {
+      "nxdomain_isolated": true,
+      "detail": "gaierror: [Errno -2] Name or service not known"
+    },
+    "audit-collector.lineage-ctrl.svc.cluster.local": {
+      "nxdomain_isolated": true,
+      "detail": "gaierror: [Errno -2] Name or service not known"
+    }
+  },
+  "disjoint_pod_cidr_l3_isolation": {
+    "lct_org_beta_flight_pod": {
+      "foreign_pod_ip": "10.242.0.10",
+      "port_8443_unroutable": true,
+      "detail": "TimeoutError: timed out"
+    },
+    "lct_org_pay_vault_pod": {
+      "foreign_pod_ip": "10.243.0.12",
+      "port_8443_unroutable": true,
+      "detail": "TimeoutError: timed out"
+    }
+  },
+  "public_fqdn_agent_cards": {
+    "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary": "https://hotel-specialist-primary.org-beta.io:31442",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist": "https://flight-specialist.org-beta.io:31441",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger": "https://settlement-converger.org-payment.io:32441",
+    "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha": "https://orchestrator-alpha.org-alpha.io:30441",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup": "https://hotel-specialist-backup.org-beta.io:31443"
+  },
+  "external_ca_readonly_enforcement": {
+    "beta-ca-fed": {
+      "status": 403,
+      "error": "federation_endpoint_read_only"
+    },
+    "payment-ca-fed": {
+      "status": 403,
+      "error": "federation_endpoint_read_only"
+    }
+  },
+  "external_directory_register_status": 403,
+  "external_revocation_workload_status": 403
+}

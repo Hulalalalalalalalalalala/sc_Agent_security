@@ -1,0 +1,205 @@
+[10:53:49] === Step 0: Pre-flight Checks (Baseline Cluster 'kind-agent-identity-lab', Local Kind Node Image, Host Ollama) ===
+[10:53:49] Baseline 'team1' before multi-cluster run:
+NAME                                        READY   STATUS    RESTARTS       AGE     IP            NODE                               NOMINATED NODE   READINESS GATES
+weather-coordinator-5c695b6f76-9jxp2        2/2     Running   4 (152m ago)   3d20h   10.244.0.34   agent-identity-lab-control-plane   <none>           <none>
+weather-service-advanced-68b94b6749-l4jqz   2/2     Running   4 (152m ago)   3d21h   10.244.0.35   agent-identity-lab-control-plane   <none>           <none>
+weather-tool-advanced-6c6d4fc977-p9z8d      2/2     Running   4 (152m ago)   3d21h   10.244.0.33   agent-identity-lab-control-plane   <none>           <none>
+[10:53:49] Verified host Ollama serving qwen2.5:3b on :11434
+[10:53:49] === Step 1: Provision 4 Physically Independent Kind Clusters Offline (Zero Network Pulls) ===
+[10:53:49] Removing previous 'lct-org-alpha' cluster for clean genesis...
+[10:53:50] Creating Kind cluster 'lct-org-alpha' (/Users/hulalala/Desktop/A/lineage/k8s/multicluster/kind-org-alpha.yaml)...
+[10:54:19] Removing previous 'lct-org-beta' cluster for clean genesis...
+[10:54:21] Creating Kind cluster 'lct-org-beta' (/Users/hulalala/Desktop/A/lineage/k8s/multicluster/kind-org-beta.yaml)...
+[10:54:49] Removing previous 'lct-org-pay' cluster for clean genesis...
+[10:54:50] Creating Kind cluster 'lct-org-pay' (/Users/hulalala/Desktop/A/lineage/k8s/multicluster/kind-org-pay.yaml)...
+[10:55:18] Removing previous 'lct-audit' cluster for clean genesis...
+[10:55:19] Creating Kind cluster 'lct-audit' (/Users/hulalala/Desktop/A/lineage/k8s/multicluster/kind-audit.yaml)...
+node/lct-org-alpha-control-plane condition met
+node/lct-org-beta-control-plane condition met
+node/lct-org-pay-control-plane condition met
+node/lct-audit-control-plane condition met
+[10:55:46] All 4 independent Kind clusters Ready (active kubectl context preserved as 'kind-agent-identity-lab')
+[10:55:46] Docker 'kind' bridge node IPs: alpha=172.19.0.3, beta=172.19.0.4, pay=172.19.0.5, audit=172.19.0.6
+[10:55:46] === Step 2: Inject Public Organization FQDN Zones into CoreDNS Across All 4 Clusters ===
+[10:55:58] CoreDNS public zones (*.org-alpha.io, *.org-beta.io, *.org-payment.io, audit-collector.org-audit.io) active across all 4 clusters
+[10:55:58] === Step 3: Build Zero-Pull Image (lineage-lct:m4) & Load into All 4 Kind Clusters ===
+[10:56:18] Image lineage-lct:m4 loaded into all 4 clusters
+[10:56:18] === Step 4: Deploy Physically Isolated Per-Cluster Control & Data Planes ===
+namespace/lineage-alpha created
+serviceaccount/alpha-ca created
+deployment.apps/alpha-ca created
+service/alpha-ca created
+service/alpha-ca-federation created
+serviceaccount/alpha-revocation created
+deployment.apps/alpha-revocation created
+service/alpha-revocation created
+service/alpha-revocation-federation created
+serviceaccount/alpha-directory created
+deployment.apps/alpha-directory created
+service/alpha-directory created
+service/alpha-directory-federation created
+serviceaccount/orchestrator-alpha created
+deployment.apps/orchestrator-alpha created
+service/orchestrator-alpha created
+serviceaccount/e2e-user-gateway created
+deployment.apps/e2e-user-gateway created
+service/e2e-user-gateway-sync created
+namespace/lineage-beta created
+serviceaccount/beta-ca created
+deployment.apps/beta-ca created
+service/beta-ca created
+service/beta-ca-federation created
+serviceaccount/beta-revocation created
+deployment.apps/beta-revocation created
+service/beta-revocation created
+service/beta-revocation-federation created
+serviceaccount/beta-directory created
+deployment.apps/beta-directory created
+service/beta-directory created
+service/beta-directory-federation created
+serviceaccount/flight-specialist created
+deployment.apps/flight-specialist created
+service/flight-specialist created
+serviceaccount/hotel-specialist-primary created
+deployment.apps/hotel-specialist-primary created
+service/hotel-specialist-primary created
+serviceaccount/hotel-specialist-backup created
+deployment.apps/hotel-specialist-backup created
+service/hotel-specialist-backup created
+namespace/lineage-pay created
+serviceaccount/payment-ca created
+deployment.apps/payment-ca created
+service/payment-ca created
+service/payment-ca-federation created
+serviceaccount/payment-revocation created
+deployment.apps/payment-revocation created
+service/payment-revocation created
+service/payment-revocation-federation created
+serviceaccount/payment-directory created
+deployment.apps/payment-directory created
+service/payment-directory created
+service/payment-directory-federation created
+serviceaccount/settlement-converger created
+deployment.apps/settlement-converger created
+service/settlement-converger created
+serviceaccount/travel-ops-mcp created
+deployment.apps/travel-ops-mcp created
+service/travel-ops-mcp created
+serviceaccount/payment-vault-mcp created
+deployment.apps/payment-vault-mcp created
+service/payment-vault-mcp created
+namespace/lineage-ctrl created
+serviceaccount/audit-collector created
+deployment.apps/audit-collector created
+service/audit-collector created
+[10:56:20] Waiting for 3 Autonomous Domain CAs & Keyless Audit Collector...
+[10:56:23] Waiting for Cross-Cluster mTLS 1.3 Federation Directories & Revocation Authorities...
+[10:56:27] Waiting for All 2/2 Dual-Container mTLS 1.3 Agent & MCP Pods Across Clusters 1, 2, 3...
+=== Cluster 1: kind-lct-org-alpha (Node IP 172.19.0.3 | Pod CIDR 10.241.0.0/16 | Svc CIDR 10.97.0.0/16) ===
+NAME                                      READY   STATUS    RESTARTS   AGE   IP            NODE                          NOMINATED NODE   READINESS GATES
+pod/alpha-ca-6459d7c78f-ptg52             1/1     Running   0          12s   10.241.0.7    lct-org-alpha-control-plane   <none>           <none>
+pod/alpha-directory-7dd5988ccd-5tdn2      1/1     Running   0          12s   10.241.0.9    lct-org-alpha-control-plane   <none>           <none>
+pod/alpha-revocation-857fbb7bc9-dm94b     1/1     Running   0          12s   10.241.0.8    lct-org-alpha-control-plane   <none>           <none>
+pod/e2e-user-gateway-7995f9655f-d5rq4     1/1     Running   0          11s   10.241.0.11   lct-org-alpha-control-plane   <none>           <none>
+pod/orchestrator-alpha-65c595b895-99n4x   2/2     Running   0          12s   10.241.0.10   lct-org-alpha-control-plane   <none>           <none>
+
+NAME                                  TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)           AGE   SELECTOR
+service/alpha-ca                      ClusterIP   10.97.223.14   <none>        8090/TCP          12s   app=alpha-ca
+service/alpha-ca-federation           NodePort    10.97.186.29   <none>        8094:30094/TCP    12s   app=alpha-ca
+service/alpha-directory               ClusterIP   10.97.73.167   <none>        8091/TCP          12s   app=alpha-directory
+service/alpha-directory-federation    NodePort    10.97.42.136   <none>        8491:30491/TCP    12s   app=alpha-directory
+service/alpha-revocation              ClusterIP   10.97.131.32   <none>        8092/TCP          12s   app=alpha-revocation
+service/alpha-revocation-federation   NodePort    10.97.236.6    <none>        8492:30492/TCP    12s   app=alpha-revocation
+service/e2e-user-gateway-sync         NodePort    10.97.66.186   <none>        19090:30990/TCP   11s   app=e2e-user-gateway
+service/orchestrator-alpha            NodePort    10.97.173.23   <none>        8443:30441/TCP    12s   app=orchestrator-alpha
+
+=== Cluster 2: kind-lct-org-beta (Node IP 172.19.0.4 | Pod CIDR 10.242.0.0/16 | Svc CIDR 10.98.0.0/16) ===
+NAME                                            READY   STATUS    RESTARTS   AGE   IP            NODE                         NOMINATED NODE   READINESS GATES
+pod/beta-ca-7d46cc475d-thfh9                    1/1     Running   0          11s   10.242.0.7    lct-org-beta-control-plane   <none>           <none>
+pod/beta-directory-95fffcc76-rztvn              1/1     Running   0          11s   10.242.0.9    lct-org-beta-control-plane   <none>           <none>
+pod/beta-revocation-54f88cd6d9-lt994            1/1     Running   0          11s   10.242.0.8    lct-org-beta-control-plane   <none>           <none>
+pod/flight-specialist-66665d6565-fmdrj          2/2     Running   0          11s   10.242.0.10   lct-org-beta-control-plane   <none>           <none>
+pod/hotel-specialist-backup-5797797b4f-tp7dv    2/2     Running   0          11s   10.242.0.12   lct-org-beta-control-plane   <none>           <none>
+pod/hotel-specialist-primary-7d74548855-rq8ts   2/2     Running   0          11s   10.242.0.11   lct-org-beta-control-plane   <none>           <none>
+
+NAME                                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE   SELECTOR
+service/beta-ca                      ClusterIP   10.98.181.10    <none>        8090/TCP         11s   app=beta-ca
+service/beta-ca-federation           NodePort    10.98.6.250     <none>        8094:31094/TCP   11s   app=beta-ca
+service/beta-directory               ClusterIP   10.98.176.102   <none>        8091/TCP         11s   app=beta-directory
+service/beta-directory-federation    NodePort    10.98.78.245    <none>        8491:31491/TCP   11s   app=beta-directory
+service/beta-revocation              ClusterIP   10.98.64.255    <none>        8092/TCP         11s   app=beta-revocation
+service/beta-revocation-federation   NodePort    10.98.137.207   <none>        8492:31492/TCP   11s   app=beta-revocation
+service/flight-specialist            NodePort    10.98.99.233    <none>        8443:31441/TCP   11s   app=flight-specialist
+service/hotel-specialist-backup      NodePort    10.98.180.255   <none>        8443:31443/TCP   11s   app=hotel-specialist-backup
+service/hotel-specialist-primary     NodePort    10.98.114.38    <none>        8443:31442/TCP   11s   app=hotel-specialist-primary
+
+=== Cluster 3: kind-lct-org-pay (Node IP 172.19.0.5 | Pod CIDR 10.243.0.0/16 | Svc CIDR 10.99.0.0/16) ===
+NAME                                        READY   STATUS    RESTARTS   AGE   IP            NODE                        NOMINATED NODE   READINESS GATES
+pod/payment-ca-fdbbd6454-gxfq9              1/1     Running   0          11s   10.243.0.7    lct-org-pay-control-plane   <none>           <none>
+pod/payment-directory-68646fbbc4-jz97m      1/1     Running   0          11s   10.243.0.9    lct-org-pay-control-plane   <none>           <none>
+pod/payment-revocation-7bbb58bd8f-r6kfw     1/1     Running   0          11s   10.243.0.8    lct-org-pay-control-plane   <none>           <none>
+pod/payment-vault-mcp-68c8c86f86-g4mm9      2/2     Running   0          11s   10.243.0.12   lct-org-pay-control-plane   <none>           <none>
+pod/settlement-converger-6b86c444d8-gmqht   2/2     Running   0          11s   10.243.0.10   lct-org-pay-control-plane   <none>           <none>
+pod/travel-ops-mcp-7944cc6f5c-ldqqc         2/2     Running   0          11s   10.243.0.11   lct-org-pay-control-plane   <none>           <none>
+
+NAME                                    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE   SELECTOR
+service/payment-ca                      ClusterIP   10.99.169.143   <none>        8090/TCP         11s   app=payment-ca
+service/payment-ca-federation           NodePort    10.99.78.248    <none>        8094:32094/TCP   11s   app=payment-ca
+service/payment-directory               ClusterIP   10.99.52.178    <none>        8091/TCP         11s   app=payment-directory
+service/payment-directory-federation    NodePort    10.99.30.124    <none>        8491:32491/TCP   11s   app=payment-directory
+service/payment-revocation              ClusterIP   10.99.26.83     <none>        8092/TCP         11s   app=payment-revocation
+service/payment-revocation-federation   NodePort    10.99.175.238   <none>        8492:32492/TCP   11s   app=payment-revocation
+service/payment-vault-mcp               NodePort    10.99.110.200   <none>        8443:32443/TCP   11s   app=payment-vault-mcp
+service/settlement-converger            NodePort    10.99.198.142   <none>        8443:32441/TCP   11s   app=settlement-converger
+service/travel-ops-mcp                  NodePort    10.99.202.184   <none>        8443:32442/TCP   11s   app=travel-ops-mcp
+
+=== Cluster 4: kind-lct-audit (Node IP 172.19.0.6 | Pod CIDR 10.244.0.0/16 | Svc CIDR 10.100.0.0/16 | Keyless!) ===
+NAME                                   READY   STATUS    RESTARTS   AGE   IP           NODE                      NOMINATED NODE   READINESS GATES
+pod/audit-collector-544b88899c-r4j5h   1/1     Running   0          10s   10.244.0.7   lct-audit-control-plane   <none>           <none>
+
+NAME                      TYPE       CLUSTER-IP       EXTERNAL-IP   PORT(S)          AGE   SELECTOR
+service/audit-collector   NodePort   10.100.232.170   <none>        8093:30893/TCP   10s   app=audit-collector
+[10:56:32] === Step 5: Multi-Cluster Physical L3, DNS, OIDC JWKS & Container Isolation Proofs ===
+[10:56:36] Multi-cluster OIDC, L3 CIDR, DNS & boundary hardening proofs PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/02_multicluster_network_dns_isolation.json
+[10:56:36] === Scenario 1: Cross-4-Cluster Official A2A v1.0 SendStreamingMessage (SSE) + mTLS 1.3 + qwen2.5:3b Grounding ===
+[10:56:42] Scenario 1 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/scenario1_normal_dag.json
+[10:56:42] === Scenario 2A: Cross-Cluster A2A v1.0 Atomic Prune-and-Graft (Cluster Beta Slow Primary -> Federated 403 at Cluster Pay) ===
+[10:56:55] Scenario 2A PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/scenario2a_zombie_prune_graft.json
+[10:56:55] === Scenario 2B: Cluster Beta Pod Scale-to-Zero Fault Injection (kind-lct-org-beta replicas=0 -> Backup Epoch+1) ===
+deployment.apps/hotel-specialist-primary scaled
+pod/hotel-specialist-primary-7d74548855-rq8ts condition met
+[10:57:01] Scenario 2B PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/scenario2b_pod_down_prune_graft.json
+[10:57:01] Restoring hotel-specialist-primary in kind-lct-org-beta (replicas=1, 2/2 Ready) for Scenario 3...
+deployment.apps/hotel-specialist-primary scaled
+Waiting for deployment "hotel-specialist-primary" rollout to finish: 0 of 1 updated replicas are available...
+deployment "hotel-specialist-primary" successfully rolled out
+[10:57:05] === Scenario 3A: Forged Skip-Level Blocked by Cross-Cluster mTLS 1.3 /healthz Probe to Cluster Beta ===
+[10:57:06] Scenario 3A PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/scenario3a_false_skip_blocked.json
+[10:57:06] === Scenario 3B: Mid-Flight Cluster Beta Pod Kill -> Cluster Pay Leaf Skip-Level Return Directly to Cluster Alpha ===
+[10:57:07] Mid-flight trigger hit via e2e-user-gateway.org-alpha.io:30990: killing hotel-specialist-primary in kind-lct-org-beta...
+deployment.apps/hotel-specialist-primary scaled
+Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
+pod "hotel-specialist-primary-7d74548855-hs7cv" force deleted from lineage-beta namespace
+[10:57:09] Scenario 3B PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/scenario3b_skip_level_return.json
+[10:57:09] Restoring hotel-specialist-primary in kind-lct-org-beta (replicas=1, 2/2 Ready) for Scenario 4...
+deployment.apps/hotel-specialist-primary scaled
+Waiting for deployment "hotel-specialist-primary" rollout to finish: 0 of 1 updated replicas are available...
+deployment "hotel-specialist-primary" successfully rolled out
+[10:57:13] === Scenario 4: Cross-Cluster A2A v1.0 CancelTask Cascading Revocation + Fagin DAG Degradation + Concurrency + Loopback Guard ===
+[10:57:24] Scenario 4 PASS (verified internal trie replication inside both kind-lct-org-beta & kind-lct-org-pay) -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/scenario4_fagin_degradation_and_isolation.json
+[10:57:24] === Scenario 6: Whole-Cluster Network Partition (docker network disconnect lct-org-beta) + Fail-Closed 503 + Autonomous Recovery ===
+[10:57:27] Severing Organization Beta cluster ('lct-org-beta-control-plane') from Docker 'kind' backbone...
+[10:57:30] Verified surviving clusters 200 OK & HIGH_RISK settlement traversing Beta failed closed (503 REVOCATION_ANCHOR_UNAVAILABLE)!
+[10:57:30] Reconnecting 'lct-org-beta-control-plane' to Docker 'kind' backbone...
+[10:57:36] Scenario 6 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/scenario6_whole_cluster_partition_and_recovery.json
+[10:57:36] === Scenario 5: Cluster 4 ('kind-lct-audit') Keyless Audit Export & 100% CausalChainAuditor Reconstruction Across All 6 Scenarios ===
+[10:57:37] Scenario 5 PASS -> /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster/scenario5_causal_audit_report.json
+[10:57:37] Baseline 'team1' after 4-cluster run (100% untouched Running 2/2, active context='kind-agent-identity-lab'):
+NAME                                        READY   STATUS    RESTARTS       AGE     IP            NODE                               NOMINATED NODE   READINESS GATES
+weather-coordinator-5c695b6f76-9jxp2        2/2     Running   4 (156m ago)   3d21h   10.244.0.34   agent-identity-lab-control-plane   <none>           <none>
+weather-service-advanced-68b94b6749-l4jqz   2/2     Running   4 (156m ago)   3d21h   10.244.0.35   agent-identity-lab-control-plane   <none>           <none>
+weather-tool-advanced-6c6d4fc977-p9z8d      2/2     Running   4 (156m ago)   3d21h   10.244.0.33   agent-identity-lab-control-plane   <none>           <none>
+[10:57:37] ============================================================================
+[10:57:37]  ALL 6 MILESTONE-4 4-CLUSTER PHYSICAL FEDERATION + OLLAMA SCENARIOS PASSED!
+[10:57:37]  Evidence directory: /Users/hulalala/Desktop/A/lineage/k8s/runs/20261119T105349Z-multicluster
+[10:57:37] ============================================================================

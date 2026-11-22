@@ -1,0 +1,12 @@
+apiVersion: agent.rossoctl.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: weather-coordinator
+  namespace: team1
+spec:
+  type: agent
+  mtlsMode: permissive
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: weather-coordinator

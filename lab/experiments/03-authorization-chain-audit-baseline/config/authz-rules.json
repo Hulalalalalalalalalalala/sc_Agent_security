@@ -1,0 +1,98 @@
+{
+  "system": "resident-two-agent",
+  "excludes": ["dpop-guard", "experiment-02"],
+  "association_rules": {
+    "join_on_timestamp": false,
+    "lab_corr_is_identity": false,
+    "client_id_is_network_sender": false,
+    "exchange_success_is_delegation_history": false,
+    "shared_identifier_fields": ["message_id", "upstream_task", "task_id"],
+    "lab_corr_origin": "既有实验补丁，写在协调器、天气 Agent 和工具进程里，不是 AuthBridge 的原生日志"
+  },
+  "identities": {
+    "users": {
+      "87d55f09-1648-49af-ab6c-103acd884ae4": "lab-ny",
+      "816acfdc-0eb3-4828-8ef0-6a7bc72a9d1e": "lab-lon"
+    },
+    "clients": {
+      "weather-lab-user": "普通用户公开客户端",
+      "spiffe://localtest.me/ns/team1/sa/weather-coordinator": "协调 Agent A",
+      "spiffe://localtest.me/ns/team1/sa/weather-service-advanced": "天气 Agent B",
+      "spiffe://localtest.me/ns/team1/sa/weather-tool-advanced": "天气工具"
+    }
+  },
+  "rules": [
+    {
+      "id": "user-to-coordinator",
+      "configured": true,
+      "subject": "weather-lab-user 的访问令牌",
+      "resource": "协调 Agent A",
+      "operation": "A2A SendMessage",
+      "condition": "签名、过期和 audience 包含协调器 SPIFFE ID",
+      "enforced_at": "A 的 AuthBridge jwt-validation"
+    },
+    {
+      "id": "user-to-agent-b",
+      "configured": true,
+      "subject": "weather-lab-user 的访问令牌",
+      "resource": "天气 Agent B",
+      "operation": "A2A SendMessage",
+      "condition": "签名、过期和 audience 包含天气 Agent SPIFFE ID。不要求请求来自 A",
+      "enforced_at": "B 的 AuthBridge jwt-validation"
+    },
+    {
+      "id": "caller-to-tool",
+      "configured": true,
+      "subject": "任意持有工具 audience 的访问令牌",
+      "resource": "天气工具 MCP",
+      "operation": "MCP initialize、tools/list、tools/call",
+      "condition": "签名、过期和 audience 包含工具 SPIFFE ID。不区分 MCP 方法，不核对网络发送方",
+      "enforced_at": "工具的 AuthBridge jwt-validation"
+    },
+    {
+      "id": "user-exchange-forbidden",
+      "configured": true,
+      "subject": "weather-lab-user",
+      "resource": "Keycloak 令牌端点",
+      "operation": "token exchange",
+      "condition": "该公开客户端没有交换权限",
+      "enforced_at": "Keycloak"
+    },
+    {
+      "id": "agent-exchange",
+      "configured": true,
+      "subject": "A 或 B 的 JWT-SVID 客户端",
+      "resource": "Keycloak 令牌端点",
+      "operation": "token exchange",
+      "condition": "JWT-SVID 客户端认证，请求的 audience 对应已配置的目标。交换结果没有 act 委托记录",
+      "enforced_at": "Keycloak 签发；AuthBridge 按路由发起"
+    },
+    {
+      "id": "mcp-method-authz",
+      "configured": false,
+      "subject": "工具调用方",
+      "resource": "天气工具",
+      "operation": "按 MCP 方法授权",
+      "condition": "当前没有这条规则",
+      "enforced_at": "未实现"
+    },
+    {
+      "id": "sender-binding",
+      "configured": false,
+      "subject": "令牌持有方",
+      "resource": "常驻工具入口",
+      "operation": "证明网络发送方持有绑定密钥",
+      "condition": "常驻 AuthBridge 不校验 DPoP 或证书绑定。实验二的入口不属于本基线",
+      "enforced_at": "未实现"
+    },
+    {
+      "id": "must-enter-through-a",
+      "configured": false,
+      "subject": "用户",
+      "resource": "天气 Agent B",
+      "operation": "只允许经由 A 调用",
+      "condition": "当前允许用户令牌直接调用 B",
+      "enforced_at": "未实现"
+    }
+  ]
+}

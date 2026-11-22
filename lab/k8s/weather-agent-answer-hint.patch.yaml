@@ -1,0 +1,13 @@
+# Live-only answer hint. The forecast JSON has no unit field; the tool requests
+# Fahrenheit. This does not change authentication, the model endpoint, or the tool.
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          command:
+            - sh
+            - -c
+            - |
+              sed -i 's#You are a helpful assistant tasked with providing weather information. You must use the provided tools to complete your task.#You are a helpful assistant tasked with providing weather information. You must use the provided tools to complete your task. When the tool returns JSON, quote time, temperature, windspeed, winddirection, is_day, and weathercode exactly. Temperature is Fahrenheit and wind speed is kilometers per hour. Do not convert units. Do not call the data simulated or assumed.#' /app/src/weather_service/graph.py
+              exec uv run --no-sync server

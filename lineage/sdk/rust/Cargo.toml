@@ -1,0 +1,13 @@
+[package]
+name = "lct-rust-sidecar-sdk"
+version = "1.0.0"
+edition = "2021"
+description = "Zero-external-crate Rust Sidecar Adapter for Lineage Capability Tree (LCT) 2/2 Pods"
+
+[lib]
+name = "lct_sdk"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust-lct-agent"
+path = "src/main.rs"

@@ -1,0 +1,39 @@
+#!/bin/bash
+# Host-side workaround: GitHub release downloads time out or reset from this
+# network. When the official installer asks Helm to fetch the pinned SPIRE
+# charts, use the official release tarballs already saved under lab/charts.
+# Every other Helm invocation is passed through unchanged.
+set -euo pipefail
+REAL="/Users/hulalala/Desktop/A/.tools/bin/helm"
+if [[ "${1:-}" == "upgrade" && "${2:-}" == "--install" ]]; then
+  name="$3"
+  chart="$4"
+  local_chart=""
+  case "$chart" in
+    spire-crds) local_chart="/Users/hulalala/Desktop/A/lab/charts/spire-crds-0.5.0.tgz" ;;
+    spire) local_chart="/Users/hulalala/Desktop/A/lab/charts/spire-0.27.0.tgz" ;;
+  esac
+  if [[ -n "$local_chart" && -f "$local_chart" ]]; then
+    shift 4
+    args=()
+    skip_next=0
+    for arg in "$@"; do
+      if [[ "$skip_next" -eq 1 ]]; then
+        skip_next=0
+        continue
+      fi
+      case "$arg" in
+        --repo|--version)
+          skip_next=1
+          ;;
+        --repo=*|--version=*)
+          ;;
+        *)
+          args+=("$arg")
+          ;;
+      esac
+    done
+    exec "$REAL" upgrade --install "$name" "$local_chart" "${args[@]}"
+  fi
+fi
+exec "$REAL" "$@"

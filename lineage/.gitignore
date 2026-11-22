@@ -1,0 +1,16 @@
+# Lineage Capability Tree (LCT) package-level ignores
+.tools/
+**/venv/
+**/.venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+**/node_modules/
+**/target/
+sdk/go/bin/
+*.class
+*.pem
+*.key
+.DS_Store

@@ -1,0 +1,9 @@
+{
+  "scenario": "2b_k8s_replicas_zero_crash_prune_and_graft",
+  "status": "PASS",
+  "task_id": "task-k8s-s2b-20261118T142439Z",
+  "grafted_epoch": 1,
+  "grafted_lineage_path": "/task-k8s-s2b-20261118T142439Z/OrchestratorAlpha/hotel-specialist-backup-e1",
+  "failover_fault_type": "CRASH",
+  "final_answer": "For booking with traveler alice@org-alpha.io in Singapore, flight booking with flight_no SQ-031 and charged USD 620.0 was null, only hotel reservation with hotel_id HTL-SIN-02 and charged USD 380.0 was executed and settled. Non-null details: flight_no: SQ-031, booking_ref: FLT-45C4A574, hotel_id: HTL-SIN-02, hotel_name: Marina Bay Crest, reservation_ref: HTL-276E9FF2, settled_usd: 380.0, settlement_id: STL-8C40543D."
+}

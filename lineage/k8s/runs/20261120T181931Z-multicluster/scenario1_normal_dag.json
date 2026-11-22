@@ -1,0 +1,230 @@
+{
+  "scenario": "1_a2a_v1_sse_autonomous_3domain_mtls13_and_llm_mcp_grounding",
+  "status": "PASS",
+  "task_id": "task-k8s-s1-20261120T181931Z-multicluster",
+  "autonomous_ca_cross_namespace_rejections": {
+    "beta-ca": {
+      "http_status": 403,
+      "error": "federation_endpoint_read_only",
+      "detail": "Route POST /v1/ca/issue-workload is forbidden on external read-only federation CA port"
+    },
+    "payment-ca": {
+      "http_status": 403,
+      "error": "federation_endpoint_read_only",
+      "detail": "Route POST /v1/ca/issue-workload is forbidden on external read-only federation CA port"
+    }
+  },
+  "mtls_1_3_security_proofs": {
+    "negotiated_protocol": "TLSv1.3",
+    "negotiated_cipher": [
+      "TLS_AES_256_GCM_SHA384",
+      "TLSv1.3",
+      256
+    ],
+    "no_client_cert_rejected": true,
+    "no_client_cert_error": "ReadError: [SSL: TLSV13_ALERT_CERTIFICATE_REQUIRED] tlsv13 alert certificate required (_ssl.c:2580)",
+    "rogue_unfederated_ca_rejected": true,
+    "rogue_unfederated_ca_error": "ReadError: [SSL: TLSV1_ALERT_UNKNOWN_CA] tlsv1 alert unknown ca (_ssl.c:2580)"
+  },
+  "a2a_v1_agent_card_discovery": {
+    "well_known_agent_card_url": "https://orchestrator-alpha.org-alpha.io:30441/.well-known/agent-card.json",
+    "protocol_version": "1.0",
+    "capabilities": {
+      "streaming": true,
+      "pushNotifications": false,
+      "stateTransitionHistory": true
+    },
+    "security_schemes": [
+      "lct_dpop"
+    ],
+    "skills": [
+      {
+        "id": "travel.orchestrate",
+        "name": "Travel Orchestrate",
+        "description": "A2A v1.0 capability skill 'travel.orchestrate'",
+        "tags": [
+          "travel",
+          "orchestrate"
+        ],
+        "inputModes": [
+          "text/plain",
+          "application/json"
+        ],
+        "outputModes": [
+          "text/plain",
+          "application/json"
+        ]
+      }
+    ]
+  },
+  "a2a_v1_sse_streaming": {
+    "content_type": "text/event-stream; charset=utf-8",
+    "sse_frame_count": 7,
+    "state_transitions_observed": [
+      "TASK_STATE_SUBMITTED",
+      "TASK_STATE_WORKING",
+      "TASK_STATE_COMPLETED"
+    ],
+    "artifact_update_count": 4,
+    "cross_tenant_get_task_blocked_http": 403,
+    "cross_tenant_get_task_rpc_code": -32003
+  },
+  "ollama_models_seen": [
+    "qwen2.5:3b"
+  ],
+  "federated_registered_agents": [
+    "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger"
+  ],
+  "orchestrator_plan": {
+    "city": "Tokyo",
+    "flight_budget_usd": 650,
+    "hotel_budget_usd": 420
+  },
+  "orchestrator_llm_trace": {
+    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+    "model": "qwen2.5:3b",
+    "completion_id": "chatcmpl-978",
+    "system_fingerprint": "fp_ollama",
+    "prompt_tokens": 95,
+    "completion_tokens": 35,
+    "total_tokens": 130,
+    "latency_ms": 2213.88,
+    "raw_content": "{\n  \"city\": \"Tokyo\",\n  \"flight_budget_usd\": 650,\n  \"hotel_budget_usd\": 420\n}"
+  },
+  "flight_llm_traces": [
+    {
+      "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+      "model": "qwen2.5:3b",
+      "completion_id": "chatcmpl-327",
+      "system_fingerprint": "fp_ollama",
+      "prompt_tokens": 168,
+      "completion_tokens": 21,
+      "total_tokens": 189,
+      "latency_ms": 850.31,
+      "finish_reason": "tool_calls",
+      "tool_call_id": "call_5jbgbem9",
+      "invoked_tool": "search_flight",
+      "invoked_arguments": {
+        "city": "Tokyo"
+      }
+    },
+    {
+      "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+      "model": "qwen2.5:3b",
+      "completion_id": "chatcmpl-569",
+      "system_fingerprint": "fp_ollama",
+      "prompt_tokens": 208,
+      "completion_tokens": 42,
+      "total_tokens": 250,
+      "latency_ms": 1091.93,
+      "finish_reason": "tool_calls",
+      "tool_call_id": "call_d1bxv258",
+      "invoked_tool": "book_flight",
+      "invoked_arguments": {
+        "amount": 580,
+        "city": "Tokyo",
+        "flight_no": "NH-108"
+      }
+    }
+  ],
+  "hotel_llm_traces": [
+    {
+      "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+      "model": "qwen2.5:3b",
+      "completion_id": "chatcmpl-736",
+      "system_fingerprint": "fp_ollama",
+      "prompt_tokens": 164,
+      "completion_tokens": 22,
+      "total_tokens": 186,
+      "latency_ms": 535.66,
+      "finish_reason": "tool_calls",
+      "tool_call_id": "call_b9bpee4m",
+      "invoked_tool": "search_hotel",
+      "invoked_arguments": {
+        "city": "Tokyo"
+      }
+    },
+    {
+      "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+      "model": "qwen2.5:3b",
+      "completion_id": "chatcmpl-446",
+      "system_fingerprint": "fp_ollama",
+      "prompt_tokens": 214,
+      "completion_tokens": 45,
+      "total_tokens": 259,
+      "latency_ms": 808.83,
+      "finish_reason": "tool_calls",
+      "tool_call_id": "call_43f3n71a",
+      "invoked_tool": "reserve_hotel",
+      "invoked_arguments": {
+        "city": "Tokyo",
+        "hotel_id": "HTL-TYO-09",
+        "amount": 360
+      }
+    }
+  ],
+  "converger_llm_trace": {
+    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+    "model": "qwen2.5:3b",
+    "completion_id": "chatcmpl-71",
+    "system_fingerprint": "fp_ollama",
+    "prompt_tokens": 869,
+    "completion_tokens": 97,
+    "total_tokens": 966,
+    "latency_ms": 1486.64
+  },
+  "flight_booking_mcp": {
+    "booking_ref": "FLT-C2C1F1B3",
+    "city": "Tokyo",
+    "flight_no": "NH-108",
+    "carrier": "ANA All Nippon",
+    "charged_usd": 580.0,
+    "escrow_target": "airline-escrow",
+    "task_id": "task-k8s-s1-20261120T181931Z-multicluster",
+    "sub": "user:alice@org-alpha.io",
+    "lineage_path": "/task-k8s-s1-20261120T181931Z-multicluster/OrchestratorAlpha/FlightB1",
+    "lineage_decision": "ALLOW"
+  },
+  "hotel_reservation_mcp": {
+    "reservation_ref": "HTL-B8329220",
+    "city": "Tokyo",
+    "hotel_id": "HTL-TYO-09",
+    "hotel_name": "Shinjuku Grand Palace",
+    "nights": 3,
+    "charged_usd": 360.0,
+    "escrow_target": "hotel-escrow",
+    "task_id": "task-k8s-s1-20261120T181931Z-multicluster",
+    "sub": "user:alice@org-alpha.io",
+    "lineage_path": "/task-k8s-s1-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-primary",
+    "lineage_decision": "ALLOW"
+  },
+  "completed_settlements_mcp": {
+    "airline-escrow": {
+      "settlement_id": "STL-45F480CF",
+      "target": "airline-escrow",
+      "settled_usd": 580.0,
+      "reference_id": "FLT-C2C1F1B3",
+      "city": "Tokyo",
+      "task_id": "task-k8s-s1-20261120T181931Z-multicluster",
+      "sub": "user:alice@org-alpha.io",
+      "lineage_path": "/task-k8s-s1-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s1-20261120T181931Z-multicluster/OrchestratorAlpha/FlightB1/SettlementC",
+      "lineage_decision": "ALLOW"
+    },
+    "hotel-escrow": {
+      "settlement_id": "STL-4ABB5C3E",
+      "target": "hotel-escrow",
+      "settled_usd": 360.0,
+      "reference_id": "HTL-B8329220",
+      "city": "Tokyo",
+      "task_id": "task-k8s-s1-20261120T181931Z-multicluster",
+      "sub": "user:alice@org-alpha.io",
+      "lineage_path": "/task-k8s-s1-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s1-20261120T181931Z-multicluster/OrchestratorAlpha/FlightB1/SettlementC",
+      "lineage_decision": "ALLOW"
+    }
+  },
+  "final_answer": "The flight booking for flight_no NH-108 with booking_ref FLT-C2C1F1B3 has been settled successfully with a total amount of 580.0 USD. The hotel reservation for hotel_id HTL-TYO-09 with reservation_ref HTL-B8329220 has also been settled with a total amount of 360.0 USD. Both settlements are now complete and reflected in the Verified MCP JSON."
+}

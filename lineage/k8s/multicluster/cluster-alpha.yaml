@@ -1,0 +1,554 @@
+# =============================================================================
+# Cluster 1 (`kind-lct-org-alpha`): Organization Alpha (`org-alpha.io`)
+# Pod CIDR: 10.241.0.0/16 | Service CIDR: 10.97.0.0/16
+#
+# Strict Boundary Hardening:
+#   - `alpha-ca`: `:8090` strictly ClusterIP; `:8094` (NodePort 30094) read-only bundle ONLY!
+#   - `alpha-directory`: `:8091` strictly ClusterIP; `:8491` (NodePort 30491) mTLS 1.3 federation ONLY!
+#   - `alpha-revocation`: `:8092` strictly ClusterIP; `:8492` (NodePort 30492) mTLS 1.3 federation ONLY!
+#   - `orchestrator-alpha`: `2/2` Pod, `:8443` (NodePort 30441) bidirectional mTLS 1.3 + A2A v1.0!
+#   - `e2e-user-gateway`: `1/1` Pod, `:19090` (NodePort 30990) S3B sync trigger.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lineage-alpha
+  labels:
+    lct.io/trust-domain: org-alpha.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alpha-ca
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alpha-ca
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alpha-ca
+  template:
+    metadata:
+      labels:
+        app: alpha-ca
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: alpha-ca
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: k8s-api-token
+                  expirationSeconds: 1800
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: alpha-ca
+          image: lineage-lct:m4
+          imagePullPolicy: Never
+          args: ["--role", "domain-ca"]
+          env:
+            - name: TRUST_DOMAIN
+              value: "org-alpha.io"
+            - name: ALLOWED_K8S_NAMESPACE
+              value: "lineage-alpha"
+            - name: AUTHORIZED_GATEWAY_SA
+              value: "e2e-user-gateway"
+            - name: CA_FEDERATION_PORT
+              value: "8094"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.org-audit.io:30893"
+          ports:
+            - containerPort: 8090
+              name: ca-internal
+            - containerPort: 8094
+              name: ca-fed-ro
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-ca
+  namespace: lineage-alpha
+spec:
+  type: ClusterIP
+  selector:
+    app: alpha-ca
+  ports:
+    - name: ca-internal
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-ca-federation
+  namespace: lineage-alpha
+spec:
+  type: NodePort
+  selector:
+    app: alpha-ca
+  ports:
+    - name: ca-fed-ro
+      port: 8094
+      targetPort: 8094
+      nodePort: 30094
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alpha-revocation
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alpha-revocation
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alpha-revocation
+  template:
+    metadata:
+      labels:
+        app: alpha-revocation
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: alpha-revocation
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: alpha-revocation
+          image: lineage-lct:m4
+          imagePullPolicy: Never
+          args: ["--role", "domain-revocation"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://alpha-ca.lineage-alpha.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-beta.io=http://beta-ca.org-beta.io:31094,org-payment.io=http://payment-ca.org-payment.io:32094"
+            - name: PEER_REVOCATION_URLS
+              value: "org-beta.io=https://beta-revocation.org-beta.io:31492,org-payment.io=https://payment-revocation.org-payment.io:32492"
+            - name: REVOCATION_FEDERATION_PORT
+              value: "8492"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8092
+              name: rev-internal
+            - containerPort: 8492
+              name: rev-fed-mtls
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8092
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-revocation
+  namespace: lineage-alpha
+spec:
+  type: ClusterIP
+  selector:
+    app: alpha-revocation
+  ports:
+    - name: rev-internal
+      port: 8092
+      targetPort: 8092
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-revocation-federation
+  namespace: lineage-alpha
+spec:
+  type: NodePort
+  selector:
+    app: alpha-revocation
+  ports:
+    - name: rev-fed-mtls
+      port: 8492
+      targetPort: 8492
+      nodePort: 30492
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alpha-directory
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alpha-directory
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alpha-directory
+  template:
+    metadata:
+      labels:
+        app: alpha-directory
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: alpha-directory
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: alpha-directory
+          image: lineage-lct:m4
+          imagePullPolicy: Never
+          args: ["--role", "domain-directory"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://alpha-ca.lineage-alpha.svc.cluster.local:8090"
+            - name: REVOCATION_URL
+              value: "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092"
+            - name: PEER_CA_URLS
+              value: "org-beta.io=http://beta-ca.org-beta.io:31094,org-payment.io=http://payment-ca.org-payment.io:32094"
+            - name: PEER_DIRECTORY_URLS
+              value: "org-beta.io=https://beta-directory.org-beta.io:31491,org-payment.io=https://payment-directory.org-payment.io:32491"
+            - name: DIRECTORY_FEDERATION_PORT
+              value: "8491"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8091
+              name: dir-internal
+            - containerPort: 8491
+              name: dir-fed-mtls
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-directory
+  namespace: lineage-alpha
+spec:
+  type: ClusterIP
+  selector:
+    app: alpha-directory
+  ports:
+    - name: dir-internal
+      port: 8091
+      targetPort: 8091
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-directory-federation
+  namespace: lineage-alpha
+spec:
+  type: NodePort
+  selector:
+    app: alpha-directory
+  ports:
+    - name: dir-fed-mtls
+      port: 8491
+      targetPort: 8491
+      nodePort: 30491
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator-alpha
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-alpha
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator-alpha
+  template:
+    metadata:
+      labels:
+        app: orchestrator-alpha
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: orchestrator-alpha
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-loopback
+          emptyDir:
+            medium: Memory
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: app
+          image: lineage-lct:m4
+          imagePullPolicy: Never
+          args: ["--role", "app-orchestrator"]
+          env:
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434/v1"
+            - name: LLM_MODEL
+              value: "qwen2.5:3b"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+              readOnly: true
+        - name: lct-sidecar
+          image: lineage-lct:m4
+          imagePullPolicy: Never
+          args: ["--role", "sidecar"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://alpha-ca.lineage-alpha.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-beta.io=http://beta-ca.org-beta.io:31094,org-payment.io=http://payment-ca.org-payment.io:32094"
+            - name: DIRECTORY_URL
+              value: "http://alpha-directory.lineage-alpha.svc.cluster.local:8091"
+            - name: REVOCATION_URL
+              value: "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.org-audit.io:30893"
+            - name: PUBLIC_ORIGIN
+              value: "https://orchestrator-alpha.org-alpha.io:30441"
+            - name: SIDECAR_INBOUND_PORT
+              value: "8443"
+            - name: AGENT_SKILLS
+              value: "travel.orchestrate"
+            - name: AGENT_PRIORITY
+              value: "10"
+            - name: AGENT_DISPLAY_NAME
+              value: "Orchestrator Alpha"
+            - name: LCT_ENABLE_FAULT_INJECTION
+              value: "true"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8443
+              name: lct-mtls
+          volumeMounts:
+            - name: lct-loopback
+              mountPath: /var/run/lct-loopback
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - /app/.venv/bin/python3
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-alpha
+  namespace: lineage-alpha
+spec:
+  type: NodePort
+  selector:
+    app: orchestrator-alpha
+  ports:
+    - name: lct-mtls
+      port: 8443
+      targetPort: 8443
+      nodePort: 30441
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: e2e-user-gateway
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-user-gateway
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: e2e-user-gateway
+  template:
+    metadata:
+      labels:
+        app: e2e-user-gateway
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: e2e-user-gateway
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: gateway
+          image: lineage-lct:m4
+          imagePullPolicy: Never
+          command: ["/bin/sh", "-c", "sleep 86400"]
+          env:
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434/v1"
+            - name: LLM_MODEL
+              value: "qwen2.5:3b"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+            - name: ALPHA_CA_URL
+              value: "http://alpha-ca.lineage-alpha.svc.cluster.local:8090"
+            - name: BETA_CA_URL
+              value: "http://beta-ca.org-beta.io:31094"
+            - name: PAYMENT_CA_URL
+              value: "http://payment-ca.org-payment.io:32094"
+            - name: ALPHA_DIR_URL
+              value: "http://alpha-directory.lineage-alpha.svc.cluster.local:8091"
+            - name: ALPHA_REV_URL
+              value: "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092"
+            - name: BETA_REV_FED_URL
+              value: "https://beta-revocation.org-beta.io:31492"
+            - name: PAYMENT_REV_FED_URL
+              value: "https://payment-revocation.org-payment.io:32492"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.org-audit.io:30893"
+            - name: ORCH_URL
+              value: "https://orchestrator-alpha.org-alpha.io:30441"
+            - name: FLIGHT_URL
+              value: "https://flight-specialist.org-beta.io:31441"
+            - name: HOTEL_PRIMARY_URL
+              value: "https://hotel-specialist-primary.org-beta.io:31442"
+            - name: HOTEL_BACKUP_URL
+              value: "https://hotel-specialist-backup.org-beta.io:31443"
+            - name: CONVERGER_URL
+              value: "https://settlement-converger.org-payment.io:32441"
+            - name: TRAVEL_MCP_SVC_URL
+              value: "https://travel-ops-mcp.org-payment.io:32442/mcp"
+            - name: PAYMENT_MCP_SVC_URL
+              value: "https://payment-vault-mcp.org-payment.io:32443/mcp"
+            - name: SYNC_HOOK_URL
+              value: "http://e2e-user-gateway.org-alpha.io:30990/sync"
+          ports:
+            - containerPort: 19090
+              name: sync-hook
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: e2e-user-gateway-sync
+  namespace: lineage-alpha
+spec:
+  type: NodePort
+  selector:
+    app: e2e-user-gateway
+  ports:
+    - name: sync-hook
+      port: 19090
+      targetPort: 19090
+      nodePort: 30990

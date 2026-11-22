@@ -1,0 +1,29 @@
+[
+  {
+    "workload": "weather-coordinator",
+    "spiffe_id": "spiffe://localtest.me/ns/team1/sa/weather-coordinator",
+    "audience": [
+      "http://keycloak.localtest.me:8080/realms/rossoctl"
+    ],
+    "jwt_svid_lifetime_seconds": 300,
+    "client_secret_file_bytes": 0
+  },
+  {
+    "workload": "weather-service-advanced",
+    "spiffe_id": "spiffe://localtest.me/ns/team1/sa/weather-service-advanced",
+    "audience": [
+      "http://keycloak.localtest.me:8080/realms/rossoctl"
+    ],
+    "jwt_svid_lifetime_seconds": 300,
+    "client_secret_file_bytes": 0
+  },
+  {
+    "workload": "weather-tool-advanced",
+    "spiffe_id": "spiffe://localtest.me/ns/team1/sa/weather-tool-advanced",
+    "audience": [
+      "http://keycloak.localtest.me:8080/realms/rossoctl"
+    ],
+    "jwt_svid_lifetime_seconds": 300,
+    "client_secret_file_bytes": 0
+  }
+]

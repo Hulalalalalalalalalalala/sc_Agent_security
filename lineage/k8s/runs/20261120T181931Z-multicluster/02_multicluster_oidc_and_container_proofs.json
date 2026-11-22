@@ -1,0 +1,51 @@
+{
+  "status": "PASS",
+  "distinct_kube_apiserver_oidc_kid_count": 4,
+  "clusters": {
+    "lct-org-alpha": {
+      "node_container_id_prefix": "ea23979f33e3133b",
+      "kind_bridge_ip": "172.19.0.3",
+      "pod_subnet": "10.241.0.0/16",
+      "service_subnet": "10.97.0.0/16",
+      "kube_apiserver_oidc_kids": [
+        "VPB3ZwOrSDi23-LKD8gWy4OmggN3K8_H4fB_La2TPvE"
+      ]
+    },
+    "lct-org-beta": {
+      "node_container_id_prefix": "2a8623a34d24cba0",
+      "kind_bridge_ip": "172.19.0.4",
+      "pod_subnet": "10.242.0.0/16",
+      "service_subnet": "10.98.0.0/16",
+      "kube_apiserver_oidc_kids": [
+        "oHJrds9HaIU1oiQmFCLtPzFX7c_R6JMaZtY572LreYk"
+      ]
+    },
+    "lct-org-pay": {
+      "node_container_id_prefix": "e5ef378a5bb2b257",
+      "kind_bridge_ip": "172.19.0.5",
+      "pod_subnet": "10.243.0.0/16",
+      "service_subnet": "10.99.0.0/16",
+      "kube_apiserver_oidc_kids": [
+        "hxfd7SzOoHfHUr3sRiHM_D_ud4MdTAxzx900N68IRRM"
+      ]
+    },
+    "lct-audit": {
+      "node_container_id_prefix": "11b91bccd1c76334",
+      "kind_bridge_ip": "172.19.0.6",
+      "pod_subnet": "10.244.0.0/16",
+      "service_subnet": "10.100.0.0/16",
+      "kube_apiserver_oidc_kids": [
+        "uX4RvhkOjLJ6LHESOUXZ_yE3QLQLmaBGUz6xZB4lGlk"
+      ]
+    }
+  },
+  "cross_cluster_oidc_sa_replay_against_internal_beta_ca": {
+    "http_status": 403,
+    "body": {
+      "error": "k8s_sa_attestation_failed",
+      "detail": "Unknown Kubernetes signing kid: 'VPB3ZwOrSDi23-LKD8gWy4OmggN3K8_H4fB_La2TPvE'"
+    }
+  },
+  "orchestrator_app_isolation": "ZERO_SA_ZERO_MTLS",
+  "audit_collector_keyless_isolation": "KEYLESS_ZERO_SA"
+}

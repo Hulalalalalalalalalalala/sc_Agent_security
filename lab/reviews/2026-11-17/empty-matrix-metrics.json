@@ -1,0 +1,27 @@
+{
+  "sample_limit": "本次只覆盖固定矩阵中的少量调用，不能外推成总体比例。",
+  "authorization_chain_complete": {
+    "count": 0,
+    "denominator": 0,
+    "definition": "业务路径、用户主体、每一跳授权依据和委托历史都能明确重建"
+  },
+  "business_id_alignment": {
+    "count": 0,
+    "denominator": 0,
+    "definition": "只表示既有 LAB_CORR 标识能够对齐，不是授权链完整重建"
+  },
+  "auth_hops_traceable": {
+    "count": 0,
+    "denominator": 0,
+    "definition": "认证日志与该跳共享任务标识"
+  },
+  "exchange_unique_task_link": {
+    "count": 0,
+    "denominator": 0,
+    "definition": "一条交换日志只对应一个任务"
+  },
+  "wrong_cross_task_links": 0,
+  "tamper": [],
+  "unlinked_auth_events": 0,
+  "cannot_judge_is_not_pass": true
+}

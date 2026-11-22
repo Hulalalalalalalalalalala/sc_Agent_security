@@ -1,0 +1,10 @@
+{
+  "scenario": "2b_a2a_v1_k8s_replicas_zero_crash_prune_and_graft",
+  "status": "PASS",
+  "task_id": "task-k8s-s2b-20261120T181931Z-multicluster",
+  "a2a_task_state": "TASK_STATE_COMPLETED",
+  "grafted_epoch": 1,
+  "grafted_lineage_path": "/task-k8s-s2b-20261120T181931Z-multicluster/OrchestratorAlpha/hotel-specialist-backup-e1",
+  "failover_fault_type": "CRASH",
+  "final_answer": "Here is the confirmation for the completed flight booking, hotel reservation, and both escrow settlements in the Verified MCP JSON:\n\n- **Flight Booking**: \n  - Flight No: SQ-031\n  - Booking Ref: FLT-9E1EE315\n  - Charged USD: 620.0\n  - Escrow Target: airline-escrow\n  - Settled USD: 620.0\n  - Settled via Settlement ID: STL-9FDE3B72\n\n- **Hotel Reservation**: \n  - Hotel ID: HTL-SIN-02\n  - Hotel Name: Marina Bay Crest\n  - Reservation Ref: HTL-0EA2593E\n  - Nights: 3\n  - Charged USD: 380.0\n  - Escrow Target: hotel-escrow\n  - Settled USD: 380.0\n  - Settled via Settlement ID: STL-4BAC8D1F\n\nBoth escrow settlements have been successfully processed."
+}

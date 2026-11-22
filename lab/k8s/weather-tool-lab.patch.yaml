@@ -1,0 +1,22 @@
+# Supersedes weather-tool-city-hint.patch.yaml. The mounted script keeps the
+# English city hint and adds Open-Meteo unit/timezone fields plus a task-id log.
+spec:
+  template:
+    spec:
+      containers:
+        - name: mcp
+          env:
+            - name: HOST
+              value: "127.0.0.1"
+          command:
+            - sh
+            - -c
+            - python3 /opt/lab-patch/patch_tool.py && exec uv run --no-sync weather_tool.py
+          volumeMounts:
+            - name: lab-patch
+              mountPath: /opt/lab-patch
+              readOnly: true
+      volumes:
+        - name: lab-patch
+          configMap:
+            name: lab-tool-patch

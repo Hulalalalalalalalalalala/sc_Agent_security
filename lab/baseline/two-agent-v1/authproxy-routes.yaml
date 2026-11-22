@@ -1,0 +1,7 @@
+- host: "weather-tool-advanced-mcp"
+  target_audience: "spiffe://localtest.me/ns/team1/sa/weather-tool-advanced"
+  token_scopes: "openid weather-tool-exchange-aud"
+- host: "weather-service-advanced"
+  target_audience: "spiffe://localtest.me/ns/team1/sa/weather-service-advanced"
+  token_scopes: "openid agent-team1-weather-service-advanced-aud"
+

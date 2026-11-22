@@ -1,0 +1,45 @@
+{
+  "header": {
+    "alg": "RS256",
+    "kid": "g1JLQ7Vve0rGU8Fi217ccAInVrHYWbtm",
+    "typ": "JWT"
+  },
+  "payload": {
+    "aud": [
+      "http://keycloak.localtest.me:8080/realms/rossoctl"
+    ],
+    "exp": 1794918572,
+    "iat": 1794918272,
+    "iss": "https://oidc-discovery.localtest.me",
+    "sub": "spiffe://localtest.me/ns/team1/sa/weather-coordinator"
+  },
+  "issued_at_utc": "2026-11-17T12:24:32Z",
+  "expires_at_utc": "2026-11-17T12:29:32Z",
+  "token_sha256": "8e765ae715278c87dbe47262c230636a3e52560f3037d13f1d4061cbc58b9949",
+  "signature": {
+    "encoding": "base64url",
+    "byte_length": 256,
+    "prefix": "GlmLgvvTc7cNp0UM4P2nYbQxNY000huI",
+    "suffix": "fl91lZBC1Oze1cJQ",
+    "sha256": "eb3cdecdd0f5e752202efbf13be12db65c6f295bb2b28eba8cda9ce37a1a10bf"
+  },
+  "public_key": {
+    "kid": "g1JLQ7Vve0rGU8Fi217ccAInVrHYWbtm",
+    "kty": "RSA",
+    "bits": 2048,
+    "spki_sha256": "d01ed8f77de7c8e51bc18252f5c9537c77e6b9e1dc3b5eb874b210a41617caa4"
+  },
+  "checks": {
+    "cryptographic_signature_valid": true,
+    "tampered_payload_signature_valid": false,
+    "expected_issuer_matches": true,
+    "expected_audience_present": true,
+    "expired_at_inspection": false
+  },
+  "provenance": {
+    "source": "Current A authbridge-proxy /opt/jwt_svid.token",
+    "relation_to_historical_request": "Fresh rotated sample, not the historical client_assertion",
+    "jwks_source": "http://spire-oidc.localtest.me:8080/keys",
+    "raw_token_exported": false
+  }
+}

@@ -1,0 +1,825 @@
+# =============================================================================
+# Milestone 3: Physically Autonomous Multi-Domain Control Plane + Keyless Audit
+#
+# Physical Isolation Invariants:
+# 1. `lineage-alpha` (`org-alpha.io` autonomous domain):
+#      - `alpha-ca` (:8090): Holds ONLY `org-alpha.io` ES256 & X.509 Root CA
+#        private keys in RAM; accepts ONLY `lineage-alpha` K8s SA JWTs!
+#      - `alpha-revocation` (:8092): Authoritative prefix trie for `org-alpha.io`,
+#        peered with `beta-revocation` & `payment-revocation`.
+#      - `alpha-directory` (:8091): Local `org-alpha.io` A2A v1.0 AgentCard
+#        registry, peered with `beta-directory` & `payment-directory`.
+# 2. `lineage-beta` (`org-beta.io` autonomous domain):
+#      - `beta-ca` (:8090): Holds ONLY `org-beta.io` private keys in RAM;
+#        accepts ONLY `lineage-beta` K8s SA JWTs!
+#      - `beta-revocation` (:8092) & `beta-directory` (:8091).
+# 3. `lineage-pay` (`org-payment.io` autonomous domain):
+#      - `payment-ca` (:8090): Holds ONLY `org-payment.io` private keys in RAM;
+#        accepts ONLY `lineage-pay` K8s SA JWTs!
+#      - `payment-revocation` (:8092) & `payment-directory` (:8091).
+# 4. `lineage-ctrl` (Keyless Independent Third-Party Audit Center):
+#      - ONLY `audit-collector` (:8093): Pulls public JWKS/X.509 bundles from
+#        `alpha-ca`, `beta-ca`, `payment-ca`; holds ZERO CA private keys and
+#        mounts ZERO Kubernetes ServiceAccount tokens!
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Domain 1 Autonomous Control Plane: `lineage-alpha` (`org-alpha.io`)
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alpha-ca
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alpha-ca
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alpha-ca
+  template:
+    metadata:
+      labels:
+        app: alpha-ca
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: alpha-ca
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: k8s-api-token
+                  expirationSeconds: 1800
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: alpha-ca
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-ca"]
+          env:
+            - name: TRUST_DOMAIN
+              value: "org-alpha.io"
+            - name: ALLOWED_K8S_NAMESPACE
+              value: "lineage-alpha"
+            - name: AUTHORIZED_GATEWAY_SA
+              value: "e2e-user-gateway"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+          ports:
+            - containerPort: 8090
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-ca
+  namespace: lineage-alpha
+spec:
+  selector:
+    app: alpha-ca
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alpha-revocation
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alpha-revocation
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alpha-revocation
+  template:
+    metadata:
+      labels:
+        app: alpha-revocation
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: alpha-revocation
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: alpha-revocation
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-revocation"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://alpha-ca.lineage-alpha.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: PEER_REVOCATION_URLS
+              value: "org-beta.io=http://beta-revocation.lineage-beta.svc.cluster.local:8092,org-payment.io=http://payment-revocation.lineage-pay.svc.cluster.local:8092"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8092
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8092
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-revocation
+  namespace: lineage-alpha
+spec:
+  selector:
+    app: alpha-revocation
+  ports:
+    - name: http
+      port: 8092
+      targetPort: 8092
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alpha-directory
+  namespace: lineage-alpha
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alpha-directory
+  namespace: lineage-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alpha-directory
+  template:
+    metadata:
+      labels:
+        app: alpha-directory
+        lct.io/trust-domain: org-alpha.io
+    spec:
+      serviceAccountName: alpha-directory
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: alpha-directory
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-directory"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://alpha-ca.lineage-alpha.svc.cluster.local:8090"
+            - name: REVOCATION_URL
+              value: "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092"
+            - name: PEER_CA_URLS
+              value: "org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: PEER_DIRECTORY_URLS
+              value: "org-beta.io=http://beta-directory.lineage-beta.svc.cluster.local:8091,org-payment.io=http://payment-directory.lineage-pay.svc.cluster.local:8091"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8091
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-directory
+  namespace: lineage-alpha
+spec:
+  selector:
+    app: alpha-directory
+  ports:
+    - name: http
+      port: 8091
+      targetPort: 8091
+
+# -----------------------------------------------------------------------------
+# Domain 2 Autonomous Control Plane: `lineage-beta` (`org-beta.io`)
+# -----------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: beta-ca
+  namespace: lineage-beta
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beta-ca
+  namespace: lineage-beta
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beta-ca
+  template:
+    metadata:
+      labels:
+        app: beta-ca
+        lct.io/trust-domain: org-beta.io
+    spec:
+      serviceAccountName: beta-ca
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: k8s-api-token
+                  expirationSeconds: 1800
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: beta-ca
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-ca"]
+          env:
+            - name: TRUST_DOMAIN
+              value: "org-beta.io"
+            - name: ALLOWED_K8S_NAMESPACE
+              value: "lineage-beta"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+          ports:
+            - containerPort: 8090
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: beta-ca
+  namespace: lineage-beta
+spec:
+  selector:
+    app: beta-ca
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: beta-revocation
+  namespace: lineage-beta
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beta-revocation
+  namespace: lineage-beta
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beta-revocation
+  template:
+    metadata:
+      labels:
+        app: beta-revocation
+        lct.io/trust-domain: org-beta.io
+    spec:
+      serviceAccountName: beta-revocation
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: beta-revocation
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-revocation"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: PEER_REVOCATION_URLS
+              value: "org-alpha.io=http://alpha-revocation.lineage-alpha.svc.cluster.local:8092,org-payment.io=http://payment-revocation.lineage-pay.svc.cluster.local:8092"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8092
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8092
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: beta-revocation
+  namespace: lineage-beta
+spec:
+  selector:
+    app: beta-revocation
+  ports:
+    - name: http
+      port: 8092
+      targetPort: 8092
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: beta-directory
+  namespace: lineage-beta
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beta-directory
+  namespace: lineage-beta
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beta-directory
+  template:
+    metadata:
+      labels:
+        app: beta-directory
+        lct.io/trust-domain: org-beta.io
+    spec:
+      serviceAccountName: beta-directory
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: beta-directory
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-directory"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: REVOCATION_URL
+              value: "http://beta-revocation.lineage-beta.svc.cluster.local:8092"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: PEER_DIRECTORY_URLS
+              value: "org-alpha.io=http://alpha-directory.lineage-alpha.svc.cluster.local:8091,org-payment.io=http://payment-directory.lineage-pay.svc.cluster.local:8091"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8091
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: beta-directory
+  namespace: lineage-beta
+spec:
+  selector:
+    app: beta-directory
+  ports:
+    - name: http
+      port: 8091
+      targetPort: 8091
+
+# -----------------------------------------------------------------------------
+# Domain 3 Autonomous Control Plane: `lineage-pay` (`org-payment.io`)
+# -----------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payment-ca
+  namespace: lineage-pay
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-ca
+  namespace: lineage-pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-ca
+  template:
+    metadata:
+      labels:
+        app: payment-ca
+        lct.io/trust-domain: org-payment.io
+    spec:
+      serviceAccountName: payment-ca
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: k8s-api-token
+                  expirationSeconds: 1800
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: payment-ca
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-ca"]
+          env:
+            - name: TRUST_DOMAIN
+              value: "org-payment.io"
+            - name: ALLOWED_K8S_NAMESPACE
+              value: "lineage-pay"
+            - name: AUDIT_COLLECTOR_URL
+              value: "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+          ports:
+            - containerPort: 8090
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-ca
+  namespace: lineage-pay
+spec:
+  selector:
+    app: payment-ca
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payment-revocation
+  namespace: lineage-pay
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-revocation
+  namespace: lineage-pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-revocation
+  template:
+    metadata:
+      labels:
+        app: payment-revocation
+        lct.io/trust-domain: org-payment.io
+    spec:
+      serviceAccountName: payment-revocation
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: payment-revocation
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-revocation"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: PEER_REVOCATION_URLS
+              value: "org-alpha.io=http://alpha-revocation.lineage-alpha.svc.cluster.local:8092,org-beta.io=http://beta-revocation.lineage-beta.svc.cluster.local:8092"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8092
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8092
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-revocation
+  namespace: lineage-pay
+spec:
+  selector:
+    app: payment-revocation
+  ports:
+    - name: http
+      port: 8092
+      targetPort: 8092
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payment-directory
+  namespace: lineage-pay
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-directory
+  namespace: lineage-pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-directory
+  template:
+    metadata:
+      labels:
+        app: payment-directory
+        lct.io/trust-domain: org-payment.io
+    spec:
+      serviceAccountName: payment-directory
+      automountServiceAccountToken: false
+      volumes:
+        - name: lct-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: lct-federation-ca
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: lct-mtls-ram
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: payment-directory
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "domain-directory"]
+          env:
+            - name: LOCAL_CA_URL
+              value: "http://payment-ca.lineage-pay.svc.cluster.local:8090"
+            - name: REVOCATION_URL
+              value: "http://payment-revocation.lineage-pay.svc.cluster.local:8092"
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090"
+            - name: PEER_DIRECTORY_URLS
+              value: "org-alpha.io=http://alpha-directory.lineage-alpha.svc.cluster.local:8091,org-beta.io=http://beta-directory.lineage-beta.svc.cluster.local:8091"
+            - name: LCT_MTLS_RAM_DIR
+              value: "/var/run/lct-mtls-ram"
+          ports:
+            - containerPort: 8091
+              name: http
+          volumeMounts:
+            - name: lct-sa-token
+              mountPath: /var/run/lct-sa
+              readOnly: true
+            - name: lct-mtls-ram
+              mountPath: /var/run/lct-mtls-ram
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-directory
+  namespace: lineage-pay
+spec:
+  selector:
+    app: payment-directory
+  ports:
+    - name: http
+      port: 8091
+      targetPort: 8091
+
+# -----------------------------------------------------------------------------
+# Keyless Independent Third-Party Audit Center: `lineage-ctrl`
+# Holds ZERO CA private keys and mounts ZERO Kubernetes ServiceAccount tokens!
+# -----------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: audit-collector
+  namespace: lineage-ctrl
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-collector
+  namespace: lineage-ctrl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audit-collector
+  template:
+    metadata:
+      labels:
+        app: audit-collector
+    spec:
+      serviceAccountName: audit-collector
+      automountServiceAccountToken: false
+      containers:
+        - name: audit-collector
+          image: lineage-lct:m3
+          imagePullPolicy: Never
+          args: ["--role", "federated-audit-collector"]
+          env:
+            - name: PEER_CA_URLS
+              value: "org-alpha.io=http://alpha-ca.lineage-alpha.svc.cluster.local:8090,org-beta.io=http://beta-ca.lineage-beta.svc.cluster.local:8090,org-payment.io=http://payment-ca.lineage-pay.svc.cluster.local:8090"
+          ports:
+            - containerPort: 8093
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8093
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-collector
+  namespace: lineage-ctrl
+spec:
+  selector:
+    app: audit-collector
+  ports:
+    - name: http
+      port: 8093
+      targetPort: 8093

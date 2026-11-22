@@ -1,0 +1,37 @@
+# =============================================================================
+# Workspace .gitignore — Excludes Local Binary Toolchains & Virtualenvs
+# Run `bash lineage/scripts/setup_deps.sh` after cloning to bootstrap locally!
+# =============================================================================
+
+# Local K8s/Ollama binary cache (~1.0 GB) & upstream reference checkouts (~132 MB)
+.tools/
+src/
+
+# Python virtual environments & bytecode
+**/venv/
+**/.venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Polyglot SDK build artifacts & dependency directories
+**/node_modules/
+**/target/
+lineage/sdk/go/bin/
+*.class
+
+# Ephemeral / private cryptographic material & host-local lab fixtures
+# (preserves public verification certs `*-public.pem` in lab/ without modifying lab/)
+*.pem
+*.key
+!*public*.pem
+*.jwt
+lab/reviews/**/t1-signing-input.txt
+lab/bin/python3
+
+# macOS / Editor metadata
+.DS_Store
+.idea/
+.vscode/

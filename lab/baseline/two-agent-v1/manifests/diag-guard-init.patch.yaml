@@ -1,0 +1,25 @@
+# Init container installs the diagnostic-port filter before app containers
+# start. proxy-init does not flush the filter INPUT chain, so this rule
+# remains in effect when AuthBridge binds 9091/9093/9094.
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: diag-guard
+          image: ghcr.io/rossoctl/cortex/proxy-init:v0.7.0-rc.1
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              for port in 9091 9093 9094; do
+                iptables -C INPUT -p tcp --dport "$port" ! -i lo -j REJECT --reject-with tcp-reset 2>/dev/null || \
+                iptables -I INPUT 1 -p tcp --dport "$port" ! -i lo -j REJECT --reject-with tcp-reset
+              done
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: true
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW"]
+              drop: ["ALL"]

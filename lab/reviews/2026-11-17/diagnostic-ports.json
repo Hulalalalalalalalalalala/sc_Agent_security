@@ -1,0 +1,56 @@
+[
+  {
+    "target": "weather-coordinator",
+    "ip": "10.244.0.23",
+    "port": 9091,
+    "result": "ConnectionRefusedError"
+  },
+  {
+    "target": "weather-coordinator",
+    "ip": "10.244.0.23",
+    "port": 9093,
+    "result": "ConnectionRefusedError"
+  },
+  {
+    "target": "weather-coordinator",
+    "ip": "10.244.0.23",
+    "port": 9094,
+    "result": "ConnectionRefusedError"
+  },
+  {
+    "target": "weather-service-advanced",
+    "ip": "10.244.0.21",
+    "port": 9091,
+    "result": "ConnectionRefusedError"
+  },
+  {
+    "target": "weather-service-advanced",
+    "ip": "10.244.0.21",
+    "port": 9093,
+    "result": "ConnectionRefusedError"
+  },
+  {
+    "target": "weather-service-advanced",
+    "ip": "10.244.0.21",
+    "port": 9094,
+    "result": "ConnectionRefusedError"
+  },
+  {
+    "target": "weather-tool-advanced",
+    "ip": "10.244.0.22",
+    "port": 9091,
+    "result": "TimeoutError"
+  },
+  {
+    "target": "weather-tool-advanced",
+    "ip": "10.244.0.22",
+    "port": 9093,
+    "result": "TimeoutError"
+  },
+  {
+    "target": "weather-tool-advanced",
+    "ip": "10.244.0.22",
+    "port": 9094,
+    "result": "TimeoutError"
+  }
+]

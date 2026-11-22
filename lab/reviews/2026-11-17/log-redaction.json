@@ -1,0 +1,6 @@
+[
+  {
+    "file": "raw-logs/agent-app.log",
+    "redacted_jwt_occurrences": 6
+  }
+]

@@ -1,0 +1,9 @@
+# rossoctl v0.8.0 charts/rossoctl-deps defaults Keycloak's Postgres to
+# mirror.gcr.io/postgres:17. mirror.gcr.io does not complete connections from
+# this network. public.ecr.aws/docker/library/postgres:17 is the Docker
+# Official Image (multi-arch, including arm64) and is reachable here.
+keycloak:
+  database:
+    image:
+      repository: public.ecr.aws/docker/library/postgres
+      tag: "17"

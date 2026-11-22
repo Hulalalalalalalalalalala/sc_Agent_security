@@ -1,0 +1,82 @@
+{
+  "scenario": "4_online_revocation_fagin_dag_degradation_concurrency_and_loopback_isolation",
+  "status": "PASS",
+  "cross_pod_loopback_isolation": {
+    "orchestrator-alpha": {
+      "pod_ip": "10.244.0.166",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "settlement-converger": {
+      "pod_ip": "10.244.0.168",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "travel-ops-mcp": {
+      "pod_ip": "10.244.0.172",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "payment-vault-mcp": {
+      "pod_ip": "10.244.0.173",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "inbound_8080_forged_loopback_header_status": 401
+  },
+  "alice_revoked_branch": "/task-k8s-s4-alice-20261118T153149Z/OrchestratorAlpha/FlightB1",
+  "alice_revocation_version": 4,
+  "alice_surviving_hotel_settlement": {
+    "settlement_id": "STL-366751D6",
+    "target": "hotel-escrow",
+    "settled_usd": 360.0,
+    "reference_id": "HTL-14622EC1",
+    "city": "Tokyo",
+    "task_id": "task-k8s-s4-alice-20261118T153149Z",
+    "sub": "user:alice@org-alpha.io",
+    "lineage_path": "/task-k8s-s4-alice-20261118T153149Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-alice-20261118T153149Z/OrchestratorAlpha/FlightB1/SettlementC",
+    "lineage_decision": "ALLOW_DEGRADED_DAG"
+  },
+  "alice_degraded_llm_answer": "The hotel reservation and hotel escrow settlement for the hotel with ID \"HTL-TYO-09\" and name \"Shinjuku Grand Palace\" under reservation reference \"HTL-14622EC1\" were executed under degraded authorization. The settled amount was $360.00.",
+  "alice_revoked_airline_rejection": {
+    "error": "REVOKED_DEPENDENCY_INSUFFICIENT_SURVIVING_PATHS",
+    "detail": "Surviving DAG branches insufficient: {'/task-k8s-s4-alice-20261118T153149Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC': \"parameter 'amount'=580.0 violates [0, 360.0]\"}",
+    "decision": "DENY",
+    "pruned_revoked_paths": [
+      "/task-k8s-s4-alice-20261118T153149Z/OrchestratorAlpha/FlightB1/SettlementC"
+    ]
+  },
+  "carol_concurrent_london_settlements": {
+    "airline-escrow": {
+      "settlement_id": "STL-8DA3B33A",
+      "target": "airline-escrow",
+      "settled_usd": 510.0,
+      "reference_id": "FLT-CF18F77A",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-20261118T153149Z",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-20261118T153149Z/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s4-carol-20261118T153149Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "lineage_decision": "ALLOW"
+    },
+    "hotel-escrow": {
+      "settlement_id": "STL-E2B4CB42",
+      "target": "hotel-escrow",
+      "settled_usd": 340.0,
+      "reference_id": "HTL-2EF4FEA3",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-20261118T153149Z",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-20261118T153149Z/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s4-carol-20261118T153149Z/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "lineage_decision": "ALLOW"
+    }
+  },
+  "carol_final_answer": "Here is the confirmation for the completed flight booking, hotel reservation, and both escrow settlements in the Verified MCP JSON format:\n\n- **Flight Booking**: \n  - Flight No: BA-284\n  - Booking Ref: FLT-CF18F77A\n  - Settled USD: 510.0\n- **Hotel Reservation**: \n  - Hotel ID: HTL-LON-04\n  - Hotel Name: Westminster Savoy Suites\n  - Reservation Ref: HTL-2EF4FEA3\n  - Settled USD: 340.0\n- **Escrow Settlements**:\n  - Airline Escrow Settlement ID: STL-8DA3B33A\n  - Hotel Escrow Settlement ID: STL-E2B4CB42\n  - Both settled USD: 510.0 and 340.0 respectively\n\nAll tasks and lineages are marked as ALLOW."
+}
