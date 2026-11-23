@@ -1,0 +1,46 @@
+=== Host-NIC mTLS Enforcement & Read-Only Bundle Proof (--noproxy '*') ===
+--- 1) curl --noproxy '*' --resolve flight-specialist.org-beta.io:31441:192.168.1.6 https://flight-specialist.org-beta.io:31441/healthz ---
+* Added flight-specialist.org-beta.io:31441:192.168.1.6 to DNS cache
+* Hostname flight-specialist.org-beta.io was found in DNS cache
+*   Trying 192.168.1.6:31441...
+* Connected to flight-specialist.org-beta.io (192.168.1.6) port 31441
+* ALPN: curl offers h2,http/1.1
+* (304) (OUT), TLS handshake, Client hello (1):
+} [334 bytes data]
+* (304) (IN), TLS handshake, Server hello (2):
+{ [122 bytes data]
+* (304) (IN), TLS handshake, Unknown (8):
+{ [6 bytes data]
+* (304) (IN), TLS handshake, Request CERT (13):
+{ [45 bytes data]
+* (304) (IN), TLS handshake, Certificate (11):
+{ [1512 bytes data]
+* (304) (IN), TLS handshake, CERT verify (15):
+{ [78 bytes data]
+* (304) (IN), TLS handshake, Finished (20):
+{ [52 bytes data]
+* (304) (OUT), TLS handshake, Certificate (11):
+} [8 bytes data]
+* (304) (OUT), TLS handshake, Finished (20):
+} [52 bytes data]
+* SSL connection using TLSv1.3 / AEAD-AES256-GCM-SHA384 / [blank] / UNDEF
+* ALPN: server did not agree on a protocol. Uses default.
+* Server certificate:
+*  subject: O=org-beta.io; CN=spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist
+*  start date: Nov 23 16:22:24 2026 GMT
+*  expire date: Nov 23 16:24:54 2026 GMT
+*  issuer: O=org-beta.io; CN=org-beta.io LCT Autonomous Root CA
+*  SSL certificate verify result: self signed certificate in certificate chain (19), continuing anyway.
+* using HTTP/1.x
+> GET /healthz HTTP/1.1
+> Host: flight-specialist.org-beta.io:31441
+> User-Agent: curl/8.7.1
+> Accept: */*
+> 
+* Request completely sent off
+* LibreSSL SSL_read: LibreSSL/3.3.6: error:1404C45C:SSL routines:ST_OK:reason(1116), errno 0
+* Closing connection
+curl: (56) LibreSSL SSL_read: LibreSSL/3.3.6: error:1404C45C:SSL routines:ST_OK:reason(1116), errno 0
+direct_curl_exit_code=56
+--- 2) curl --noproxy '*' http://192.168.1.6:31094/v1/federation/bundle ---
+{"trust_domain":"org-beta.io","issuer":"spiffe://org-beta.io/authority/ca","version":1,"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","x":"eHCaiUHAexoVqj3UCmxKKkHMdXsv3ugAAnGppKl5KjQ","y":"S98t1hDLnLbCsVAV_EEEZmAPvQu4uV6U3_13JXNc_rg","kid":"es256-VCa5dk6L3OQt2QcT"}],"x509_root_pem":"-----BEGIN CERTIFICATE-----\nMIIC3TCCAoKgAwIBAgIULbP4zzFbhCqURHwwdWyRuVz890IwCgYIKoZIzj0EAwIw\nQzEUMBIGA1UECgwLb3JnLWJldGEuaW8xKzApBgNVBAMMIm9yZy1iZXRhLmlvIExD\nVCBBdXRvbm9tb3VzIFJvb3QgQ0EwHhcNMjYxMTIzMTYxMDUwWhcNMjcxMTIzMTYx\nNTUwWjBDMRQwEgYDVQQKDAtvcmctYmV0YS5pbzErMCkGA1UEAwwib3JnLWJldGEu\naW8gTENUIEF1dG9ub21vdXMgUm9vdCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEH\nA0IABCnqvrfEheJs6h2IIa+G9NFvWzCby0Vo1q1JJK3It3aCk9fanU+pF3x+l68I\nOGIhGzyOwo/z0S4fup4AF6lLgG2jggFSMIIBTjASBgNVHRMBAf8ECDAGAQH/AgEA\nMA4GA1UdDwEB/wQEAwIBhjCBtAYDVR0eAQH/BIGpMIGmoIGjMA2GC29yZy1iZXRh\nLmlvMCGCHy5saW5lYWdlLWJldGEuc3ZjLmNsdXN0ZXIubG9jYWwwE4IRLmxpbmVh\nZ2UtYmV0YS5zdmMwDoIMLm9yZy1iZXRhLmlvMA2CC29yZy1iZXRhLmlvMAuCCWxv\nY2FsaG9zdDAKhwh/AAAB/////zAihyAAAAAAAAAAAAAAAAAAAAAB////////////\n/////////zAxBgNVHREEKjAohiZzcGlmZmU6Ly9vcmctYmV0YS5pby9hdXRob3Jp\ndHkveDUwOS1jYTAdBgNVHQ4EFgQUk2KnJYsVdJhTLhE3ZmCbRpy8oYQwHwYDVR0j\nBBgwFoAUk2KnJYsVdJhTLhE3ZmCbRpy8oYQwCgYIKoZIzj0EAwIDSQAwRgIhAKIz\njr+ILMDwqN5EbX7qKAlKiChCYM0WggNAx2oLiqIQAiEApKOiFJzVA4ZKNfn233Sx\nFNAwMEToPScin/5tMbDZKoY=\n-----END CERTIFICATE-----\n","trust_anchor":"sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57"}

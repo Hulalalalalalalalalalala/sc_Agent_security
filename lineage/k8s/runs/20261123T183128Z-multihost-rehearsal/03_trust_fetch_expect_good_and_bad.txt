@@ -1,0 +1,74 @@
+=== [MEDIUM-M6-02] Step 1: Wrong --expect digest MUST exit non-zero and pin NOTHING ===
+[SECURITY ERROR] Trust anchor mismatch for org-beta.io at http://192.168.1.6:31094/v1/federation/bundle: expected sha256:0000000000000000000000000000000000000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000, got sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5. Aborting without pinning!
+wrong --expect exit_code=1
+=== Verify ConfigMap lct-trust-anchors still empty after failed --expect ===
+{
+  "lctmh-alpha": {},
+  "lctmh-beta": {},
+  "lctmh-pay": {},
+  "lctmh-audit": {}
+}
+=== [MEDIUM-M6-02] Step 2: Genuine --expect digests pin all 4 domains with zero TOFU warnings ===
+[trust] Verified fetched bundle against --expect (sha256:0a5086084f4fbfaf215483a143e969f3334d9f29d70b5fa33ab42dc3c6677cbf:e19c57bb8f0e04d9112872591dcb9103c6aced54135a3a1c75f4ad04dbe6d4e8).
+[trust] Pinned org-alpha.io -> sha256:0a5086084f4fbfaf215483a143e969f3334d9f29d70b5fa33ab42dc3c6677cbf:e19c57bb8f0e04d9112872591dcb9103c6aced54135a3a1c75f4ad04dbe6d4e8 in lctmh-alpha/lineage-alpha (hot-reload triggered)
+[trust] Pinned org-alpha.io -> sha256:0a5086084f4fbfaf215483a143e969f3334d9f29d70b5fa33ab42dc3c6677cbf:e19c57bb8f0e04d9112872591dcb9103c6aced54135a3a1c75f4ad04dbe6d4e8 in lctmh-beta/lineage-beta (hot-reload triggered)
+[trust] Pinned org-alpha.io -> sha256:0a5086084f4fbfaf215483a143e969f3334d9f29d70b5fa33ab42dc3c6677cbf:e19c57bb8f0e04d9112872591dcb9103c6aced54135a3a1c75f4ad04dbe6d4e8 in lctmh-pay/lineage-pay (hot-reload triggered)
+[trust] Pinned org-alpha.io -> sha256:0a5086084f4fbfaf215483a143e969f3334d9f29d70b5fa33ab42dc3c6677cbf:e19c57bb8f0e04d9112872591dcb9103c6aced54135a3a1c75f4ad04dbe6d4e8 in lctmh-audit/lineage-audit (hot-reload triggered)
+[trust] Verified fetched bundle against --expect (sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5).
+[trust] Pinned org-beta.io -> sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5 in lctmh-alpha/lineage-alpha (hot-reload triggered)
+[trust] Pinned org-beta.io -> sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5 in lctmh-beta/lineage-beta (hot-reload triggered)
+[trust] Pinned org-beta.io -> sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5 in lctmh-pay/lineage-pay (hot-reload triggered)
+[trust] Pinned org-beta.io -> sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5 in lctmh-audit/lineage-audit (hot-reload triggered)
+[trust] Verified fetched bundle against --expect (sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053).
+[trust] Pinned org-payment.io -> sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053 in lctmh-alpha/lineage-alpha (hot-reload triggered)
+[trust] Pinned org-payment.io -> sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053 in lctmh-beta/lineage-beta (hot-reload triggered)
+[trust] Pinned org-payment.io -> sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053 in lctmh-pay/lineage-pay (hot-reload triggered)
+[trust] Pinned org-payment.io -> sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053 in lctmh-audit/lineage-audit (hot-reload triggered)
+[trust] Verified fetched bundle against --expect (sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless).
+[trust] Pinned org-audit.io -> sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless in lctmh-alpha/lineage-alpha (hot-reload triggered)
+[trust] Pinned org-audit.io -> sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless in lctmh-beta/lineage-beta (hot-reload triggered)
+[trust] Pinned org-audit.io -> sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless in lctmh-pay/lineage-pay (hot-reload triggered)
+[trust] Pinned org-audit.io -> sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless in lctmh-audit/lineage-audit (hot-reload triggered)
+=== Verify all 4 clusters' Deployments converge to Available after verified trust fetch ===
+deployment.apps/alpha-ca condition met
+deployment.apps/alpha-directory condition met
+deployment.apps/alpha-revocation condition met
+deployment.apps/e2e-user-gateway condition met
+deployment.apps/orchestrator-alpha condition met
+NAME                                  READY   STATUS    RESTARTS   AGE
+alpha-ca-5785b6bc78-wxjp6             1/1     Running   0          83s
+alpha-directory-b77d8ddb6-4xhjk       1/1     Running   0          83s
+alpha-revocation-9d54dd5f8-v5sgs      1/1     Running   0          83s
+e2e-user-gateway-668bd4bd57-zgmk9     1/1     Running   0          83s
+orchestrator-alpha-5fc9d498c8-wrcwx   2/2     Running   0          83s
+deployment.apps/beta-ca condition met
+deployment.apps/beta-directory condition met
+deployment.apps/beta-revocation condition met
+deployment.apps/flight-specialist condition met
+deployment.apps/hotel-specialist-backup condition met
+deployment.apps/hotel-specialist-primary condition met
+NAME                                        READY   STATUS    RESTARTS   AGE
+beta-ca-7f9fbdc869-w8dl7                    1/1     Running   0          83s
+beta-directory-65ff47bd68-54dhz             1/1     Running   0          82s
+beta-revocation-55d67896fb-5d9kn            1/1     Running   0          82s
+flight-specialist-5c99cddfbd-z4l2d          2/2     Running   0          82s
+hotel-specialist-backup-9f6859d8f-7zjgj     2/2     Running   0          82s
+hotel-specialist-primary-5bd9cf6f6b-n47xf   2/2     Running   0          82s
+deployment.apps/payment-ca condition met
+deployment.apps/payment-directory condition met
+deployment.apps/payment-revocation condition met
+deployment.apps/payment-vault-mcp condition met
+deployment.apps/settlement-converger condition met
+deployment.apps/travel-ops-mcp condition met
+NAME                                    READY   STATUS    RESTARTS   AGE
+payment-ca-7f8b578b89-rn6nx             1/1     Running   0          83s
+payment-directory-9fc5dd554-rlhb5       1/1     Running   0          82s
+payment-revocation-5884bfcd9b-6fgln     1/1     Running   0          82s
+payment-vault-mcp-79cc86f77-bp989       2/2     Running   0          82s
+settlement-converger-7fbd744b87-q4h46   2/2     Running   0          82s
+travel-ops-mcp-5c649988db-vthhd         2/2     Running   0          82s
+deployment.apps/audit-ca condition met
+deployment.apps/audit-collector condition met
+NAME                               READY   STATUS    RESTARTS   AGE
+audit-ca-787fcb9f6d-lvnc2          1/1     Running   0          81s
+audit-collector-5b474d9bbc-mt8g9   1/1     Running   0          81s

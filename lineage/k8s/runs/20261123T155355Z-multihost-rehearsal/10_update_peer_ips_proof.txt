@@ -1,0 +1,30 @@
+=== update-peer-ips Live Verification ===
+[update-peer-ips] Re-patching CoreDNS across local roles (alpha beta pay audit) -> alpha=192.168.1.6, beta=192.168.1.6, pay=192.168.1.6, audit=192.168.1.6
+[update-peer-ips] CoreDNS updated and rolled out cleanly with zero workload restarts.
+--- Cluster lctmh-alpha ---
+NAME                                  READY   STATUS    RESTARTS   AGE
+alpha-ca-5785b6bc78-454hq             1/1     Running   0          4m16s
+alpha-directory-f98cfc96b-mmksn       1/1     Running   0          4m16s
+alpha-revocation-74d88c86b-rt2g2      1/1     Running   0          4m16s
+e2e-user-gateway-74648ccd89-wwfqb     1/1     Running   0          4m16s
+orchestrator-alpha-756fffb8bd-bdj7l   2/2     Running   0          4m16s
+--- Cluster lctmh-beta ---
+NAME                                        READY   STATUS    RESTARTS   AGE
+beta-ca-7f9fbdc869-59kkc                    1/1     Running   0          32s
+beta-directory-89896bb84-m89vm              1/1     Running   0          9m28s
+beta-revocation-7578b64f7b-8cvnz            1/1     Running   0          9m28s
+flight-specialist-7d49c8b7cb-699vx          2/2     Running   0          9m28s
+hotel-specialist-backup-6b7758f8b7-p76tf    2/2     Running   0          9m28s
+hotel-specialist-primary-74fc59f9f4-vnntz   2/2     Running   0          9m28s
+--- Cluster lctmh-pay ---
+NAME                                    READY   STATUS    RESTARTS   AGE
+payment-ca-7f8b578b89-qwgf5             1/1     Running   0          9m27s
+payment-directory-7ff6c5d5d6-pznr9      1/1     Running   0          9m27s
+payment-revocation-64dd58f468-vhfk9     1/1     Running   0          9m27s
+payment-vault-mcp-7f498fc5c-4627n       2/2     Running   0          9m27s
+settlement-converger-7f6d79fcbf-ghjnw   2/2     Running   0          9m27s
+travel-ops-mcp-6bf486d5d4-7xnd4         2/2     Running   0          9m27s
+--- Cluster lctmh-audit ---
+NAME                               READY   STATUS    RESTARTS   AGE
+audit-ca-787fcb9f6d-nkdtg          1/1     Running   0          4m15s
+audit-collector-674767c887-vpsp5   1/1     Running   0          4m15s

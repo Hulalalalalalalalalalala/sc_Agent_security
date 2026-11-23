@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hmac
 import json
 import os
+import secrets
 import socket
 import ssl
 import sys
@@ -37,6 +39,7 @@ from lineage.common.mtls import WorkloadMTLSBundle, X509DomainAuthority
 from lineage.federation import bootstrap_autonomous_workload, parse_domain_url_map
 from lineage.k8s.bootstrap_services import (
     K8S_SA_TOKEN_PATH,
+    _build_env_anchor_store,
     create_ca_pop_jws,
     resolve_sa_token_path,
 )
@@ -148,6 +151,10 @@ class GatewaySession:
         self._sa_token_file = resolve_sa_token_path(K8S_SA_TOKEN_PATH)
         with open(self._sa_token_file, "r", encoding="utf-8") as fh:
             self.sa_jwt = fh.read().strip()
+        anchor_store, require_pins = _build_env_anchor_store()
+        svid_ttl = max(
+            6.0, float(os.environ.get("LCT_SVID_TTL_SECONDS", "1800.0").strip() or "1800.0")
+        )
         (
             self.identity,
             self.resolver,
@@ -160,11 +167,22 @@ class GatewaySession:
             require_all_peers=require_all_peers,
             seed_bundles=seed_bundles,
             peer_timeout=peer_timeout,
+            svid_ttl_seconds=svid_ttl,
+            anchor_store=anchor_store,
+            require_pinned_anchors=require_pins,
+            audit_ca_url=(AUDIT_URL if AUDIT_URL.startswith("https://") else None),
+            enable_auto_renewal=True,
         )
         self.ssl_ctx = self.mtls_bundle.build_client_ssl_context(check_hostname=True)
         self.dir_client = AgentDirectoryClient(ALPHA_DIR_URL, self.resolver)
         self.rev_client = RevocationReplicaClient(ALPHA_REV_URL, self.resolver)
-        self.audit_client = AuditCollectorClient(AUDIT_URL, signer=self.identity)
+        self.audit_client = AuditCollectorClient(
+            AUDIT_URL,
+            signer=self.identity,
+            ssl_context_provider=(
+                self.syncer.audit_ssl_context if AUDIT_URL.startswith("https://") else None
+            ),
+        )
         self.a2a_orch = A2AClient(
             agent_base_url=ORCH_URL,
             signer=self.identity,
@@ -742,8 +760,14 @@ def run_scenario_3b(
     gw: GatewaySession, run_id: str, self_pod_ip: str, sync_marker_file: str
 ) -> Dict[str, Any]:
     leaf_arrived = threading.Event()
+    sync_token = secrets.token_urlsafe(24)
 
-    def _sync_handler(_: HTTPRequestContext) -> Tuple[int, Any, Dict[str, str]]:
+    def _sync_handler(req: HTTPRequestContext) -> Tuple[int, Any, Dict[str, str]]:
+        if req.method != "POST" or req.path != "/sync":
+            return 404, {"error": "route_not_found"}, {}
+        provided_tok = str(req.header("X-LCT-Sync-Token") or "")
+        if not provided_tok or not hmac.compare_digest(provided_tok, sync_token):
+            return 403, {"error": "invalid_or_missing_sync_token"}, {}
         with open(sync_marker_file, "w", encoding="utf-8") as fh:
             fh.write("READY_TO_KILL_INTERMEDIATE\n")
         leaf_arrived.set()
@@ -774,6 +798,7 @@ def run_scenario_3b(
                     "op": "delegate_upward_return_chain",
                     "city": "Tokyo",
                     "sync_hook_url": eff_hook_url,
+                    "sync_hook_token": sync_token,
                     "return_timeout_sec": 1.2,
                 },
                 task_id=task_id,
@@ -1344,7 +1369,7 @@ def run_scenario_6_whole_cluster_partition(
         "payment_vault_mcp_mtls_healthz": gw.get_mtls(
             f"{PAYMENT_MCP_SVC_URL.rsplit('/mcp', 1)[0]}/healthz", timeout=3.0
         ).status_code,
-        "audit_collector_healthz": httpx.get(f"{AUDIT_URL}/healthz", timeout=3.0).status_code,
+        "audit_collector_healthz": gw.audit_client.healthz().status_code,
     }
     for k, code in survivability.items():
         if code != 200:

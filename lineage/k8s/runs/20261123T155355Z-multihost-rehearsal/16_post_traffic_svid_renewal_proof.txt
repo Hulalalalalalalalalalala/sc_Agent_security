@@ -1,0 +1,69 @@
+=== Post-Traffic Pod Status Across All 4 Multi-Host Clusters (Zero Restarts) ===
+--- kind-lctmh-alpha ---
+NAMESPACE            NAME                                                READY   STATUS    RESTARTS   AGE
+kube-system          coredns-66c6474788-d82l2                            1/1     Running   0          74m
+kube-system          coredns-66c6474788-xpqr7                            1/1     Running   0          74m
+kube-system          etcd-lctmh-alpha-control-plane                      1/1     Running   0          79m
+kube-system          kindnet-6nrwx                                       1/1     Running   0          79m
+kube-system          kube-apiserver-lctmh-alpha-control-plane            1/1     Running   0          79m
+kube-system          kube-controller-manager-lctmh-alpha-control-plane   1/1     Running   0          79m
+kube-system          kube-proxy-nkf4d                                    1/1     Running   0          79m
+kube-system          kube-scheduler-lctmh-alpha-control-plane            1/1     Running   0          79m
+lineage-alpha        alpha-ca-5644ddb486-gc9t5                           1/1     Running   0          16m
+lineage-alpha        alpha-directory-7cd55cf9f6-tr458                    1/1     Running   0          16m
+lineage-alpha        alpha-revocation-66dc67b5f8-9ms6z                   1/1     Running   0          4m42s
+lineage-alpha        e2e-user-gateway-8865f7fd9-tq5gb                    1/1     Running   0          16m
+lineage-alpha        orchestrator-alpha-74444ff44d-fflkd                 2/2     Running   0          16m
+local-path-storage   local-path-provisioner-67b8995b4b-7dtf8             1/1     Running   0          79m
+--- kind-lctmh-beta ---
+NAMESPACE            NAME                                               READY   STATUS    RESTARTS   AGE
+kube-system          coredns-68887df966-f5cf8                           1/1     Running   0          74m
+kube-system          coredns-68887df966-q8r27                           1/1     Running   0          74m
+kube-system          etcd-lctmh-beta-control-plane                      1/1     Running   0          105m
+kube-system          kindnet-fcw47                                      1/1     Running   0          105m
+kube-system          kube-apiserver-lctmh-beta-control-plane            1/1     Running   0          105m
+kube-system          kube-controller-manager-lctmh-beta-control-plane   1/1     Running   0          105m
+kube-system          kube-proxy-qj2tw                                   1/1     Running   0          105m
+kube-system          kube-scheduler-lctmh-beta-control-plane            1/1     Running   0          105m
+lineage-beta         beta-ca-5458fd658f-8bxzp                           1/1     Running   0          16m
+lineage-beta         beta-directory-68c49db54c-f6qrd                    1/1     Running   0          16m
+lineage-beta         beta-revocation-7c9ff7fb9-544px                    1/1     Running   0          4m43s
+lineage-beta         flight-specialist-74b9cf5777-4szcz                 2/2     Running   0          16m
+lineage-beta         hotel-specialist-backup-66587f8d46-4nfsr           2/2     Running   0          16m
+lineage-beta         hotel-specialist-primary-55fb8978dc-vwnvk          2/2     Running   0          75s
+local-path-storage   local-path-provisioner-67b8995b4b-rwbgv            1/1     Running   0          105m
+--- kind-lctmh-pay ---
+NAMESPACE            NAME                                              READY   STATUS    RESTARTS   AGE
+kube-system          coredns-6895986bd8-r5gmj                          1/1     Running   0          74m
+kube-system          coredns-6895986bd8-sft8s                          1/1     Running   0          74m
+kube-system          etcd-lctmh-pay-control-plane                      1/1     Running   0          105m
+kube-system          kindnet-dp497                                     1/1     Running   0          105m
+kube-system          kube-apiserver-lctmh-pay-control-plane            1/1     Running   0          105m
+kube-system          kube-controller-manager-lctmh-pay-control-plane   1/1     Running   0          105m
+kube-system          kube-proxy-t9dsk                                  1/1     Running   0          105m
+kube-system          kube-scheduler-lctmh-pay-control-plane            1/1     Running   0          105m
+lineage-pay          payment-ca-69f647f8d5-rrvmm                       1/1     Running   0          16m
+lineage-pay          payment-directory-75654c8f5b-s8xjc                1/1     Running   0          16m
+lineage-pay          payment-revocation-747bd94d8d-wzmpq               1/1     Running   0          4m43s
+lineage-pay          payment-vault-mcp-75cdbbfdff-c6fjm                2/2     Running   0          16m
+lineage-pay          settlement-converger-694fd8846f-t4k59             2/2     Running   0          16m
+lineage-pay          travel-ops-mcp-7976fdbb4b-ctm5w                   2/2     Running   0          16m
+local-path-storage   local-path-provisioner-67b8995b4b-ldhzp           1/1     Running   0          105m
+--- kind-lctmh-audit ---
+NAMESPACE            NAME                                                READY   STATUS    RESTARTS   AGE
+kube-system          coredns-84bcf9fc8b-4wnvm                            1/1     Running   0          74m
+kube-system          coredns-84bcf9fc8b-lfx5q                            1/1     Running   0          74m
+kube-system          etcd-lctmh-audit-control-plane                      1/1     Running   0          79m
+kube-system          kindnet-rl9cv                                       1/1     Running   0          78m
+kube-system          kube-apiserver-lctmh-audit-control-plane            1/1     Running   0          79m
+kube-system          kube-controller-manager-lctmh-audit-control-plane   1/1     Running   0          79m
+kube-system          kube-proxy-plds4                                    1/1     Running   0          78m
+kube-system          kube-scheduler-lctmh-audit-control-plane            1/1     Running   0          79m
+lineage-audit        audit-ca-787fcb9f6d-nkdtg                           1/1     Running   0          78m
+lineage-audit        audit-collector-658bb6c5c5-wxbkp                    1/1     Running   0          16m
+local-path-storage   local-path-provisioner-67b8995b4b-wtskw             1/1     Running   0          78m
+
+=== Post-Traffic SVID Renewal Generation Proof (>= 3 Renewals + Live Traffic) ===
+orchestrator-alpha: {'status': 'ready', 'spiffe_id': 'spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha', 'svid_generation': 16, 'missing_domains': [], 'verified_domains': {'org-beta.io': 'sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57', 'org-payment.io': 'sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702', 'org-audit.io': 'sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless'}, 'errors': {}, 'trust_store_version': 4, 'agent_card_registered': True}
+flight-specialist: {'status': 'ready', 'spiffe_id': 'spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist', 'svid_generation': 27, 'missing_domains': [], 'verified_domains': {'org-alpha.io': 'sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9', 'org-audit.io': 'sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless', 'org-payment.io': 'sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702'}, 'errors': {}, 'trust_store_version': 4, 'agent_card_registered': True}
+settlement-converger: {'status': 'ready', 'spiffe_id': 'spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger', 'svid_generation': 16, 'missing_domains': [], 'verified_domains': {'org-beta.io': 'sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57', 'org-audit.io': 'sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless', 'org-alpha.io': 'sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9'}, 'errors': {}, 'trust_store_version': 4, 'agent_card_registered': True}

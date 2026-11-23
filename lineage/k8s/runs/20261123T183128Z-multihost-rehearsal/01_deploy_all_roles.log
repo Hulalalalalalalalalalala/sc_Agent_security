@@ -1,0 +1,257 @@
+============================================================================
+ LCT Multi-Host Preflight Check
+============================================================================
+  Local Roles   : alpha beta pay audit
+  Machine IPs   : alpha=192.168.1.6, beta=192.168.1.6, pay=192.168.1.6, audit=192.168.1.6
+  Host Ports    : 30094 30491 30492 30441 30990 31094 31491 31492 31441 31442 31443 32094 32491 32492 32441 32442 32443 30893
+  LLM Endpoint  : http://host.docker.internal:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling  : docker, kind, kubectl, helm present
+  [OK] Docker   : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Ports    : all requested host ports (30094 30491 30492 30441 30990 31094 31491 31492 31441 31442 31443 32094 32491 32492 32441 32442 32443 30893) are available
+  [OK] LLM      : http://127.0.0.1:11434/v1/models reachable with model 'qwen2.5:3b'
+  [INFO] Peer alpha (192.168.1.6:30094): not online yet (order-independent boot supported)
+  [INFO] Peer beta (192.168.1.6:31094): not online yet (order-independent boot supported)
+  [INFO] Peer pay (192.168.1.6:32094): not online yet (order-independent boot supported)
+  [INFO] Peer audit (192.168.1.6:30893): not online yet (order-independent boot supported)
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): alpha beta pay audit
+============================================================================
+[deploy] Building image 'lineage-lct:m6' (BASE_IMAGE=ghcr.io/rossoctl/examples/weather_tool:pinned)...
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.84kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for ghcr.io/rossoctl/examples/weather_tool:pinned
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [ 1/21] FROM ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700
+#4 resolve ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700 0.0s done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 889.88kB 0.0s done
+#5 DONE 0.0s
+
+#6 [ 2/21] WORKDIR /opt/lct
+#6 CACHED
+
+#7 [ 3/21] COPY lineage/requirements.txt /opt/lct/lineage/requirements.txt
+#7 CACHED
+
+#8 [ 4/21] RUN if [ ! -x /app/.venv/bin/python3 ]; then       python3 -m venv /app/.venv &&       /app/.venv/bin/pip install --no-cache-dir -r /opt/lct/lineage/requirements.txt;     fi
+#8 CACHED
+
+#9 [ 5/21] COPY lineage/__init__.py /opt/lct/lineage/__init__.py
+#9 CACHED
+
+#10 [ 6/21] COPY lineage/common /opt/lct/lineage/common
+#10 CACHED
+
+#11 [ 7/21] COPY lineage/a2a /opt/lct/lineage/a2a
+#11 DONE 0.0s
+
+#12 [ 8/21] COPY lineage/federation /opt/lct/lineage/federation
+#12 DONE 0.0s
+
+#13 [ 9/21] COPY lineage/identity /opt/lct/lineage/identity
+#13 DONE 0.0s
+
+#14 [10/21] COPY lineage/registry /opt/lct/lineage/registry
+#14 DONE 0.0s
+
+#15 [11/21] COPY lineage/protocol /opt/lct/lineage/protocol
+#15 DONE 0.0s
+
+#16 [12/21] COPY lineage/revocation /opt/lct/lineage/revocation
+#16 DONE 0.0s
+
+#17 [13/21] COPY lineage/verifier /opt/lct/lineage/verifier
+#17 DONE 0.0s
+
+#18 [14/21] COPY lineage/audit /opt/lct/lineage/audit
+#18 DONE 0.0s
+
+#19 [15/21] COPY lineage/resilience /opt/lct/lineage/resilience
+#19 DONE 0.0s
+
+#20 [16/21] COPY lineage/sidecar /opt/lct/lineage/sidecar
+#20 DONE 0.0s
+
+#21 [17/21] COPY lineage/agents /opt/lct/lineage/agents
+#21 DONE 0.0s
+
+#22 [18/21] COPY lineage/k8s/__init__.py /opt/lct/lineage/k8s/__init__.py
+#22 DONE 0.0s
+
+#23 [19/21] COPY lineage/k8s/bootstrap_services.py /opt/lct/lineage/k8s/bootstrap_services.py
+#23 DONE 0.0s
+
+#24 [20/21] COPY lineage/k8s/e2e_driver.py /opt/lct/lineage/k8s/e2e_driver.py
+#24 DONE 0.0s
+
+#25 [21/21] COPY lineage/multihost /opt/lct/lineage/multihost
+#25 DONE 0.0s
+
+#26 exporting to image
+#26 exporting layers
+#26 exporting layers 0.2s done
+#26 exporting manifest sha256:e5790a8b0d0ef00a48509efcc473dd64e0d319c2b0c1f2ea88461abdb655be32 done
+#26 exporting config sha256:ab4d9a26c832f6c8a293390748a4c3803e5317c39a34521e8853294469a53cff done
+#26 exporting attestation manifest sha256:f9af99be06cd9796293c9aef35cb8dbb18589218e75cd49482f04d4fc7d0a43e done
+#26 exporting manifest list sha256:5884f4b0e8264c78c95b257ed88b63db607e07122ddf45ff8db81f4961174a9e done
+#26 naming to docker.io/library/lineage-lct:m6 done
+#26 unpacking to docker.io/library/lineage-lct:m6 0.1s done
+#26 DONE 0.3s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/ka0mf9xhhrjufqy1y9g51y10r
+[deploy] Creating Kind cluster 'lctmh-alpha' with host-NIC extraPortMappings...
+Creating cluster "lctmh-alpha" ...
+ • Ensuring node image (kindest/node:lct-local) 🖼️  ...
+ ✓ Ensuring node image (kindest/node:lct-local) 🖼️
+ • Preparing nodes 📦   ...
+ ✓ Preparing nodes 📦 
+ • Writing configuration 📜  ...
+ ✓ Writing configuration 📜
+ • Starting control-plane 🕹️  ...
+ ✓ Starting control-plane 🕹️
+ • Installing CNI 🔌  ...
+ ✓ Installing CNI 🔌
+ • Installing StorageClass 💾  ...
+ ✓ Installing StorageClass 💾
+Set kubectl context to "kind-lctmh-alpha"
+You can now use your cluster with:
+
+kubectl cluster-info --context kind-lctmh-alpha
+
+Not sure what to do next? 😅  Check out https://kind.sigs.k8s.io/docs/user/quick-start/
+[deploy] Loading image 'lineage-lct:m6' into 'lctmh-alpha'...
+Image: "lineage-lct:m6" with ID "sha256:5884f4b0e8264c78c95b257ed88b63db607e07122ddf45ff8db81f4961174a9e" not yet present on node "lctmh-alpha-control-plane", loading...
+[deploy] Creating Kind cluster 'lctmh-beta' with host-NIC extraPortMappings...
+Creating cluster "lctmh-beta" ...
+ • Ensuring node image (kindest/node:lct-local) 🖼️  ...
+ ✓ Ensuring node image (kindest/node:lct-local) 🖼️
+ • Preparing nodes 📦   ...
+ ✓ Preparing nodes 📦 
+ • Writing configuration 📜  ...
+ ✓ Writing configuration 📜
+ • Starting control-plane 🕹️  ...
+ ✓ Starting control-plane 🕹️
+ • Installing CNI 🔌  ...
+ ✓ Installing CNI 🔌
+ • Installing StorageClass 💾  ...
+ ✓ Installing StorageClass 💾
+Set kubectl context to "kind-lctmh-beta"
+You can now use your cluster with:
+
+kubectl cluster-info --context kind-lctmh-beta
+
+Have a question, bug, or feature request? Let us know! https://kind.sigs.k8s.io/#community 🙂
+[deploy] Loading image 'lineage-lct:m6' into 'lctmh-beta'...
+Image: "lineage-lct:m6" with ID "sha256:5884f4b0e8264c78c95b257ed88b63db607e07122ddf45ff8db81f4961174a9e" not yet present on node "lctmh-beta-control-plane", loading...
+[deploy] Creating Kind cluster 'lctmh-pay' with host-NIC extraPortMappings...
+Creating cluster "lctmh-pay" ...
+ • Ensuring node image (kindest/node:lct-local) 🖼️  ...
+ ✓ Ensuring node image (kindest/node:lct-local) 🖼️
+ • Preparing nodes 📦   ...
+ ✓ Preparing nodes 📦 
+ • Writing configuration 📜  ...
+ ✓ Writing configuration 📜
+ • Starting control-plane 🕹️  ...
+ ✓ Starting control-plane 🕹️
+ • Installing CNI 🔌  ...
+ ✓ Installing CNI 🔌
+ • Installing StorageClass 💾  ...
+ ✓ Installing StorageClass 💾
+Set kubectl context to "kind-lctmh-pay"
+You can now use your cluster with:
+
+kubectl cluster-info --context kind-lctmh-pay
+
+Thanks for using kind! 😊
+[deploy] Loading image 'lineage-lct:m6' into 'lctmh-pay'...
+Image: "lineage-lct:m6" with ID "sha256:5884f4b0e8264c78c95b257ed88b63db607e07122ddf45ff8db81f4961174a9e" not yet present on node "lctmh-pay-control-plane", loading...
+[deploy] Creating Kind cluster 'lctmh-audit' with host-NIC extraPortMappings...
+Creating cluster "lctmh-audit" ...
+ • Ensuring node image (kindest/node:lct-local) 🖼️  ...
+ ✓ Ensuring node image (kindest/node:lct-local) 🖼️
+ • Preparing nodes 📦   ...
+ ✓ Preparing nodes 📦 
+ • Writing configuration 📜  ...
+ ✓ Writing configuration 📜
+ • Starting control-plane 🕹️  ...
+ ✓ Starting control-plane 🕹️
+ • Installing CNI 🔌  ...
+ ✓ Installing CNI 🔌
+ • Installing StorageClass 💾  ...
+ ✓ Installing StorageClass 💾
+Set kubectl context to "kind-lctmh-audit"
+You can now use your cluster with:
+
+kubectl cluster-info --context kind-lctmh-audit
+
+Have a question, bug, or feature request? Let us know! https://kind.sigs.k8s.io/#community 🙂
+[deploy] Loading image 'lineage-lct:m6' into 'lctmh-audit'...
+Image: "lineage-lct:m6" with ID "sha256:5884f4b0e8264c78c95b257ed88b63db607e07122ddf45ff8db81f4961174a9e" not yet present on node "lctmh-audit-control-plane", loading...
+[deploy] Patching CoreDNS zones (*.org-alpha.io, *.org-beta.io, *.org-payment.io, audit-collector.org-audit.io)...
+Warning: resource configmaps/coredns is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+Warning: resource configmaps/coredns is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+Warning: resource configmaps/coredns is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+Warning: resource configmaps/coredns is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+[deploy] Applying manifests for role 'alpha' (ns=lineage-alpha, svid_ttl=1800s)...
+[deploy] Applying manifests for role 'beta' (ns=lineage-beta, svid_ttl=1800s)...
+[deploy] Applying manifests for role 'pay' (ns=lineage-pay, svid_ttl=1800s)...
+[deploy] Applying manifests for role 'audit' (ns=lineage-audit, svid_ttl=1800s)...
+[deploy] Waiting for alpha-ca (kind-lctmh-alpha) to become Ready...
+[deploy] Waiting for beta-ca (kind-lctmh-beta) to become Ready...
+[deploy] Waiting for payment-ca (kind-lctmh-pay) to become Ready...
+[deploy] Waiting for audit-ca (kind-lctmh-audit) to become Ready...
+
+============================================================================
+ LCT Multi-Host Deployment Summary (Roles: alpha beta pay audit)
+============================================================================
+--- Cluster: lctmh-alpha (namespace: lineage-alpha) ---
+NAME                                  READY   STATUS    RESTARTS   AGE   IP            NODE                        NOMINATED NODE   READINESS GATES
+alpha-ca-5785b6bc78-wxjp6             1/1     Running   0          4s    10.241.0.7    lctmh-alpha-control-plane   <none>           <none>
+alpha-directory-b77d8ddb6-4xhjk       0/1     Running   0          4s    10.241.0.9    lctmh-alpha-control-plane   <none>           <none>
+alpha-revocation-9d54dd5f8-v5sgs      0/1     Running   0          4s    10.241.0.8    lctmh-alpha-control-plane   <none>           <none>
+e2e-user-gateway-668bd4bd57-zgmk9     1/1     Running   0          4s    10.241.0.11   lctmh-alpha-control-plane   <none>           <none>
+orchestrator-alpha-5fc9d498c8-wrcwx   1/2     Running   0          4s    10.241.0.10   lctmh-alpha-control-plane   <none>           <none>
+--- Cluster: lctmh-beta (namespace: lineage-beta) ---
+NAME                                        READY   STATUS    RESTARTS   AGE   IP            NODE                       NOMINATED NODE   READINESS GATES
+beta-ca-7f9fbdc869-w8dl7                    1/1     Running   0          4s    10.242.0.7    lctmh-beta-control-plane   <none>           <none>
+beta-directory-65ff47bd68-54dhz             0/1     Running   0          3s    10.242.0.9    lctmh-beta-control-plane   <none>           <none>
+beta-revocation-55d67896fb-5d9kn            0/1     Running   0          3s    10.242.0.8    lctmh-beta-control-plane   <none>           <none>
+flight-specialist-5c99cddfbd-z4l2d          1/2     Running   0          3s    10.242.0.10   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-backup-9f6859d8f-7zjgj     1/2     Running   0          3s    10.242.0.12   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-primary-5bd9cf6f6b-n47xf   1/2     Running   0          3s    10.242.0.11   lctmh-beta-control-plane   <none>           <none>
+--- Cluster: lctmh-pay (namespace: lineage-pay) ---
+NAME                                    READY   STATUS    RESTARTS   AGE   IP            NODE                      NOMINATED NODE   READINESS GATES
+payment-ca-7f8b578b89-rn6nx             1/1     Running   0          3s    10.243.0.7    lctmh-pay-control-plane   <none>           <none>
+payment-directory-9fc5dd554-rlhb5       0/1     Running   0          2s    10.243.0.9    lctmh-pay-control-plane   <none>           <none>
+payment-revocation-5884bfcd9b-6fgln     0/1     Running   0          2s    10.243.0.8    lctmh-pay-control-plane   <none>           <none>
+payment-vault-mcp-79cc86f77-bp989       1/2     Running   0          2s    10.243.0.12   lctmh-pay-control-plane   <none>           <none>
+settlement-converger-7fbd744b87-q4h46   1/2     Running   0          2s    10.243.0.10   lctmh-pay-control-plane   <none>           <none>
+travel-ops-mcp-5c649988db-vthhd         1/2     Running   0          2s    10.243.0.11   lctmh-pay-control-plane   <none>           <none>
+--- Cluster: lctmh-audit (namespace: lineage-audit) ---
+NAME                               READY   STATUS    RESTARTS   AGE   IP           NODE                        NOMINATED NODE   READINESS GATES
+audit-ca-787fcb9f6d-lvnc2          1/1     Running   0          1s    10.244.0.6   lctmh-audit-control-plane   <none>           <none>
+audit-collector-5b474d9bbc-mt8g9   0/1     Running   0          1s    10.244.0.7   lctmh-audit-control-plane   <none>           <none>
+
+============================================================================
+ Local Domain Trust Anchor(s) — Share Out-of-Band & Pin on Peer Machines:
+============================================================================
+  org-alpha.io sha256:0a5086084f4fbfaf215483a143e969f3334d9f29d70b5fa33ab42dc3c6677cbf:e19c57bb8f0e04d9112872591dcb9103c6aced54135a3a1c75f4ad04dbe6d4e8
+    -> Peer command: python3 lineage/multihost/lct_multihost_cli.py trust add org-alpha.io sha256:0a5086084f4fbfaf215483a143e969f3334d9f29d70b5fa33ab42dc3c6677cbf:e19c57bb8f0e04d9112872591dcb9103c6aced54135a3a1c75f4ad04dbe6d4e8
+  org-beta.io sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5
+    -> Peer command: python3 lineage/multihost/lct_multihost_cli.py trust add org-beta.io sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5
+  org-payment.io sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053
+    -> Peer command: python3 lineage/multihost/lct_multihost_cli.py trust add org-payment.io sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053
+  org-audit.io sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless
+    -> Peer command: python3 lineage/multihost/lct_multihost_cli.py trust add org-audit.io sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless
+============================================================================

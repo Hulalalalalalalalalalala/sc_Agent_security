@@ -1,0 +1,14 @@
+=== Verify 0 lctmh-* containers remain ===
+lctmh_container_count=0
+=== Verify baseline & Milestone 4 containers remain untouched (Exited) ===
+lct-audit-control-plane	Exited (137) 6 hours ago
+lct-org-pay-control-plane	Exited (137) 6 hours ago
+lct-org-beta-control-plane	Exited (137) 6 hours ago
+lct-org-alpha-control-plane	Exited (137) 6 hours ago
+agent-identity-lab-control-plane	Exited (137) 6 hours ago
+=== Verify Ollama daemon :11434 is stopped ===
+ollama_probe_rc=7
+=== Verify kubectl current-context restored ===
+current_context=kind-agent-identity-lab
+=== Verify zero private keys / raw JWTs / raw LCT tokens in /Users/hulalala/Desktop/A/lineage/k8s/runs/20261123T183128Z-multihost-rehearsal ===
+[HYGIENE PASS] Scanned 18 rehearsal artifact files: 0 private keys, 0 raw JWTs/LCTs!

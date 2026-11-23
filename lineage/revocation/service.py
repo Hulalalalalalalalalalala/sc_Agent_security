@@ -67,6 +67,7 @@ class RevocationService:
         federation_ssl_context: Optional[ssl.SSLContext] = None,
         federation_peer_cert_verifier: Optional[Callable[[bytes], Tuple[str, str]]] = None,
         mtls_bundle: Optional[WorkloadMTLSBundle] = None,
+        readiness_check: Optional[Callable[[], Tuple[bool, Dict[str, Any]]]] = None,
     ) -> None:
         self.service_identity = service_identity
         self.trust_resolver = trust_resolver
@@ -86,7 +87,10 @@ class RevocationService:
         }
         self._client_ssl_context = client_ssl_context
         self._mtls_bundle = mtls_bundle
+        self._readiness_check = readiness_check
         self._peer_cursors: Dict[str, int] = {}
+        self._peer_instance_jkts: Dict[str, str] = {}
+        self._peer_last_timestamps: Dict[str, float] = {}
         self._fed_lock = threading.Lock()
         self._fed_stop = threading.Event()
         self._fed_thread: Optional[threading.Thread] = None
@@ -99,12 +103,15 @@ class RevocationService:
             peer_cert_verifier=peer_cert_verifier,
         )
         eff_fed_ssl = federation_ssl_context
+        eff_fed_provider: Optional[Callable[[], ssl.SSLContext]] = None
         eff_fed_verifier = federation_peer_cert_verifier
         if eff_fed_ssl is None and mtls_bundle is not None and federation_port is not None:
-            eff_fed_ssl = mtls_bundle.build_server_ssl_context(require_client_cert=True)
+            eff_fed_provider = mtls_bundle.server_ssl_context_provider(
+                require_client_cert=True
+            )
         if eff_fed_verifier is None and mtls_bundle is not None and federation_port is not None:
             eff_fed_verifier = mtls_bundle.trust_store.verify_peer_der_cert
-        self._fed_require_mtls = eff_fed_ssl is not None
+        self._fed_require_mtls = (eff_fed_ssl is not None) or (eff_fed_provider is not None)
         self._federation_http: Optional[ManagedHTTPService] = (
             ManagedHTTPService(
                 service_name="revocation-federation",
@@ -112,6 +119,7 @@ class RevocationService:
                 host=host,
                 port=int(federation_port),
                 ssl_context=eff_fed_ssl,
+                ssl_context_provider=eff_fed_provider,
                 peer_cert_verifier=eff_fed_verifier,
             )
             if federation_port is not None
@@ -168,10 +176,15 @@ class RevocationService:
             )
         if not ev.service_svid or not ev.service_signature:
             raise RevocationError("Federated RevocationEvent missing service_svid or signature")
+        if ev.timestamp > (time.time() + 30.0):
+            raise RevocationError("Federated RevocationEvent timestamp is in the future")
         try:
-            svid_claims = self.trust_resolver.verify_workload_svid(ev.service_svid)
+            svid_claims = self.trust_resolver.verify_workload_svid(
+                ev.service_svid, now=ev.timestamp
+            )
             signer_spiffe = SpiffeId.parse(str(svid_claims["sub"]))
-        except IdentityError as exc:
+            signer_jkt = str(svid_claims["cnf"]["jkt"])
+        except (IdentityError, KeyError) as exc:
             raise RevocationError(f"Federated revocation SVID invalid: {exc}") from exc
 
         if (
@@ -197,7 +210,10 @@ class RevocationService:
         if signed_claims != ev.core_claims():
             raise RevocationError("Federated RevocationEvent claims tampered")
 
-        return self.trie.ingest_federated_event(ev)
+        try:
+            return self.trie.ingest_federated_event(ev, origin_instance_jkt=signer_jkt)
+        except ValueError as exc:
+            raise RevocationError(str(exc)) from exc
 
     def sync_from_federation_peers(
         self, strict_required_domains: Optional[Iterable[str]] = None
@@ -226,10 +242,12 @@ class RevocationService:
             is_strict = peer_td in strict_set
             with self._fed_lock:
                 since_v = self._peer_cursors.get(peer_td, 0)
+                known_peer_jkt = self._peer_instance_jkts.get(peer_td, "")
+                last_peer_ts = self._peer_last_timestamps.get(peer_td, 0.0)
             try:
                 with httpx.Client(
                     verify=self._http_verify_kwarg(peer_url=peer_url, expected_domain=peer_td),
-                    timeout=httpx.Timeout(connect=1.2, read=1.5, write=1.5, pool=1.5),
+                    timeout=httpx.Timeout(connect=2.5, read=3.0, write=3.0, pool=3.0),
                 ) as client:
                     resp = client.get(
                         f"{peer_url}/v1/federation/events",
@@ -253,45 +271,101 @@ class RevocationService:
                 continue
 
             default_svid = str(data.get("service_svid") or "")
-            if is_strict:
-                try:
-                    svid_claims = self.trust_resolver.verify_workload_svid(default_svid)
-                    peer_sp = SpiffeId.parse(str(svid_claims["sub"]))
-                    if (
-                        peer_sp.trust_domain != peer_td
-                        or peer_sp.path != "/ns/sys/sa/revocation"
-                    ):
-                        raise RevocationError(
-                            f"Unauthorized federated revocation service SVID {peer_sp.uri!r}"
-                        )
-                except (IdentityError, RevocationError, KeyError) as exc:
+            peer_jkt = ""
+            try:
+                svid_claims = self.trust_resolver.verify_workload_svid(default_svid)
+                peer_sp = SpiffeId.parse(str(svid_claims["sub"]))
+                peer_jkt = str(svid_claims["cnf"]["jkt"])
+                if (
+                    peer_sp.trust_domain != peer_td
+                    or peer_sp.path != "/ns/sys/sa/revocation"
+                ):
+                    raise RevocationError(
+                        f"Unauthorized federated revocation service SVID {peer_sp.uri!r}"
+                    )
+            except (IdentityError, RevocationError, KeyError) as exc:
+                if is_strict:
                     raise RevocationError(
                         f"Federated revocation peer {peer_td!r} failed SVID verification: {exc}"
                     ) from exc
+                continue
 
-            max_seen = since_v
+            peer_cur_ver = int(data.get("version", since_v))
+            jkt_rotated = bool(known_peer_jkt and peer_jkt and peer_jkt != known_peer_jkt)
+            if since_v > 0 and not jkt_rotated and peer_cur_ver < since_v:
+                msg = (
+                    f"Federated revocation peer {peer_td!r} rolled back version "
+                    f"({peer_cur_ver} < {since_v}) without instance JKT rotation"
+                )
+                if is_strict:
+                    raise RevocationError(msg)
+                continue
+
+            if since_v > 0 and jkt_rotated:
+                # Peer revocation service genuinely restarted with a new RAM keypair: re-pull from v0!
+                try:
+                    with httpx.Client(
+                        verify=self._http_verify_kwarg(peer_url=peer_url, expected_domain=peer_td),
+                        timeout=httpx.Timeout(connect=2.5, read=3.0, write=3.0, pool=3.0),
+                    ) as client:
+                        resp0 = client.get(
+                            f"{peer_url}/v1/federation/events",
+                            params={"since_version": 0},
+                        )
+                        resp0.raise_for_status()
+                        data = resp0.json()
+                    default_svid = str(data.get("service_svid") or "")
+                    svid_claims0 = self.trust_resolver.verify_workload_svid(default_svid)
+                    peer_sp0 = SpiffeId.parse(str(svid_claims0["sub"]))
+                    if peer_sp0.trust_domain != peer_td or peer_sp0.path != "/ns/sys/sa/revocation":
+                        raise RevocationError(f"Unauthorized federated revocation SVID {peer_sp0.uri!r}")
+                    peer_jkt = str(svid_claims0["cnf"]["jkt"])
+                    since_v = 0
+                    last_peer_ts = 0.0
+                except Exception as exc:
+                    if is_strict:
+                        raise RevocationError(
+                            f"Federated revocation peer {peer_td!r} restart resync failed: {exc}"
+                        ) from exc
+                    continue
+
+            prev_ver = since_v
+            prev_ts = last_peer_ts
             for raw_item in data.get("events") or []:
                 item_dict = dict(raw_item)
                 item_dict.setdefault("service_svid", default_svid)
                 try:
-                    stored = self.ingest_federated_event(item_dict, expected_peer_domain=peer_td)
-                    orig_v = (
-                        stored.origin_version
-                        if stored.origin_version is not None
-                        else stored.version
+                    cand_ev = RevocationEvent.from_dict(item_dict)
+                    cand_ver = (
+                        cand_ev.origin_version
+                        if cand_ev.origin_version is not None
+                        else cand_ev.version
                     )
-                    if orig_v > max_seen:
-                        max_seen = orig_v
+                    if cand_ver <= prev_ver:
+                        raise RevocationError(
+                            f"Non-increasing federated revocation version {cand_ver} <= {prev_ver} for {peer_td!r}"
+                        )
+                    if prev_ts > 0.0 and cand_ev.timestamp < (prev_ts - 5.0):
+                        raise RevocationError(
+                            f"Timestamp rollback in federated revocation stream for {peer_td!r}: "
+                            f"{cand_ev.timestamp:.3f} < {prev_ts:.3f} - 5.0s"
+                        )
+                    stored = self.ingest_federated_event(item_dict, expected_peer_domain=peer_td)
+                    prev_ver = cand_ver
+                    if stored.timestamp > prev_ts:
+                        prev_ts = stored.timestamp
                     imported += 1
                 except Exception as exc:
                     if is_strict:
                         raise RevocationError(
                             f"Federated revocation event verification failed for {peer_td!r}: {exc}"
                         ) from exc
-                    continue
+                    break
             with self._fed_lock:
-                if max_seen > self._peer_cursors.get(peer_td, 0):
-                    self._peer_cursors[peer_td] = max_seen
+                self._peer_cursors[peer_td] = prev_ver
+                self._peer_last_timestamps[peer_td] = prev_ts
+                if peer_jkt:
+                    self._peer_instance_jkts[peer_td] = peer_jkt
         return imported
 
     def start_federation_sync(self, interval_sec: float = 0.4) -> None:
@@ -660,6 +734,39 @@ class RevocationService:
                 {},
             )
 
+        if req.method == "GET" and req.path == "/readyz":
+            if self._readiness_check is not None:
+                ok, detail = self._readiness_check()
+                if not ok:
+                    return (
+                        503,
+                        {
+                            "status": "not_ready",
+                            "service": "revocation-service",
+                            **detail,
+                        },
+                        {},
+                    )
+                return (
+                    200,
+                    {
+                        "status": "ready",
+                        "service": "revocation-service",
+                        "version": self.trie.version,
+                        **detail,
+                    },
+                    {},
+                )
+            return (
+                200,
+                {
+                    "status": "ready",
+                    "service": "revocation-service",
+                    "version": self.trie.version,
+                },
+                {},
+            )
+
         if req.method == "GET" and req.path == "/v1/service-info":
             return (
                 200,
@@ -800,6 +907,7 @@ class RevocationService:
                 200,
                 {
                     "trust_domain": self.service_identity.trust_domain,
+                    "version": self.trie.version,
                     "service_svid": self.service_identity.workload_svid,
                     "events": [e.to_dict() for e in local_events],
                 },
@@ -887,40 +995,57 @@ class RevocationReplicaClient:
         self._bg_stop = threading.Event()
         self._bg_thread: Optional[threading.Thread] = None
         self.last_service_svid: str = ""
+        self._remote_cursor: int = self.trie.version
+        self._remote_instance_jkt: str = ""
+        self._signer_last_timestamps: Dict[str, float] = {}
 
     def _verify_kwarg(self) -> Any:
         return self.ssl_context if self.ssl_context is not None else True
 
     def _verify_and_apply_events(
-        self, service_svid: str, raw_events: Iterable[Dict[str, Any]]
+        self,
+        service_svid: str,
+        raw_events: Iterable[Dict[str, Any]],
+        allow_epoch_merge: bool = False,
+        min_prev_version: Optional[int] = None,
     ) -> int:
         events_list = list(raw_events)
-        if not events_list:
-            if service_svid:
-                self.last_service_svid = service_svid
-            return self.trie.version
+        verified_jwk_cache: Dict[
+            Tuple[str, Optional[float]], Tuple[str, str, Dict[str, Any]]
+        ] = {}
 
-        verified_jwk_cache: Dict[str, Tuple[str, Dict[str, Any]]] = {}
-
-        def _resolve_signer(svid_tok: str) -> Tuple[str, Dict[str, Any]]:
-            cached = verified_jwk_cache.get(svid_tok)
+        def _resolve_signer(
+            svid_tok: str, eval_ts: Optional[float] = None
+        ) -> Tuple[str, str, Dict[str, Any]]:
+            cache_key = (svid_tok, eval_ts)
+            cached = verified_jwk_cache.get(cache_key)
             if cached is not None:
                 return cached
             try:
-                claims = self.trust_resolver.verify_workload_svid(svid_tok)
+                claims = self.trust_resolver.verify_workload_svid(svid_tok, now=eval_ts)
             except IdentityError as exc:
                 raise RevocationError(
                     f"Revocation service SVID verification failed: {exc}"
                 ) from exc
             sp = SpiffeId.parse(str(claims["sub"]))
-            res = (sp.trust_domain, claims["cnf"]["jwk"])
-            verified_jwk_cache[svid_tok] = res
+            res = (sp.trust_domain, str(claims["cnf"]["jkt"]), claims["cnf"]["jwk"])
+            verified_jwk_cache[cache_key] = res
             return res
 
         if service_svid:
-            _resolve_signer(service_svid)
+            _resolve_signer(service_svid, eval_ts=None)
             self.last_service_svid = service_svid
 
+        if not events_list:
+            return self.trie.version
+
+        prev_ver = (
+            int(min_prev_version)
+            if min_prev_version is not None
+            else (0 if allow_epoch_merge else self.trie.version)
+        )
+        staged_signer_ts = dict(self._signer_last_timestamps)
+        now_wall = time.time()
         for raw_ev in events_list:
             ev_dict = dict(raw_ev)
             ev_svid = str(ev_dict.get("service_svid") or service_svid)
@@ -928,10 +1053,22 @@ class RevocationReplicaClient:
             ev = RevocationEvent.from_dict(ev_dict)
             if not ev.service_signature or not ev_svid:
                 raise RevocationError("RevocationEvent missing service_signature or SVID")
-            signer_td, svc_jwk = _resolve_signer(ev_svid)
+            if ev.version <= prev_ver:
+                raise RevocationError(
+                    f"Non-increasing RevocationEvent version {ev.version} <= {prev_ver}"
+                )
+            if ev.timestamp > (now_wall + 30.0):
+                raise RevocationError("RevocationEvent timestamp is in the future")
+            signer_td, signer_jkt, svc_jwk = _resolve_signer(ev_svid, eval_ts=ev.timestamp)
             if ev.origin_version is not None and ev.trust_domain != signer_td:
                 raise RevocationError(
                     f"Federated RevocationEvent signer domain {signer_td!r} != {ev.trust_domain!r}"
+                )
+            prev_signer_ts = staged_signer_ts.get(signer_jkt, 0.0)
+            if prev_signer_ts > 0.0 and ev.timestamp < (prev_signer_ts - 5.0):
+                raise RevocationError(
+                    f"RevocationEvent timestamp rollback for signer {signer_jkt!r}: "
+                    f"{ev.timestamp:.3f} < {prev_signer_ts:.3f} - 5.0s"
                 )
             try:
                 _, signed_claims = jws_verify_compact(
@@ -945,8 +1082,15 @@ class RevocationReplicaClient:
                 ) from exc
             if signed_claims != ev.core_claims():
                 raise RevocationError("RevocationEvent payload tampered in transit")
-            self.trie.apply_replicated_event(ev)
+            if allow_epoch_merge:
+                self.trie.apply_verified_replica_event(ev)
+            else:
+                self.trie.apply_replicated_event(ev)
+            prev_ver = ev.version
+            if ev.timestamp > prev_signer_ts:
+                staged_signer_ts[signer_jkt] = ev.timestamp
 
+        self._signer_last_timestamps = staged_signer_ts
         return self.trie.version
 
     def sync_now(
@@ -954,8 +1098,10 @@ class RevocationReplicaClient:
         wait_ms: int = 0,
         required_trust_domains: Optional[Iterable[str]] = None,
     ) -> int:
-        """Synchronously pull and verify all new revocation events since local version."""
-        since = self.trie.version
+        """Synchronously pull and verify all new revocation events since remote cursor."""
+        with self._sync_lock:
+            since = self._remote_cursor
+            known_jkt = self._remote_instance_jkt
         params: Dict[str, Any] = {"since_version": since, "wait_ms": wait_ms}
         if required_trust_domains:
             norm_req = sorted(
@@ -979,11 +1125,78 @@ class RevocationReplicaClient:
                 f"Failed to sync with RevocationService at {self.revocation_url}: {exc}"
             ) from exc
 
+        svc_svid = str(body.get("service_svid", ""))
+        svc_jkt = ""
+        if svc_svid:
+            try:
+                svc_claims = self.trust_resolver.verify_workload_svid(svc_svid)
+                svc_jkt = str(svc_claims["cnf"]["jkt"])
+            except IdentityError as exc:
+                raise RevocationError(
+                    f"Revocation service SVID verification failed: {exc}"
+                ) from exc
+
+        server_ver = int(body.get("version", since))
         with self._sync_lock:
-            return self._verify_and_apply_events(
-                service_svid=str(body.get("service_svid", "")),
+            jkt_rotated = bool(known_jkt and svc_jkt and svc_jkt != known_jkt)
+            if since > 0 and not jkt_rotated and server_ver < since:
+                raise RevocationError(
+                    f"RevocationService version rollback ({server_ver} < {since}) "
+                    f"within same instance JKT {svc_jkt!r}"
+                )
+            if since > 0 and jkt_rotated:
+                # Upstream RevocationService genuinely restarted with new RAM keypair: re-pull from v0!
+                reset_params = dict(params)
+                reset_params["since_version"] = 0
+                reset_params["wait_ms"] = 0
+                try:
+                    with httpx.Client(
+                        verify=self._verify_kwarg(),
+                        timeout=max(self.timeout, 4.5),
+                    ) as client:
+                        resp0 = client.get(
+                            f"{self.revocation_url}/v1/events",
+                            params=reset_params,
+                        )
+                        resp0.raise_for_status()
+                        body = resp0.json()
+                except Exception as exc:
+                    raise RevocationError(
+                        f"Failed to resync restarted RevocationService at {self.revocation_url}: {exc}"
+                    ) from exc
+                svc_svid = str(body.get("service_svid", ""))
+                if svc_svid:
+                    try:
+                        svc_claims0 = self.trust_resolver.verify_workload_svid(svc_svid)
+                        svc_jkt = str(svc_claims0["cnf"]["jkt"])
+                    except IdentityError as exc:
+                        raise RevocationError(
+                            f"Revocation service SVID verification failed on resync: {exc}"
+                        ) from exc
+                server_ver = int(body.get("version", 0))
+                out_ver = self._verify_and_apply_events(
+                    service_svid=svc_svid,
+                    raw_events=body.get("events", []),
+                    allow_epoch_merge=True,
+                    min_prev_version=0,
+                )
+                self._remote_cursor = server_ver
+                if svc_jkt:
+                    self._remote_instance_jkt = svc_jkt
+                return out_ver
+
+            use_merge = self._remote_cursor != self.trie.version
+            out_ver = self._verify_and_apply_events(
+                service_svid=svc_svid,
                 raw_events=body.get("events", []),
+                allow_epoch_merge=use_merge,
+                min_prev_version=since,
             )
+            if server_ver > self._remote_cursor:
+                self._remote_cursor = server_ver
+            if svc_jkt:
+                self._remote_instance_jkt = svc_jkt
+            return out_ver
 
     def start_background_sync(self, wait_ms: int = 500) -> None:
         if self._bg_thread is not None and self._bg_thread.is_alive():

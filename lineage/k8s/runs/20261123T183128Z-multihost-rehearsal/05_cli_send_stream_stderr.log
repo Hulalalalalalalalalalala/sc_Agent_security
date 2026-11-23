@@ -1,0 +1,7 @@
+[sse] statusUpdate state=TASK_STATE_SUBMITTED final=False
+[sse] statusUpdate state=TASK_STATE_WORKING final=False
+[sse] artifactUpdate name=orchestrator-intent-plan
+[sse] artifactUpdate name=flight-specialist-booking
+[sse] artifactUpdate name=hotel-specialist-reservation
+[sse] artifactUpdate name=settlement-convergence-summary
+[sse] statusUpdate state=TASK_STATE_COMPLETED final=True

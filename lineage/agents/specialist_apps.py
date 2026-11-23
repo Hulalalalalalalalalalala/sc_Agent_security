@@ -1010,10 +1010,13 @@ class SettlementConvergerApp:
             audit_data = res_m["upstream_body"]["result"]["data"]
 
             if clean_hook_url:
+                hook_tok = str(body.get("sync_hook_token") or "")
+                hook_hdrs = {"X-LCT-Sync-Token": hook_tok} if hook_tok else {}
                 try:
                     httpx.post(
                         clean_hook_url,
                         json={"task_id": task_id, "ready": True},
+                        headers=hook_hdrs,
                         timeout=20.0,
                         follow_redirects=False,
                     )
@@ -1391,6 +1394,7 @@ class OrchestratorAlphaApp:
                     "op": "leaf_audit_and_upward_return",
                     "city": city,
                     "sync_hook_url": clean_hook_url,
+                    "sync_hook_token": str(body.get("sync_hook_token") or ""),
                     "simulate_direct_parent_unreachable": sim_unreach,
                     "return_timeout_sec": ret_timeout,
                 },
@@ -1457,7 +1461,7 @@ class OrchestratorAlphaApp:
             "hotel_timeout_sec",
             0.2,
             60.0,
-            default_val=25.0,
+            default_val=40.0,
         )
         zombie_delay = _require_bounded_float(
             body.get("simulate_primary_zombie_delay_sec"),

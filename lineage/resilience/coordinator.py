@@ -16,6 +16,7 @@ Implements:
 
 from __future__ import annotations
 
+import socket
 import ssl
 import time
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
@@ -155,6 +156,19 @@ class ResilientDelegationCoordinator:
                 access_token=compact_tok,
             )
 
+            resolved_cand_ip: Optional[str] = None
+            try:
+                if sp_t.hostname:
+                    infos = socket.getaddrinfo(
+                        sp_t.hostname,
+                        sp_t.port or (443 if sp_t.scheme == "https" else 80),
+                        socket.AF_INET,
+                    )
+                    if infos:
+                        resolved_cand_ip = str(infos[0][4][0])
+            except Exception:
+                pass
+
             if self.audit_emitter is not None:
                 self.audit_emitter.emit(
                     event_type=AuditEventType.OUTBOUND_DELEGATE,
@@ -171,6 +185,7 @@ class ResilientDelegationCoordinator:
                         "delegate_spiffe_id": candidate.spiffe_id,
                         "skill": required_skill,
                         "target_url": target_url,
+                        "resolved_peer_ip": resolved_cand_ip,
                     },
                     decision="ALLOW",
                 )

@@ -100,5 +100,22 @@ cd /Users/hulalala/Desktop/A
 ### 4.3 一键拉起 4 个独立 Kind 集群 + 宿主机 Ollama `qwen2.5:3b` 跑通全部 6 组跨集群实测场景
 
 ```bash
-bash /Users/hulalala/Desktop/A/lineage/k8s/run-e2e-multicluster-ollama.sh
+bash lineage/k8s/run-e2e-multicluster-ollama.sh
 ```
+
+---
+
+## 5. 三机物理互联架构与密钥托管演进（Milestone 6 — `lineage/multihost/`）
+
+在单机四集群物理隔离基础上，`lineage/multihost/` 将自治信任域扩展至跨真实局域网 / VPN 的 **3 台独立物理主机互联部署**（`Machine 1: alpha + audit`，`Machine 2: beta`，`Machine 3: pay`，支持任意角色组合）：
+
+1. **宿主网卡显式端口映射与内部接口封闭**：
+   各 `lctmh-*` Kind 集群仅将只读公钥束端口（`30094/31094/32094`）、双向 mTLS 1.3 控制面联邦端口（`*491/*492`）、双向 mTLS 1.3 A2A/MCP 业务端口（`*441-*443`）、TLS 1.3 审计端口（`30893`）以及 `alpha` 节点供端到端验收场景 3B 临时开启的同步钩子端口（`30990`：默认无 Kubernetes `NodePort` Service 与监听进程，仅在 `e2e` 场景 3B 执行期间临时创建 `Service/e2e-user-gateway-sync` 并强制校验每次运行随机生成的 `X-LCT-Sync-Token` 常量时间摘要，场景结束后立即销毁该 Service）映射至宿主网卡 `0.0.0.0`；签发、注册、本地吊销与业务回环接口（`:8090/:8091/:8092/:8081/:9001`）严格保持 `ClusterIP` 或 Pod 本地回环，绝不对外发布。
+2. **密钥托管边界演进（Stable Domain CA Roots vs. Ephemeral RAM Workload Keys）**：
+   - **域根 CA 密钥（部署期内稳定托管）**：单机演练模式下 CA 根密钥随 Pod 重启在内存中重新生成；在跨物理机生产联邦中，为保证 CA Pod 重启不破坏跨机信任关系并支持确定性指纹钉扎，`deploy-role.sh` 在宿主机内存中生成各域独立的 ES256 JWK 根密钥与 X.509 v3 根证书，经标准输入流直接写入本集群 Kubernetes `Secret`（宿主机磁盘与日志零私钥落盘），仅以 `readOnly: true`、`defaultMode: 0440` 配合 `securityContext.fsGroup: 2000`（other 位权限为 `0`）挂载至该域唯一所属 CA Pod，且命名空间内不配置任何授予 `secrets` 读取权限的 RBAC 规则。
+   - **工作负载私钥（严格每 Pod 内存态 + 50% 生命周期自动续期）**：所有 Sidecar、目录与撤销服务私钥始终在各自容器内存中独立生成，不落盘、不进 Secret。`WorkloadIdentityRenewer` 在 SVID 剩余寿命降至 `50%` 时自动重读 Kubelet 轮换后的投射 ServiceAccount 令牌并完成 PoP 续期，原子热替换内存态 `WorkloadIdentity`、客户端/服务端 `SSLContext`（经 `ManagedHTTPService.ssl_context_provider`）及单调递增版本的签名 `AgentCard`。
+   - **无签名密钥（Keyless）TLS 1.3 审计中心**：`lctmh-audit` 中的最小化 `audit-ca` 仅持有 `org-audit.io` X.509 根证书（`keys: []`，无法签发任何工作负载 JWT-SVID 或授权链根块）；`audit-collector` 在自身 Pod 内存中维护服务端 TLS 私钥，持有零域 CA 私钥与零 K8s ServiceAccount 令牌，并在入库时强制校验 `AuditEntry` 时间戳新鲜度窗口与单流时间单调性。
+3. **SSH 风格信任锚固定（Trust Anchor Pinning）与无启动顺序依赖**：
+   跨物理网络拉取公钥束时，`FederationBundleSyncer` 强制校验 `ConfigMap` (`lct-trust-anchors`) 中固定的 `<domain> sha256:<x509-spki-hex>:<jwks-set-hex|keyless>` 双重摘要：对于尚未验证的对端域，未固定或摘要失配立即触发 Fail-Closed 阻断；对于已通过本地锚点校验的对端域，局域网明文 HTTP 伪造响应仅被拒绝并记录告警计数而绝不驱逐内存态已验证密钥（仅当本地管理员移除或修改 `lct-trust-anchors` 中的锚点时才执行驱逐）。更新 `ConfigMap` 后无需重启容器即可热加载客户端与服务端双向 TLS 信任库。存活探针（`/healthz`）与就绪探针（`/readyz`）完全解耦，任意物理机先行启动均保持零重启存活，对端上线并完成锚点校验后自动进入 `Ready`。
+
+详细部署步骤、各操作系统防火墙规则、DHCP IP 热更新（`update-peer-ips`）与排障手册见 [`multihost/MULTIHOST_GUIDE.md`](./multihost/MULTIHOST_GUIDE.md)。

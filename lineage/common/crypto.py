@@ -323,6 +323,40 @@ class KeyPair:
         resolved_kid = kid if kid else f"{alg.lower()}-{jkt[:16]}"
         return cls(alg=alg, kid=resolved_kid, _private_key=priv)
 
+    @classmethod
+    def from_private_pem(cls, pem_str: str, kid: Optional[str] = None) -> "KeyPair":
+        """Load an in-memory KeyPair from PKCS#8 / EC / RSA PEM (for K8s CA Secret mounts)."""
+        try:
+            priv = serialization.load_pem_private_key(
+                pem_str.strip().encode("ascii"), password=None
+            )
+        except Exception as exc:
+            raise CryptoError(f"Invalid private key PEM: {exc}") from exc
+        if isinstance(priv, ec.EllipticCurvePrivateKey):
+            if not isinstance(priv.curve, ec.SECP256R1):
+                raise CryptoError(f"Unsupported EC curve in PEM: {priv.curve.name}")
+            alg = "ES256"
+        elif isinstance(priv, rsa.RSAPrivateKey):
+            if priv.key_size < 2048:
+                raise CryptoError("RSA private key must be >= 2048 bits")
+            alg = "RS256"
+        else:
+            raise CryptoError(f"Unsupported private key type: {type(priv).__name__}")
+        jkt = compute_jwk_thumbprint(priv.public_key())
+        resolved_kid = kid if kid else f"{alg.lower()}-{jkt[:16]}"
+        return cls(alg=alg, kid=resolved_kid, _private_key=priv)
+
+    def export_private_pem(self) -> str:
+        """Export PKCS#8 PEM strictly for streaming into an isolated K8s CA Secret."""
+        return (
+            self._private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            .decode("ascii")
+        )
+
     @property
     def public_key(self) -> PublicKeyTypes:
         return self._private_key.public_key()

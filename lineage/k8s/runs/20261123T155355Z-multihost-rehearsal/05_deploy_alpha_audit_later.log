@@ -1,0 +1,52 @@
+============================================================================
+ LCT Multi-Host Preflight Check
+============================================================================
+  Local Roles   : alpha audit
+  Machine IPs   : alpha=192.168.1.6, beta=192.168.1.6, pay=192.168.1.6, audit=192.168.1.6
+  Host Ports    : 30094 30491 30492 30441 30990 30893
+  LLM Endpoint  : http://host.docker.internal:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling  : docker, kind, kubectl, helm present
+  [OK] Docker   : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Ports    : all requested host ports (30094 30491 30492 30441 30990 30893) are available
+  [OK] LLM      : http://127.0.0.1:11434/v1/models reachable with model 'qwen2.5:3b'
+  [INFO] Peer alpha (192.168.1.6:30094): not online yet (order-independent boot supported)
+  [OK] Peer beta (http://192.168.1.6:31094): reachable, clock skew=-0.302s (<= 10s)
+  [OK] Peer pay (http://192.168.1.6:32094): reachable, clock skew=-0.458s (<= 10s)
+  [INFO] Peer audit (192.168.1.6:30893): not online yet (order-independent boot supported)
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): alpha audit
+============================================================================
+[deploy] Building image 'lineage-lct:m6' (BASE_IMAGE=ghcr.io/rossoctl/examples/weather_tool:pinned)...
+[deploy] Creating Kind cluster 'lctmh-alpha' with host-NIC extraPortMappings...
+[deploy] Loading image 'lineage-lct:m6' into 'lctmh-alpha'...
+[deploy] Creating Kind cluster 'lctmh-audit' with host-NIC extraPortMappings...
+[deploy] Loading image 'lineage-lct:m6' into 'lctmh-audit'...
+[deploy] Patching CoreDNS zones (*.org-alpha.io, *.org-beta.io, *.org-payment.io, audit-collector.org-audit.io)...
+[deploy] Applying manifests for role 'alpha' (ns=lineage-alpha, svid_ttl=120s)...
+[deploy] Applying manifests for role 'audit' (ns=lineage-audit, svid_ttl=120s)...
+[deploy] Waiting for alpha-ca (kind-lctmh-alpha) to become Ready...
+[deploy] Waiting for audit-ca (kind-lctmh-audit) to become Ready...
+
+============================================================================
+ LCT Multi-Host Deployment Summary (Roles: alpha audit)
+============================================================================
+--- Cluster: lctmh-alpha (namespace: lineage-alpha) ---
+NAME                                  READY   STATUS    RESTARTS   AGE   IP            NODE                        NOMINATED NODE   READINESS GATES
+alpha-ca-5785b6bc78-454hq             1/1     Running   0          3s    10.241.0.7    lctmh-alpha-control-plane   <none>           <none>
+alpha-directory-f98cfc96b-mmksn       0/1     Running   0          3s    10.241.0.9    lctmh-alpha-control-plane   <none>           <none>
+alpha-revocation-74d88c86b-rt2g2      0/1     Running   0          3s    10.241.0.8    lctmh-alpha-control-plane   <none>           <none>
+e2e-user-gateway-74648ccd89-wwfqb     1/1     Running   0          3s    10.241.0.11   lctmh-alpha-control-plane   <none>           <none>
+orchestrator-alpha-756fffb8bd-bdj7l   1/2     Running   0          3s    10.241.0.10   lctmh-alpha-control-plane   <none>           <none>
+--- Cluster: lctmh-audit (namespace: lineage-audit) ---
+NAME                               READY   STATUS    RESTARTS   AGE   IP           NODE                        NOMINATED NODE   READINESS GATES
+audit-ca-787fcb9f6d-nkdtg          1/1     Running   0          2s    10.244.0.6   lctmh-audit-control-plane   <none>           <none>
+audit-collector-674767c887-vpsp5   0/1     Running   0          2s    10.244.0.7   lctmh-audit-control-plane   <none>           <none>
+
+============================================================================
+ Local Domain Trust Anchor(s) — Share Out-of-Band & Pin on Peer Machines:
+============================================================================
+  org-alpha.io sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9
+    -> Peer command: python3 lineage/multihost/lct_multihost_cli.py trust add org-alpha.io sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9
+  org-audit.io sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless
+    -> Peer command: python3 lineage/multihost/lct_multihost_cli.py trust add org-audit.io sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless
+============================================================================

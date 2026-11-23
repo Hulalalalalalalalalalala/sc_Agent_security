@@ -116,6 +116,13 @@ class TrustBundleResolver:
         with self._lock:
             return sorted(self._domain_keys.keys())
 
+    def evict_domain(self, trust_domain: str) -> None:
+        """Remove a domain's keys immediately (e.g. upon trust anchor pin invalidation)."""
+        norm_td = trust_domain.strip().lower()
+        with self._lock:
+            self._domain_keys.pop(norm_td, None)
+            self._domain_versions.pop(norm_td, None)
+
     def get_domain_key(self, trust_domain: str, kid: str) -> Dict[str, Any]:
         with self._lock:
             domain_map = self._domain_keys.get(trust_domain)

@@ -110,6 +110,9 @@ class HTTPRequestContext:
         scheme: str = "http",
         peer_spiffe_id: Optional[str] = None,
         peer_jkt: Optional[str] = None,
+        tls_version: Optional[str] = None,
+        tls_cipher: Optional[str] = None,
+        client_ip: Optional[str] = None,
     ) -> None:
         self.method = method.upper()
         valid_path, valid_query = validate_origin_form_target(raw_path)
@@ -130,6 +133,9 @@ class HTTPRequestContext:
         self.allowed_hosts = tuple(h.lower() for h in allowed_hosts if h)
         self.peer_spiffe_id = peer_spiffe_id
         self.peer_jkt = peer_jkt
+        self.tls_version = tls_version
+        self.tls_cipher = tls_cipher
+        self.client_ip = client_ip
 
     def header(self, name: str, default: Optional[str] = None) -> Optional[str]:
         return self._headers_lower.get(name.lower(), default)
@@ -219,6 +225,7 @@ class ManagedHTTPService:
         public_origin: Optional[str] = None,
         allowed_hosts: Iterable[str] = (),
         ssl_context: Optional[ssl.SSLContext] = None,
+        ssl_context_provider: Optional[Callable[[], ssl.SSLContext]] = None,
         peer_cert_verifier: Optional[Callable[[bytes], Tuple[str, str]]] = None,
     ) -> None:
         self.service_name = service_name
@@ -226,8 +233,13 @@ class ManagedHTTPService:
         self._host = host
         self._requested_port = port
         self._ssl_context = ssl_context
+        self._ssl_context_provider = ssl_context_provider
         self._peer_cert_verifier = peer_cert_verifier
-        self._scheme = "https" if ssl_context is not None else "http"
+        self._scheme = (
+            "https"
+            if (ssl_context is not None or ssl_context_provider is not None)
+            else "http"
+        )
         self._public_origin: Optional[str] = None
         if public_origin is not None:
             sp_pub = urlsplit(public_origin.strip())
@@ -253,6 +265,17 @@ class ManagedHTTPService:
             raise RuntimeError(f"Service {self.service_name} is not started")
         return int(self._server.server_address[1])
 
+    def set_ssl_context(self, ctx: ssl.SSLContext) -> None:
+        """Atomically swap the active server `SSLContext` for subsequent TLS connections."""
+        with self._lock:
+            self._ssl_context = ctx
+            self._scheme = "https"
+
+    def _get_active_ssl_context(self) -> Optional[ssl.SSLContext]:
+        if self._ssl_context_provider is not None:
+            return self._ssl_context_provider()
+        return self._ssl_context
+
     @property
     def base_url(self) -> str:
         return f"{self._scheme}://{self._host}:{self.port}"
@@ -275,9 +298,17 @@ class ManagedHTTPService:
                     try:
                         peer_spiffe: Optional[str] = None
                         peer_jkt: Optional[str] = None
-                        if outer._ssl_context is not None and isinstance(
+                        tls_ver: Optional[str] = None
+                        tls_ciph: Optional[str] = None
+                        client_ip: Optional[str] = (
+                            str(self.client_address[0]) if self.client_address else None
+                        )
+                        if outer._scheme == "https" and isinstance(
                             self.connection, ssl.SSLSocket
                         ):
+                            tls_ver = self.connection.version()
+                            c_info = self.connection.cipher()
+                            tls_ciph = c_info[0] if c_info else None
                             der_cert = self.connection.getpeercert(binary_form=True)
                             if outer._peer_cert_verifier is not None:
                                 try:
@@ -321,6 +352,9 @@ class ManagedHTTPService:
                             scheme=outer._scheme,
                             peer_spiffe_id=peer_spiffe,
                             peer_jkt=peer_jkt,
+                            tls_version=tls_ver,
+                            tls_cipher=tls_ciph,
+                            client_ip=client_ip,
                         )
                         status, payload, extra_headers = outer._dispatcher(ctx)
                         if isinstance(payload, SSEResponse):
@@ -429,10 +463,11 @@ class ManagedHTTPService:
                 def process_request_thread(
                     self, request: Any, client_address: Any
                 ) -> None:
-                    if outer._ssl_context is not None:
+                    active_ssl_ctx = outer._get_active_ssl_context()
+                    if active_ssl_ctx is not None:
                         try:
                             request.settimeout(10.0)
-                            tls_sock = outer._ssl_context.wrap_socket(
+                            tls_sock = active_ssl_ctx.wrap_socket(
                                 request, server_side=True
                             )
                             request = tls_sock

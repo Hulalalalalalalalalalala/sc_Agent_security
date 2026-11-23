@@ -1,0 +1,10 @@
+{
+  "scenario": "2b_a2a_v1_k8s_replicas_zero_crash_prune_and_graft",
+  "status": "PASS",
+  "task_id": "task-k8s-s2b-mh-qa-rehearsal-all8",
+  "a2a_task_state": "TASK_STATE_COMPLETED",
+  "grafted_epoch": 1,
+  "grafted_lineage_path": "/task-k8s-s2b-mh-qa-rehearsal-all8/OrchestratorAlpha/hotel-specialist-backup-e1",
+  "failover_fault_type": "CRASH",
+  "final_answer": "Here is the confirmation for the completed flight booking, hotel reservation, and both escrow settlements in the Verified MCP JSON format:\n\n- **Flight Booking**: \n  - Flight No: SQ-031\n  - Booking Ref: FLT-816758AD\n  - Settled USD: 620.0\n  - Task ID: task-k8s-s2b-mh-qa-rehearsal-all8\n  - Submitter: user:alice@org-alpha.io\n  - Lineage Path: /task-k8s-s2b-mh-qa-rehearsal-all8/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s2b-mh-qa-rehearsal-all8/OrchestratorAlpha/hotel-specialist-backup-e1/SettlementC\n  - Lineage Decision: ALLOW\n\n- **Hotel Reservation**: \n  - Hotel ID: HTL-SIN-02\n  - Hotel Name: Marina Bay Crest\n  - Reservation Ref: HTL-A62854CC\n  - Settled USD: 380.0\n  - Task ID: task-k8s-s2b-mh-qa-rehearsal-all8\n  - Submitter: user:alice@org-alpha.io\n  - Lineage Path: /task-k8s-s2b-mh-qa-rehearsal-all8/OrchestratorAlpha/FlightB1/SettlementC|"
+}

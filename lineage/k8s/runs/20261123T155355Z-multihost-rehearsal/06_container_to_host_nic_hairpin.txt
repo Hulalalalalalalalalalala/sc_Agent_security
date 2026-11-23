@@ -1,0 +1,4 @@
+=== Container -> Host LAN IP (192.168.1.6) Hairpin Verification ===
+beta-ca.org-beta.io:31094 -> resolved_ip=192.168.1.6, HTTP=200, body={"status":"ok","trust_domain":"org-beta.io","mode":"federation_readonly","trust_anchor":"sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57"}
+payment-ca.org-payment.io:32094 -> resolved_ip=192.168.1.6, HTTP=200, body={"status":"ok","trust_domain":"org-payment.io","mode":"federation_readonly","trust_anchor":"sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702"}
+audit-collector.org-audit.io:30893 -> resolved_ip=192.168.1.6, HTTP=200, body={"status":"ok","count":0}

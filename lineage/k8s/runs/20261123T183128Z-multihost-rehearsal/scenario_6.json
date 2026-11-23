@@ -1,0 +1,54 @@
+{
+  "scenario": "6_whole_cluster_network_partition_fail_closed_and_autonomous_recovery",
+  "status": "PASS",
+  "during_whole_cluster_partition": {
+    "partitioned_task_id": "task-k8s-s6-part-mh-qa-rehearsal-all8",
+    "beta_cluster_confirmed_unreachable": true,
+    "surviving_clusters_health": {
+      "alpha_ca_healthz": 200,
+      "alpha_dir_healthz": 200,
+      "alpha_rev_healthz": 200,
+      "orchestrator_alpha_mtls_healthz": 200,
+      "payment_ca_fed_healthz": 200,
+      "settlement_converger_mtls_healthz": 200,
+      "payment_vault_mcp_mtls_healthz": 200,
+      "audit_collector_healthz": 200
+    },
+    "high_risk_fail_closed_http_status": 503,
+    "high_risk_fail_closed_error": {
+      "error": "REVOCATION_ANCHOR_UNAVAILABLE",
+      "detail": "Fail-closed on HIGH_RISK action: Failed to sync with RevocationService at http://payment-revocation.lineage-pay.svc.cluster.local:8092: Server error '503 Service Unavailable' for url 'http://payment-revocation.lineage-pay.svc.cluster.local:8092/v1/events?since_version=14&wait_ms=0&require_trust_domain=org-alpha.io%2Corg-beta.io%2Corg-payment.io'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503",
+      "decision": "DENY",
+      "pruned_revoked_paths": []
+    }
+  },
+  "after_autonomous_recovery": {
+    "recovered_task_id": "task-k8s-s6-recov-mh-qa-rehearsal-all8",
+    "a2a_task_state": "TASK_STATE_COMPLETED",
+    "completed_settlements": {
+      "airline-escrow": {
+        "settlement_id": "STL-F05E9C5D",
+        "target": "airline-escrow",
+        "settled_usd": 580.0,
+        "reference_id": "FLT-01D2AC8E",
+        "city": "Tokyo",
+        "task_id": "task-k8s-s6-recov-mh-qa-rehearsal-all8",
+        "sub": "user:alice@org-alpha.io",
+        "lineage_path": "/task-k8s-s6-recov-mh-qa-rehearsal-all8/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s6-recov-mh-qa-rehearsal-all8/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+        "lineage_decision": "ALLOW"
+      },
+      "hotel-escrow": {
+        "settlement_id": "STL-97B827BE",
+        "target": "hotel-escrow",
+        "settled_usd": 360.0,
+        "reference_id": "HTL-67639E98",
+        "city": "Tokyo",
+        "task_id": "task-k8s-s6-recov-mh-qa-rehearsal-all8",
+        "sub": "user:alice@org-alpha.io",
+        "lineage_path": "/task-k8s-s6-recov-mh-qa-rehearsal-all8/OrchestratorAlpha/FlightB1/SettlementC|/task-k8s-s6-recov-mh-qa-rehearsal-all8/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+        "lineage_decision": "ALLOW"
+      }
+    },
+    "final_answer": "Confirmed completion of flight booking and hotel reservation for traveler \"user:alice@org-alpha.io\" in Tokyo. Flight booking (FLT-01D2AC8E) and hotel reservation (HTL-67639E98) have been settled successfully. Flight booking settled for $580.00 USD, hotel reservation settled for $360.00 USD."
+  }
+}

@@ -1,0 +1,28 @@
+=== Startup-Order Independence & Renewal Check After 265s (> 3 Minutes) With Alpha & Audit Absent ===
+t0_epoch=1795450538, t1_epoch=1795450803, elapsed_seconds=265
+--- lctmh-beta pods (verify RESTARTS=0!) ---
+NAME                                        READY   STATUS    RESTARTS   AGE     IP            NODE                       NOMINATED NODE   READINESS GATES
+beta-ca-7f9fbdc869-48n86                    1/1     Running   0          4m12s   10.242.0.41   lctmh-beta-control-plane   <none>           <none>
+beta-directory-89896bb84-m89vm              0/1     Running   0          4m12s   10.242.0.43   lctmh-beta-control-plane   <none>           <none>
+beta-revocation-7578b64f7b-8cvnz            0/1     Running   0          4m12s   10.242.0.42   lctmh-beta-control-plane   <none>           <none>
+flight-specialist-7d49c8b7cb-699vx          1/2     Running   0          4m12s   10.242.0.44   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-backup-6b7758f8b7-p76tf    1/2     Running   0          4m12s   10.242.0.46   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-primary-74fc59f9f4-vnntz   1/2     Running   0          4m12s   10.242.0.45   lctmh-beta-control-plane   <none>           <none>
+--- lctmh-pay pods (verify RESTARTS=0!) ---
+NAME                                    READY   STATUS    RESTARTS   AGE     IP            NODE                      NOMINATED NODE   READINESS GATES
+payment-ca-7f8b578b89-qwgf5             1/1     Running   0          4m11s   10.243.0.40   lctmh-pay-control-plane   <none>           <none>
+payment-directory-7ff6c5d5d6-pznr9      0/1     Running   0          4m11s   10.243.0.42   lctmh-pay-control-plane   <none>           <none>
+payment-revocation-64dd58f468-vhfk9     0/1     Running   0          4m11s   10.243.0.41   lctmh-pay-control-plane   <none>           <none>
+payment-vault-mcp-7f498fc5c-4627n       1/2     Running   0          4m11s   10.243.0.45   lctmh-pay-control-plane   <none>           <none>
+settlement-converger-7f6d79fcbf-ghjnw   1/2     Running   0          4m11s   10.243.0.43   lctmh-pay-control-plane   <none>           <none>
+travel-ops-mcp-6bf486d5d4-7xnd4         1/2     Running   0          4m11s   10.243.0.44   lctmh-pay-control-plane   <none>           <none>
+--- flight-specialist liveness (/healthz -> verify svid_generation >= 3!) ---
+{"status":"ok","spiffe_id":"spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist","mtls_enabled":true,"svid_generation":4}
+--- flight-specialist SVID & AgentCard auto-renewal logs ---
+[lct-sidecar:mTLS-1.3] Registered A2A v1.0 AgentCard spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist -> https://flight-specialist.org-beta.io:31441 skills=['travel.flight'] prio=10
+[lct-sidecar:renew] Refreshed SVID & AgentCard gen=1 ver=1795450613740
+[lct-sidecar:renew] Refreshed SVID & AgentCard gen=2 ver=1795450673836
+[lct-sidecar:renew] Refreshed SVID & AgentCard gen=3 ver=1795450733917
+[lct-sidecar:renew] Refreshed SVID & AgentCard gen=4 ver=1795450793995
+--- beta-revocation readiness (/readyz -> 503 missing org-alpha.io & org-payment.io) ---
+HTTP 503 {"status":"not_ready","service":"revocation-service","missing_domains":["org-alpha.io","org-payment.io"],"verified_domains":{},"errors":{"org-alpha.io":"Missing required trust anchor pin for 'org-alpha.io'. Pin via: python3 lineage/multihost/lct_multihost_cli.py trust add org-alpha.io <anchor>","org-payment.io":"Missing required trust anchor pin for 'org-payment.io'. Pin via: python3 lineage/multihost/lct_multihost_cli.py trust add org-payment.io <anchor>"},"trust_store_version":1}

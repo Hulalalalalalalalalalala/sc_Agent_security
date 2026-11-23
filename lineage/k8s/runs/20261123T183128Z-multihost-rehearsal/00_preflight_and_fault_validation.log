@@ -1,0 +1,22 @@
+=== [LOW-M6-02] Verify preflight.sh with HTTP_PROXY/HTTPS_PROXY set ===
+============================================================================
+ LCT Multi-Host Preflight Check
+============================================================================
+  Local Roles   : alpha beta pay audit
+  Machine IPs   : alpha=192.168.1.6, beta=192.168.1.6, pay=192.168.1.6, audit=192.168.1.6
+  Host Ports    : 30094 30491 30492 30441 30990 31094 31491 31492 31441 31442 31443 32094 32491 32492 32441 32442 32443 30893
+  LLM Endpoint  : http://127.0.0.1:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling  : docker, kind, kubectl, helm present
+  [OK] Docker   : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Ports    : all requested host ports (30094 30491 30492 30441 30990 31094 31491 31492 31441 31442 31443 32094 32491 32492 32441 32442 32443 30893) are available
+  [OK] LLM      : http://127.0.0.1:11434/v1/models reachable with model 'qwen2.5:3b'
+  [INFO] Peer alpha (192.168.1.6:30094): not online yet (order-independent boot supported)
+  [INFO] Peer beta (192.168.1.6:31094): not online yet (order-independent boot supported)
+  [INFO] Peer pay (192.168.1.6:32094): not online yet (order-independent boot supported)
+  [INFO] Peer audit (192.168.1.6:30893): not online yet (order-independent boot supported)
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): alpha beta pay audit
+============================================================================
+=== [LOW-M6-02] Verify fault.sh invalid --role exits 2 ===
+ERROR: Invalid --role value 'bogus' (expected alpha|beta|pay|audit|all)
+fault.sh bogus role exit_code=2

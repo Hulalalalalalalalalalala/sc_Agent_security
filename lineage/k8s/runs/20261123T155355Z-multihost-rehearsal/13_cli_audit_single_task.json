@@ -1,0 +1,23 @@
+{
+  "task_id": "task-mh-post-renewal-sse",
+  "stream_integrity_ok": true,
+  "reconstruction": {
+    "sub": "user:alice@org-alpha.io",
+    "reconstructed_complete": true,
+    "lineage_paths_observed": [
+      "/task-mh-post-renewal-sse/OrchestratorAlpha",
+      "/task-mh-post-renewal-sse/OrchestratorAlpha/FlightB1",
+      "/task-mh-post-renewal-sse/OrchestratorAlpha/FlightB1/SettlementC",
+      "/task-mh-post-renewal-sse/OrchestratorAlpha/SettleTrigger",
+      "/task-mh-post-renewal-sse/OrchestratorAlpha/hotel-specialist-backup-e1",
+      "/task-mh-post-renewal-sse/OrchestratorAlpha/hotel-specialist-backup-e1/SettlementC",
+      "/task-mh-post-renewal-sse/OrchestratorAlpha/hotel-specialist-primary"
+    ],
+    "verified_hops": 14,
+    "tool_invocations_verified": 7,
+    "resilience_classifications": [
+      "VERIFIED_FAILOVER_GRAFT"
+    ],
+    "anomalies": []
+  }
+}

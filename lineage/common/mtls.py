@@ -23,7 +23,8 @@ import ssl
 import tempfile
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
+import hashlib
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 from cryptography import x509
@@ -70,6 +71,19 @@ def _dns_matches_permitted_subtree(dns_name: str, subtree: str) -> bool:
     return dn == st or dn.endswith(f".{st}")
 
 
+def compute_x509_spki_sha256_hex(cert_pem: str) -> str:
+    """Compute lowercase SHA-256 hex digest of X.509 SubjectPublicKeyInfo (DER)."""
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem.strip().encode("ascii"))
+    except Exception as exc:
+        raise MTLSError(f"Invalid X.509 certificate PEM for SPKI hash: {exc}") from exc
+    spki_der = cert.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return hashlib.sha256(spki_der).hexdigest()
+
+
 class X509DomainAuthority:
     """In-memory X.509 v3 Root CA scoped strictly to a single SPIFFE `trust_domain`."""
 
@@ -78,10 +92,41 @@ class X509DomainAuthority:
         trust_domain: str,
         ttl_days: int = 365,
         allowed_dns_suffixes: Optional[Iterable[str]] = None,
+        private_key_pem: Optional[str] = None,
+        root_cert_pem: Optional[str] = None,
     ) -> None:
         SpiffeId.parse(f"spiffe://{trust_domain}/authority/x509-ca")
         self.trust_domain = trust_domain.strip().lower()
         self.ca_spiffe_id = f"spiffe://{self.trust_domain}/authority/x509-ca"
+
+        if private_key_pem is not None and root_cert_pem is not None:
+            loaded_priv = serialization.load_pem_private_key(
+                private_key_pem.strip().encode("ascii"), password=None
+            )
+            if not isinstance(loaded_priv, ec.EllipticCurvePrivateKey):
+                raise MTLSError("Persisted X509DomainAuthority private key must be ECDSA P-256")
+            loaded_cert = x509.load_pem_x509_certificate(root_cert_pem.strip().encode("ascii"))
+            pub_a = loaded_priv.public_key().public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            pub_b = loaded_cert.public_key().public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            if pub_a != pub_b:
+                raise MTLSError("Persisted X.509 Root CA private key does not match root_cert_pem")
+            nc_ext = loaded_cert.extensions.get_extension_for_class(x509.NameConstraints)
+            if not nc_ext.critical:
+                raise MTLSError("Persisted X.509 Root CA NameConstraints must be critical")
+            dns_from_cert = [
+                g.value.strip().lower()
+                for g in (nc_ext.value.permitted_subtrees or [])
+                if isinstance(g, x509.DNSName)
+            ]
+            self._private_key = loaded_priv
+            self.root_cert = loaded_cert
+            self.allowed_dns_suffixes = tuple(dns_from_cert)
+            return
+
         self._private_key = ec.generate_private_key(ec.SECP256R1())
         now = dt.datetime.now(dt.timezone.utc)
 
@@ -162,6 +207,17 @@ class X509DomainAuthority:
     def export_root_pem(self) -> str:
         """Export public X.509 Root CA certificate PEM (contains zero private key material)."""
         return self.root_cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+    def export_private_key_pem(self) -> str:
+        """Export PKCS#8 PEM strictly for streaming into an isolated K8s CA Secret."""
+        return (
+            self._private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            .decode("ascii")
+        )
 
     def issue_x509_svid(
         self,
@@ -283,6 +339,7 @@ class X509FederationTrustStore:
         "lineage-alpha": "org-alpha.io",
         "lineage-beta": "org-beta.io",
         "lineage-pay": "org-payment.io",
+        "lineage-ctrl": "org-audit.io",
     }
 
     def __init__(self) -> None:
@@ -290,6 +347,13 @@ class X509FederationTrustStore:
         self._domain_roots: Dict[str, x509.Certificate] = {}
         self._domain_pems: Dict[str, str] = {}
         self._domain_dns_subtrees: Dict[str, Tuple[str, ...]] = {}
+        self._version: int = 0
+        self._server_verify_ctx_cache: Dict[Tuple[str, bool, int], ssl.SSLContext] = {}
+
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return self._version
 
     def register_domain_root_pem(self, expected_trust_domain: str, root_pem: str) -> None:
         """Validate (including critical `NameConstraints`) and pin a domain's X.509 Root CA."""
@@ -370,9 +434,13 @@ class X509FederationTrustStore:
                         f"Cross-domain DNS NameConstraints collision between {norm_td!r} "
                         f"and {other_td!r}: {sorted(overlap)!r}"
                     )
+            changed = self._domain_pems.get(norm_td) != norm_pem
             self._domain_roots[norm_td] = cert
             self._domain_pems[norm_td] = norm_pem
             self._domain_dns_subtrees[norm_td] = tuple(dns_subtrees)
+            if changed:
+                self._version += 1
+                self._server_verify_ctx_cache.clear()
 
     def export_domain_pems(self) -> Dict[str, str]:
         with self._lock:
@@ -386,6 +454,61 @@ class X509FederationTrustStore:
         if not pem:
             raise MTLSError(f"Trust domain {norm_td!r} is not registered in X509FederationTrustStore")
         return pem
+
+    def has_domain(self, trust_domain: str) -> bool:
+        norm_td = trust_domain.strip().lower()
+        with self._lock:
+            return norm_td in self._domain_pems
+
+    def evict_domain(self, trust_domain: str) -> None:
+        """Evict a domain Root CA and bump store version to invalidate cached SSLContexts."""
+        norm_td = trust_domain.strip().lower()
+        with self._lock:
+            removed = False
+            if norm_td in self._domain_roots:
+                self._domain_roots.pop(norm_td, None)
+                removed = True
+            if norm_td in self._domain_pems:
+                self._domain_pems.pop(norm_td, None)
+                removed = True
+            self._domain_dns_subtrees.pop(norm_td, None)
+            if removed:
+                self._version += 1
+                self._server_verify_ctx_cache.clear()
+
+    def build_server_verify_ssl_context(
+        self, expected_trust_domain: str, check_hostname: bool = True
+    ) -> ssl.SSLContext:
+        """Build a TLS 1.3 client `SSLContext` authenticating server cert against `expected_trust_domain`
+        (without presenting a client cert — used for keyless TLS 1.3 `audit-collector` transport).
+        """
+        norm_td = expected_trust_domain.strip().lower()
+        with self._lock:
+            ver = self._version
+            cache_key = (norm_td, bool(check_hostname), ver)
+            cached = self._server_verify_ctx_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            cadata = self.domain_ca_pem(norm_td)
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.minimum_version = (
+            ssl.TLSVersion.TLSv1_3 if getattr(ssl, "HAS_TLSv1_3", False) else ssl.TLSVersion.TLSv1_2
+        )
+        ctx.check_hostname = check_hostname
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(cadata=cadata)
+        _attach_peer_verification_hooks(
+            ctx,
+            self,
+            required_eku=ExtendedKeyUsageOID.SERVER_AUTH,
+            pinned_trust_domain=norm_td,
+            is_client=True,
+        )
+        with self._lock:
+            if self._version == ver:
+                self._server_verify_ctx_cache[cache_key] = ctx
+        return ctx
 
     def combined_ca_pem(self) -> str:
         with self._lock:
@@ -616,7 +739,12 @@ def _attach_peer_verification_hooks(
 
 @dataclass
 class WorkloadMTLSBundle:
-    """In-memory X.509-SVID + Federated Trust Store bundle for Sidecar & Gateway mTLS 1.3."""
+    """In-memory X.509-SVID + Federated Trust Store bundle for Sidecar & Gateway mTLS 1.3.
+
+    Supports zero-restart hot-reload on both:
+    1. Peer trust-store Root CA updates (`trust_store.version` bumps); and
+    2. Local X.509-SVID automatic renewal (`update_svid(...)` bumps `_bundle_generation`).
+    """
 
     spiffe_id: str
     keypair: KeyPair
@@ -625,25 +753,78 @@ class WorkloadMTLSBundle:
     _client_ctx_cache: Dict[Tuple[bool, Optional[str], Optional[str]], ssl.SSLContext] = field(
         default_factory=dict, init=False, repr=False
     )
-    _cache_lock: threading.Lock = field(
-        default_factory=threading.Lock, init=False, repr=False
+    _server_ctx_cache: Dict[bool, ssl.SSLContext] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _bundle_generation: int = field(default=0, init=False, repr=False)
+    _cached_store_version: int = field(default=-1, init=False, repr=False)
+    _cached_bundle_generation: int = field(default=-1, init=False, repr=False)
+    _cache_lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False
     )
 
+    @property
+    def generation(self) -> int:
+        with self._cache_lock:
+            return self._bundle_generation
+
+    def _sync_cache_epoch_locked(self) -> Tuple[int, int, KeyPair, str]:
+        store_ver = self.trust_store.version
+        if (
+            store_ver != self._cached_store_version
+            or self._bundle_generation != self._cached_bundle_generation
+        ):
+            self._client_ctx_cache.clear()
+            self._server_ctx_cache.clear()
+            self._cached_store_version = store_ver
+            self._cached_bundle_generation = self._bundle_generation
+        return store_ver, self._bundle_generation, self.keypair, self.leaf_cert_pem
+
+    def update_svid(self, leaf_cert_pem: str, keypair: Optional[KeyPair] = None) -> int:
+        """Atomically swap renewed leaf X.509-SVID PEM (and optional rotated keypair)."""
+        with self._cache_lock:
+            if keypair is not None:
+                self.keypair = keypair
+            self.leaf_cert_pem = str(leaf_cert_pem)
+            self._bundle_generation += 1
+            self._client_ctx_cache.clear()
+            self._server_ctx_cache.clear()
+            return self._bundle_generation
+
+    def server_ssl_context_provider(
+        self, require_client_cert: bool = True
+    ) -> Callable[[], ssl.SSLContext]:
+        return lambda: self.build_server_ssl_context(require_client_cert=require_client_cert)
+
     def build_server_ssl_context(self, require_client_cert: bool = True) -> ssl.SSLContext:
+        req_flag = bool(require_client_cert)
+        with self._cache_lock:
+            store_ver, gen, kp, leaf_pem = self._sync_cache_epoch_locked()
+            cached = self._server_ctx_cache.get(req_flag)
+            if cached is not None:
+                return cached
+
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = (
             ssl.TLSVersion.TLSv1_3 if getattr(ssl, "HAS_TLSv1_3", False) else ssl.TLSVersion.TLSv1_2
         )
-        ctx.verify_mode = ssl.CERT_REQUIRED if require_client_cert else ssl.CERT_NONE
-        ctx.load_verify_locations(cadata=self.trust_store.combined_ca_pem())
-        _load_keypair_into_ssl_context(ctx, self.leaf_cert_pem, self.keypair)
-        if require_client_cert:
+        ctx.verify_mode = ssl.CERT_REQUIRED if req_flag else ssl.CERT_NONE
+        if req_flag:
+            ctx.load_verify_locations(cadata=self.trust_store.combined_ca_pem())
+        _load_keypair_into_ssl_context(ctx, leaf_pem, kp)
+        if req_flag:
             _attach_peer_verification_hooks(
                 ctx,
                 self.trust_store,
                 required_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
                 is_client=False,
             )
+        with self._cache_lock:
+            if (
+                self.trust_store.version == store_ver
+                and self._bundle_generation == gen
+            ):
+                self._server_ctx_cache[req_flag] = ctx
         return ctx
 
     def build_client_ssl_context(
@@ -662,6 +843,7 @@ class WorkloadMTLSBundle:
 
         cache_key = (bool(check_hostname), norm_td, norm_spiffe)
         with self._cache_lock:
+            store_ver, gen, kp, leaf_pem = self._sync_cache_epoch_locked()
             cached = self._client_ctx_cache.get(cache_key)
             if cached is not None:
                 return cached
@@ -678,7 +860,7 @@ class WorkloadMTLSBundle:
             else self.trust_store.combined_ca_pem()
         )
         ctx.load_verify_locations(cadata=cadata)
-        _load_keypair_into_ssl_context(ctx, self.leaf_cert_pem, self.keypair)
+        _load_keypair_into_ssl_context(ctx, leaf_pem, kp)
         _attach_peer_verification_hooks(
             ctx,
             self.trust_store,
@@ -688,7 +870,11 @@ class WorkloadMTLSBundle:
             is_client=True,
         )
         with self._cache_lock:
-            self._client_ctx_cache[cache_key] = ctx
+            if (
+                self.trust_store.version == store_ver
+                and self._bundle_generation == gen
+            ):
+                self._client_ctx_cache[cache_key] = ctx
         return ctx
 
     def verify_for_target(
@@ -716,3 +902,4 @@ class WorkloadMTLSBundle:
         """Deterministically release cached SSLContext closure references on shutdown."""
         with self._cache_lock:
             self._client_ctx_cache.clear()
+            self._server_ctx_cache.clear()

@@ -1,0 +1,65 @@
+=== Post-Teardown Docker Containers ===
+NAMES                                                             STATUS
+youthful_easley                                                   Up About a minute
+crazy_gould                                                       Up 5 hours
+sleepy_lumiere                                                    Up 5 hours
+goofy_goldstine                                                   Up 13 hours
+task-1381__ofzkbfq__env-main-1                                    Up 15 hours
+task-1381__ofzkbfq__env-harbor-docker-egress-control-sidecar-1    Up 15 hours (healthy)
+serene_wright                                                     Up 17 hours
+xenodochial_bose                                                  Up 2 days
+gate-bd3503c6c7c1427787419aa74705cc7d                             Created
+gate-47e0f63d5a364d13a35f3638663b98a5                             Created
+clever_rhodes                                                     Created
+magical_wescoff                                                   Created
+mystifying_carson                                                 Created
+gifted_driscoll                                                   Created
+zen_pascal                                                        Created
+elastic_nash                                                      Created
+mystifying_lehmann                                                Created
+blissful_ardinghelli                                              Created
+wonderful_hugle                                                   Created
+sharp_villani                                                     Created
+gd-rev140-final-119__env-main-1                                   Exited (255) 2 days ago
+gd-rev140-final-119__env-harbor-docker-egress-control-sidecar-1   Exited (255) 2 days ago
+lct-audit-control-plane                                           Exited (137) 5 hours ago
+lct-org-pay-control-plane                                         Exited (137) 5 hours ago
+lct-org-beta-control-plane                                        Exited (137) 5 hours ago
+lct-org-alpha-control-plane                                       Exited (137) 5 hours ago
+gd-r7-review-27                                                   Exited (255) 2 days ago
+gd-r7-review-119                                                  Exited (255) 2 days ago
+gd-r6-review-27                                                   Exited (143) 3 days ago
+gd-r6-review-119                                                  Exited (255) 2 days ago
+gd-r5-review-27                                                   Exited (255) 2 days ago
+gd-r5-review-1308                                                 Exited (255) 2 days ago
+gd-r4-review-1308                                                 Exited (143) 3 days ago
+gd-r4-review-35                                                   Exited (255) 2 days ago
+gd-r4-review-1381                                                 Exited (255) 2 days ago
+gd-r4-review-1739                                                 Exited (255) 2 days ago
+gd-r4-review-27                                                   Exited (143) 3 days ago
+gd-r4-review-119                                                  Exited (255) 2 days ago
+gd-r3-review-1308                                                 Exited (143) 3 days ago
+gd-r3-review-27                                                   Exited (143) 3 days ago
+gd-r3-review-35                                                   Exited (143) 3 days ago
+gd-r3-review-1739                                                 Exited (143) 3 days ago
+gd-r3-review-119                                                  Exited (143) 3 days ago
+gd-r3-review-1381                                                 Exited (143) 3 days ago
+gd-r2-next-review-1308                                            Exited (137) 4 days ago
+gd-r2-historical-xauthority-1308                                  Exited (137) 4 days ago
+gd-r2-next-review-1381                                            Exited (137) 4 days ago
+gd-r2-next-review-1739                                            Exited (137) 4 days ago
+gd-r2-historical-visibility-1381                                  Exited (137) 4 days ago
+gd-r2-next-review-119                                             Exited (137) 4 days ago
+gd-r2-historical-journal-1739                                     Exited (137) 4 days ago
+gd-r2-review-1381                                                 Exited (137) 4 days ago
+gd-r2-review-1308                                                 Exited (137) 4 days ago
+gd-r2-review-1739                                                 Exited (137) 4 days ago
+gd-r2-review-27                                                   Exited (137) 4 days ago
+gd-r2-review-35                                                   Exited (137) 4 days ago
+gd-r2-review-119                                                  Exited (137) 4 days ago
+us-equities-market-data-collector-1                               Exited (0) 8 days ago
+agent-identity-lab-control-plane                                  Exited (137) 5 hours ago
+gochat-test-redis                                                 Exited (0) 8 weeks ago
+
+=== Post-Teardown Kubectl Current Context ===
+kind-agent-identity-lab

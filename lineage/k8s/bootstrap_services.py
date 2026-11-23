@@ -19,6 +19,7 @@ Security Architecture:
 from __future__ import annotations
 
 import argparse
+import hmac
 import os
 import secrets
 import signal
@@ -655,6 +656,159 @@ def _read_shared_loopback_secret(
     raise RuntimeError(f"Timed out waiting for shared loopback secret at {secret_path}")
 
 
+def _read_optional_pem(dir_path: str, filename: str) -> Optional[str]:
+    if not dir_path:
+        return None
+    full = os.path.join(dir_path, filename)
+    if not os.path.isfile(full):
+        return None
+    with open(full, "r", encoding="utf-8") as fh:
+        val = fh.read().strip()
+    return val or None
+
+
+def _build_env_anchor_store() -> Tuple[Optional[Any], bool]:
+    from lineage.federation.anchors import TrustAnchorPinStore
+
+    anchors_dir = os.environ.get("LCT_TRUST_ANCHORS_DIR", "").strip() or None
+    require_pins = (
+        os.environ.get("LCT_REQUIRE_PINNED_ANCHORS", "false").strip().lower() == "true"
+    )
+    raw_env_pins = os.environ.get("LCT_TRUST_ANCHORS", "").strip()
+    if anchors_dir or require_pins or raw_env_pins:
+        return TrustAnchorPinStore(anchors_dir=anchors_dir), require_pins
+    return None, False
+
+
+class MinimalAuditTLSCAService:
+    """Minimal X.509-only CA (`org-audit.io`) issuing leaf TLS certs to `audit-collector`.
+
+    Holds ZERO ES256 JWKS signing keys (`keys: []`), so it can NEVER mint or attest
+    any LCT `WorkloadIdentity` JWT-SVID or `RootBlock`.
+    """
+
+    def __init__(
+        self,
+        csr_token_file: str,
+        x509_private_key_pem: Optional[str] = None,
+        x509_root_cert_pem: Optional[str] = None,
+        host: str = "0.0.0.0",
+        port: int = 8090,
+    ) -> None:
+        from lineage.common.mtls import X509DomainAuthority
+        from lineage.federation.anchors import compute_bundle_trust_anchor
+
+        self.trust_domain = "org-audit.io"
+        self.csr_token_file = csr_token_file
+        self.x509_ca = X509DomainAuthority(
+            self.trust_domain,
+            allowed_dns_suffixes=(
+                ".lineage-audit.svc.cluster.local",
+                ".lineage-audit.svc",
+                ".org-audit.io",
+                "org-audit.io",
+                "localhost",
+            ),
+            private_key_pem=x509_private_key_pem,
+            root_cert_pem=x509_root_cert_pem,
+        )
+        self._compute_anchor = compute_bundle_trust_anchor
+        self._pop_replay = JTIReplayCache(ttl_seconds=300.0)
+        self.http = ManagedHTTPService(
+            service_name="audit-tls-ca",
+            dispatcher=self._dispatch,
+            host=host,
+            port=port,
+        )
+
+    def export_public_bundle(self) -> Dict[str, Any]:
+        root_pem = self.x509_ca.export_root_pem()
+        bundle: Dict[str, Any] = {
+            "trust_domain": self.trust_domain,
+            "keys": [],
+            "x509_root_pem": root_pem,
+        }
+        bundle["trust_anchor"] = self._compute_anchor(bundle, allow_keyless_jwks=True)
+        return bundle
+
+    def _read_csr_secret(self) -> str:
+        with open(self.csr_token_file, "r", encoding="utf-8") as fh:
+            val = fh.read().strip()
+        if len(val) < 24:
+            raise PermissionError("Invalid CSR bootstrap secret length")
+        return val
+
+    def _dispatch(self, req: HTTPRequestContext) -> Tuple[int, Any, Dict[str, str]]:
+        if req.method == "GET" and req.path == "/healthz":
+            b = self.export_public_bundle()
+            return (
+                200,
+                {
+                    "status": "ok",
+                    "trust_domain": self.trust_domain,
+                    "trust_anchor": b["trust_anchor"],
+                },
+                {},
+            )
+        if req.method == "GET" and req.path == "/v1/federation/bundle":
+            return 200, self.export_public_bundle(), {}
+        if req.method == "POST" and req.path == "/v1/ca/issue-audit-tls":
+            bearer = _extract_bearer(req.header("Authorization"))
+            try:
+                expected_sec = self._read_csr_secret()
+            except Exception as exc:
+                return 500, {"error": "csr_secret_unavailable", "detail": str(exc)}, {}
+            if not bearer or not hmac.compare_digest(bearer.encode("utf-8"), expected_sec.encode("utf-8")):
+                return 401, {"error": "unauthorized_csr_caller"}, {}
+            body = req.json()
+            try:
+                pub_jwk = body["public_jwk"]
+                pop_jws = str(body["pop_jws"])
+                raw_ttl = body.get("ttl_seconds", 1800.0)
+                ttl_s = max(10.0, min(86400.0, require_finite_timestamp(raw_ttl, "ttl_seconds")))
+                _, pop_claims = jws_verify_compact(
+                    pop_jws, pub_jwk, expected_typ="lct-ca-pop+jwt"
+                )
+                now_ts = time.time()
+                iat_val = require_finite_timestamp(pop_claims.get("iat"), "pop.iat")
+                if abs(now_ts - iat_val) > 30.0:
+                    return 403, {"error": "stale_pop_jws"}, {}
+                expected_hash = sha256_b64url(bearer.encode("utf-8"))
+                if pop_claims.get("sa_jwt_sha256") != expected_hash:
+                    return 403, {"error": "pop_secret_binding_mismatch"}, {}
+                pop_jti = str(pop_claims.get("jti") or "")
+                if not pop_jti or not self._pop_replay.check_and_record(pop_jti, now=now_ts):
+                    return 403, {"error": "replayed_pop_jws"}, {}
+                spiffe_uri = "spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector"
+                leaf_pem = self.x509_ca.issue_x509_svid(
+                    spiffe_id=spiffe_uri,
+                    public_jwk=pub_jwk,
+                    ttl_seconds=ttl_s,
+                    dns_names=(
+                        "audit-collector.org-audit.io",
+                        "audit-collector.lineage-audit.svc.cluster.local",
+                        "audit-collector.lineage-audit.svc",
+                        "localhost",
+                    ),
+                )
+            except Exception as exc:
+                return 400, {"error": "invalid_audit_csr", "detail": str(exc)}, {}
+            now_out = time.time()
+            return (
+                200,
+                {
+                    "trust_domain": self.trust_domain,
+                    "spiffe_id": spiffe_uri,
+                    "x509_leaf_pem": leaf_pem,
+                    "issued_at": now_out,
+                    "expires_at": now_out + ttl_s,
+                    "bundle": self.export_public_bundle(),
+                },
+                {},
+            )
+        return 404, {"error": "route_not_found"}, {}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="LCT Milestone 4 Kubernetes Role Runner")
     parser.add_argument("--role", required=True)
@@ -684,14 +838,52 @@ def main() -> None:
     signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
     signal.signal(signal.SIGINT, lambda *_: stop_event.set())
 
+    wait_for_peers_on_boot = (
+        os.environ.get("LCT_WAIT_FOR_PEERS_ON_BOOT", "true").strip().lower() != "false"
+    )
+    svid_ttl = max(
+        6.0, float(os.environ.get("LCT_SVID_TTL_SECONDS", "1800.0").strip() or "1800.0")
+    )
+    anchor_store, require_pins = _build_env_anchor_store()
+
+    if role == "audit-tls-ca":
+        key_dir = os.environ.get("CA_KEY_MATERIAL_DIR", "").strip()
+        csr_tok_file = os.environ["AUDIT_CSR_TOKEN_FILE"]
+        svc_audit_ca = MinimalAuditTLSCAService(
+            csr_token_file=csr_tok_file,
+            x509_private_key_pem=_read_optional_pem(key_dir, "x509_private_key.pem"),
+            x509_root_cert_pem=_read_optional_pem(key_dir, "x509_root_cert.pem"),
+            host="0.0.0.0",
+            port=8090,
+        )
+        svc_audit_ca.http.start()
+        print(
+            f"[audit-tls-ca:org-audit.io] Minimal X.509-only CA ready on 0.0.0.0:8090 anchor={svc_audit_ca.export_public_bundle()['trust_anchor']}",
+            flush=True,
+        )
+        stop_event.wait()
+        svc_audit_ca.http.stop()
+        return
+
     if role == "domain-ca":
-        from lineage.federation import AutonomousDomainCAService
+        from lineage.federation import AutonomousDomainCAService, FederationBundleSyncer
 
         trust_domain = os.environ["TRUST_DOMAIN"]
         allowed_ns = os.environ["ALLOWED_K8S_NAMESPACE"]
         auth_gw_sa = os.environ.get("AUTHORIZED_GATEWAY_SA", "").strip() or None
         fed_port_raw = os.environ.get("CA_FEDERATION_PORT", "").strip()
         fed_port = int(fed_port_raw) if fed_port_raw else None
+        key_dir = os.environ.get("CA_KEY_MATERIAL_DIR", "").strip()
+        ca_audit_syncer: Optional[FederationBundleSyncer] = None
+        if audit_url and audit_url.startswith("https://"):
+            ca_audit_syncer = FederationBundleSyncer(
+                peer_ca_urls={},
+                anchor_store=anchor_store,
+                require_pinned_anchors=require_pins,
+                audit_ca_url=audit_url,
+            )
+            ca_audit_syncer.start_background_refresh(interval_sec=2.0)
+
         svc = AutonomousDomainCAService(
             trust_domain=trust_domain,
             allowed_k8s_namespace=allowed_ns,
@@ -700,34 +892,158 @@ def main() -> None:
             host="0.0.0.0",
             port=8090,
             federation_port=fed_port,
+            ca_private_key_pem=_read_optional_pem(key_dir, "ca_private_key.pem"),
+            x509_private_key_pem=_read_optional_pem(key_dir, "x509_private_key.pem"),
+            x509_root_cert_pem=_read_optional_pem(key_dir, "x509_root_cert.pem"),
+            audit_ssl_context_provider=(
+                ca_audit_syncer.audit_ssl_context if ca_audit_syncer is not None else None
+            ),
+            best_effort_audit=(not wait_for_peers_on_boot) or audit_url.startswith("https://"),
         )
         svc.start()
         print(
-            f"[domain-ca:{trust_domain}] Autonomous CA ready on 0.0.0.0:8090 (fed_port={fed_port}, allowed_ns={allowed_ns})",
+            f"[domain-ca:{trust_domain}] Autonomous CA ready on 0.0.0.0:8090 (fed_port={fed_port}, allowed_ns={allowed_ns}, anchor={svc.trust_anchor})",
             flush=True,
         )
         stop_event.wait()
+        if ca_audit_syncer is not None:
+            ca_audit_syncer.stop_background_refresh()
         svc.stop()
         return
 
     if role == "federated-audit-collector":
+        from lineage.common.mtls import WorkloadMTLSBundle, X509FederationTrustStore
         from lineage.federation import FederationBundleSyncer, parse_domain_url_map
 
         peer_ca_map = parse_domain_url_map(os.environ["PEER_CA_URLS"])
-        syncer = FederationBundleSyncer(peer_ca_urls=peer_ca_map)
-        syncer.sync_all(require_all=True, max_wait_sec=60.0)
-        syncer.start_background_refresh(interval_sec=10.0)
+        syncer = FederationBundleSyncer(
+            peer_ca_urls=peer_ca_map,
+            anchor_store=anchor_store,
+            require_pinned_anchors=require_pins,
+        )
+        if wait_for_peers_on_boot:
+            syncer.sync_all(require_all=True, max_wait_sec=60.0)
+        syncer.start_background_refresh(interval_sec=2.0)
+
+        audit_tls_ca_url = os.environ.get("AUDIT_TLS_CA_URL", "").strip()
+        audit_csr_token_file = os.environ.get("AUDIT_CSR_TOKEN_FILE", "").strip()
+        audit_mtls_bundle: Optional[WorkloadMTLSBundle] = None
+        audit_public_bundle_box: Dict[str, Any] = {}
+        tls_renew_stop = threading.Event()
+        tls_renew_thread: Optional[threading.Thread] = None
+
+        if audit_tls_ca_url and audit_csr_token_file:
+            tls_kp = KeyPair.generate("ES256")
+            audit_x509_store = X509FederationTrustStore()
+
+            def _issue_or_renew_audit_tls() -> Tuple[str, float, float, Dict[str, Any]]:
+                with open(audit_csr_token_file, "r", encoding="utf-8") as fh:
+                    csr_tok = fh.read().strip()
+                pop_jws = create_ca_pop_jws(tls_kp, csr_tok)
+                resp_tls = httpx.post(
+                    f"{audit_tls_ca_url.rstrip('/')}/v1/ca/issue-audit-tls",
+                    json={
+                        "public_jwk": tls_kp.public_jwk(),
+                        "pop_jws": pop_jws,
+                        "ttl_seconds": svid_ttl,
+                    },
+                    headers={"Authorization": f"Bearer {csr_tok}"},
+                    timeout=5.0,
+                )
+                resp_tls.raise_for_status()
+                d_tls = resp_tls.json()
+                return (
+                    str(d_tls["x509_leaf_pem"]),
+                    float(d_tls["issued_at"]),
+                    float(d_tls["expires_at"]),
+                    dict(d_tls["bundle"]),
+                )
+
+            deadline_tls = time.time() + 45.0
+            last_tls_err: Optional[Exception] = None
+            init_leaf: Optional[str] = None
+            init_iat = 0.0
+            init_exp = 0.0
+            while time.time() < deadline_tls:
+                try:
+                    init_leaf, init_iat, init_exp, pub_b = _issue_or_renew_audit_tls()
+                    audit_public_bundle_box.clear()
+                    audit_public_bundle_box.update(pub_b)
+                    audit_x509_store.register_domain_root_pem(
+                        "org-audit.io", str(pub_b["x509_root_pem"])
+                    )
+                    break
+                except Exception as exc:
+                    last_tls_err = exc
+                    time.sleep(0.4)
+            if init_leaf is None:
+                raise RuntimeError(
+                    f"Failed to obtain TLS leaf cert from {audit_tls_ca_url}: {last_tls_err}"
+                )
+
+            audit_mtls_bundle = WorkloadMTLSBundle(
+                spiffe_id="spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector",
+                keypair=tls_kp,
+                leaf_cert_pem=init_leaf,
+                trust_store=audit_x509_store,
+            )
+
+            def _audit_tls_renew_loop() -> None:
+                cur_iat = init_iat
+                cur_exp = init_exp
+                check_s = max(0.5, min(10.0, svid_ttl * 0.15))
+                while not tls_renew_stop.is_set():
+                    if (cur_exp - time.time()) <= 0.5 * max(1.0, cur_exp - cur_iat):
+                        try:
+                            new_leaf, n_iat, n_exp, new_b = _issue_or_renew_audit_tls()
+                            audit_public_bundle_box.update(new_b)
+                            audit_x509_store.register_domain_root_pem(
+                                "org-audit.io", str(new_b["x509_root_pem"])
+                            )
+                            if audit_mtls_bundle is not None:
+                                audit_mtls_bundle.update_svid(leaf_cert_pem=new_leaf)
+                            cur_iat, cur_exp = n_iat, n_exp
+                        except Exception:
+                            pass
+                    tls_renew_stop.wait(check_s)
+
+            tls_renew_thread = threading.Thread(
+                target=_audit_tls_renew_loop, name="audit-tls-renew", daemon=True
+            )
+            tls_renew_thread.start()
+
         svc = AuditCollectorService(
-            trust_resolver=syncer.trust_resolver, host="0.0.0.0", port=8093
+            trust_resolver=syncer.trust_resolver,
+            host="0.0.0.0",
+            port=8093,
+            ssl_context_provider=(
+                audit_mtls_bundle.server_ssl_context_provider(require_client_cert=False)
+                if audit_mtls_bundle is not None
+                else None
+            ),
+            public_bundle_provider=(
+                (lambda: dict(audit_public_bundle_box))
+                if audit_mtls_bundle is not None
+                else None
+            ),
+            readiness_check=syncer.is_ready,
         )
-        svc.start()
-        print(
-            f"[federated-audit-collector] Keyless verifier ready on 0.0.0.0:8093 (domains={sorted(peer_ca_map.keys())})",
-            flush=True,
-        )
-        stop_event.wait()
-        syncer.stop_background_refresh()
-        svc.stop()
+        try:
+            svc.start()
+            mode_lbl = "TLS-1.3" if audit_mtls_bundle is not None else "HTTP"
+            print(
+                f"[federated-audit-collector:{mode_lbl}] Keyless verifier listening on 0.0.0.0:8093 (domains={sorted(peer_ca_map.keys())})",
+                flush=True,
+            )
+            stop_event.wait()
+        finally:
+            tls_renew_stop.set()
+            if tls_renew_thread is not None:
+                tls_renew_thread.join(timeout=2.0)
+            syncer.stop_background_refresh()
+            svc.stop()
+            if audit_mtls_bundle is not None:
+                audit_mtls_bundle.cleanup()
         return
 
     if role == "domain-revocation":
@@ -739,7 +1055,13 @@ def main() -> None:
         rev_fed_raw = os.environ.get("REVOCATION_FEDERATION_PORT", "").strip()
         rev_fed_port = int(rev_fed_raw) if rev_fed_raw else None
         identity, resolver, mtls_bundle, syncer = bootstrap_autonomous_workload(
-            local_ca_url, peer_ca_map
+            local_ca_url,
+            peer_ca_map,
+            require_all_peers=wait_for_peers_on_boot,
+            svid_ttl_seconds=svid_ttl,
+            anchor_store=anchor_store,
+            require_pinned_anchors=require_pins,
+            enable_auto_renewal=True,
         )
         svc = RevocationService(
             identity,
@@ -750,11 +1072,12 @@ def main() -> None:
             port=8092,
             federation_port=rev_fed_port,
             mtls_bundle=mtls_bundle,
+            readiness_check=syncer.is_ready,
         )
         try:
             svc.start()
             print(
-                f"[domain-revocation:{identity.trust_domain}] Ready as {identity.spiffe_id} on :8092 (mTLS fed_port={rev_fed_port})",
+                f"[domain-revocation:{identity.trust_domain}] Listening as {identity.spiffe_id} on :8092 (mTLS fed_port={rev_fed_port})",
                 flush=True,
             )
             stop_event.wait()
@@ -774,7 +1097,13 @@ def main() -> None:
         dir_fed_raw = os.environ.get("DIRECTORY_FEDERATION_PORT", "").strip()
         dir_fed_port = int(dir_fed_raw) if dir_fed_raw else None
         identity, resolver, mtls_bundle, syncer = bootstrap_autonomous_workload(
-            local_ca_url, peer_ca_map
+            local_ca_url,
+            peer_ca_map,
+            require_all_peers=wait_for_peers_on_boot,
+            svid_ttl_seconds=svid_ttl,
+            anchor_store=anchor_store,
+            require_pinned_anchors=require_pins,
+            enable_auto_renewal=True,
         )
         _wait_for_http_ok(f"{rev_url}/healthz")
         rev_replica = RevocationReplicaClient(rev_url, resolver)
@@ -788,11 +1117,12 @@ def main() -> None:
             port=8091,
             federation_port=dir_fed_port,
             mtls_bundle=mtls_bundle,
+            readiness_check=syncer.is_ready,
         )
         try:
             svc.start()
             print(
-                f"[domain-directory:{identity.trust_domain}] Ready as {identity.spiffe_id} on :8091 (mTLS fed_port={dir_fed_port})",
+                f"[domain-directory:{identity.trust_domain}] Listening as {identity.spiffe_id} on :8091 (mTLS fed_port={dir_fed_port})",
                 flush=True,
             )
             stop_event.wait()
@@ -858,7 +1188,14 @@ def main() -> None:
             )
 
             identity, resolver, mtls_bundle, syncer = bootstrap_autonomous_workload(
-                local_ca_url, parse_domain_url_map(peer_ca_spec)
+                local_ca_url,
+                parse_domain_url_map(peer_ca_spec),
+                require_all_peers=wait_for_peers_on_boot,
+                svid_ttl_seconds=svid_ttl,
+                anchor_store=anchor_store,
+                require_pinned_anchors=require_pins,
+                audit_ca_url=(audit_url if audit_url.startswith("https://") else None),
+                enable_auto_renewal=True,
             )
             default_in_port = "8443"
         else:
@@ -866,7 +1203,8 @@ def main() -> None:
             default_in_port = "8080"
 
         _wait_for_http_ok(f"{rev_url}/healthz")
-        _wait_for_http_ok(f"{audit_url}/healthz")
+        if wait_for_peers_on_boot and not audit_url.startswith("https://"):
+            _wait_for_http_ok(f"{audit_url}/healthz")
         app_port = int(os.environ.get("APP_PORT", "9001"))
         inbound_port = int(os.environ.get("SIDECAR_INBOUND_PORT", default_in_port))
         outbound_port = int(os.environ.get("SIDECAR_OUTBOUND_PORT", "8081"))
@@ -884,38 +1222,74 @@ def main() -> None:
         pod_stream_id = f"{identity.spiffe_id}#{socket.gethostname()}"
         audit_emitter = AuditStreamEmitter(
             signer=identity,
-            collector_client=AuditCollectorClient(audit_url),
+            collector_client=AuditCollectorClient(
+                audit_url,
+                ssl_context_provider=(
+                    syncer.audit_ssl_context
+                    if (syncer is not None and audit_url.startswith("https://"))
+                    else None
+                ),
+            ),
             stream_id=pod_stream_id,
+            best_effort_remote=(not wait_for_peers_on_boot) or audit_url.startswith("https://"),
         )
 
-        registered_card: Optional[AgentCard] = None
-        if not is_tool:
-            _wait_for_http_ok(f"{dir_url}/healthz")
-            skills = [
-                s.strip()
-                for s in os.environ.get("AGENT_SKILLS", "agent.generic").split(",")
-                if s.strip()
-            ]
-            priority = int(os.environ.get("AGENT_PRIORITY", "50"))
-            agent_name = os.environ.get("AGENT_DISPLAY_NAME", identity.spiffe_id)
-            for attempt in range(8):
-                card = AgentCard.sign_and_create(
+        card_lock = threading.Lock()
+        card_state: Dict[str, Any] = {"card": None, "version": int(time.time() * 1000)}
+        skills = [
+            s.strip()
+            for s in os.environ.get("AGENT_SKILLS", "agent.generic").split(",")
+            if s.strip()
+        ]
+        priority = int(os.environ.get("AGENT_PRIORITY", "50"))
+        agent_name = os.environ.get("AGENT_DISPLAY_NAME", identity.spiffe_id)
+
+        def _mint_and_register_card(sidecar_ref: Optional[LineageSidecar] = None) -> Optional[AgentCard]:
+            if stop_event.is_set():
+                return None
+            with card_lock:
+                if stop_event.is_set():
+                    return None
+                next_ver = max(int(card_state["version"]) + 1, int(time.time() * 1000))
+                rem_svid_ttl = max(
+                    5.0, min(float(svid_ttl), float(identity.expires_at - time.time()))
+                )
+                card_obj = AgentCard.sign_and_create(
                     identity=identity,
                     name=agent_name,
                     endpoint=public_origin,
                     return_endpoint=public_origin,
                     skills=skills,
                     priority=priority,
-                    version=int(time.time() * 1000) + attempt,
+                    ttl_seconds=rem_svid_ttl,
+                    version=next_ver,
                 )
+                card_state["version"] = next_ver
+                if sidecar_ref is not None:
+                    sidecar_ref.set_agent_card(card_obj)
+                dir_client.register(card_obj)
+                card_state["card"] = card_obj
+                return card_obj
+
+        registered_card: Optional[AgentCard] = None
+        if not is_tool:
+            _wait_for_http_ok(f"{dir_url}/healthz")
+            for attempt in range(8):
                 try:
-                    dir_client.register(card)
-                    registered_card = card
+                    registered_card = _mint_and_register_card()
                     break
                 except Exception:
-                    if attempt == 7:
+                    if attempt == 7 and wait_for_peers_on_boot:
                         raise
                     time.sleep(0.5)
+
+        def _sidecar_readiness() -> Tuple[bool, Dict[str, Any]]:
+            if syncer is None:
+                return True, {}
+            peers_ok, diag = syncer.is_ready()
+            card_ok = is_tool or (card_state["card"] is not None)
+            diag["agent_card_registered"] = card_ok
+            return (peers_ok and card_ok), diag
 
         sidecar = LineageSidecar(
             identity=identity,
@@ -933,8 +1307,66 @@ def main() -> None:
             outbound_port=outbound_port,
             public_origin=public_origin,
             mtls_bundle=mtls_bundle,
+            readiness_check=_sidecar_readiness,
         )
+
+        if syncer is not None and syncer.identity_renewer is not None:
+            def _on_svid_renewed(
+                _id: WorkloadIdentity, _mb: Optional[Any]
+            ) -> None:
+                sidecar.on_identity_renewed()
+                if not is_tool:
+                    try:
+                        refreshed = _mint_and_register_card(sidecar_ref=sidecar)
+                        if refreshed is not None:
+                            print(
+                                f"[lct-sidecar:renew] Refreshed SVID & AgentCard gen={identity.renewal_generation} ver={refreshed.version}",
+                                flush=True,
+                            )
+                    except Exception as exc:
+                        print(
+                            f"[lct-sidecar:renew-warn] AgentCard re-registration deferred: {exc}",
+                            flush=True,
+                        )
+                else:
+                    print(
+                        f"[lct-sidecar:renew] Refreshed tool SVID gen={identity.renewal_generation}",
+                        flush=True,
+                    )
+
+            syncer.identity_renewer.add_callback(_on_svid_renewed)
+
         sidecar.start()
+
+        card_keeper_stop = threading.Event()
+        card_keeper_thread: Optional[threading.Thread] = None
+        if not is_tool:
+            def _card_keeper_loop() -> None:
+                from lineage.registry.agent_card import AgentCardError
+
+                while not card_keeper_stop.is_set() and not stop_event.is_set():
+                    card_keeper_stop.wait(3.0)
+                    if card_keeper_stop.is_set() or stop_event.is_set():
+                        break
+                    try:
+                        try:
+                            existing = dir_client.get_agent(identity.spiffe_id)
+                        except AgentCardError:
+                            existing = None
+                        if (
+                            existing is None
+                            or existing.jkt != identity.jkt
+                            or existing.workload_svid != identity.workload_svid
+                            or existing.expires_at <= (time.time() + 25.0)
+                        ):
+                            _mint_and_register_card(sidecar_ref=sidecar)
+                    except Exception:
+                        pass
+
+            card_keeper_thread = threading.Thread(
+                target=_card_keeper_loop, name="sidecar-card-keeper", daemon=True
+            )
+            card_keeper_thread.start()
 
         proto_tag = "mTLS-1.3" if mtls_bundle is not None else "HTTP"
         if registered_card is not None:
@@ -944,13 +1376,17 @@ def main() -> None:
             )
         else:
             print(
-                f"[lct-sidecar:{proto_tag}] Tool sidecar active for {identity.spiffe_id} -> {public_origin} mode={v_mode.value}",
+                f"[lct-sidecar:{proto_tag}] Sidecar active for {identity.spiffe_id} -> {public_origin} mode={v_mode.value}",
                 flush=True,
             )
 
         try:
             stop_event.wait()
         finally:
+            card_keeper_stop.set()
+            if card_keeper_thread is not None:
+                card_keeper_thread.join(timeout=1.5)
+            audit_emitter.stop()
             rev_replica.stop_background_sync()
             if syncer is not None:
                 syncer.stop_background_refresh()

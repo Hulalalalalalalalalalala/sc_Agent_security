@@ -1,0 +1,157 @@
+{
+  "gateway_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway",
+  "svid_generation": 0,
+  "federation_ready": true,
+  "federation_sync": {
+    "missing_domains": [],
+    "verified_domains": {
+      "org-beta.io": "sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57",
+      "org-payment.io": "sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702",
+      "org-audit.io": "sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless"
+    },
+    "errors": {},
+    "trust_store_version": 4
+  },
+  "control_plane": {
+    "alpha-ca": {
+      "url": "http://alpha-ca.lineage-alpha.svc.cluster.local:8090/healthz",
+      "resolved_ip": "10.97.199.93",
+      "http_status": 200
+    },
+    "alpha-directory": {
+      "url": "http://alpha-directory.lineage-alpha.svc.cluster.local:8091/healthz",
+      "resolved_ip": "10.97.59.198",
+      "http_status": 200
+    },
+    "alpha-revocation": {
+      "url": "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092/healthz",
+      "resolved_ip": "10.97.123.248",
+      "http_status": 200
+    },
+    "beta-ca-fed": {
+      "url": "http://beta-ca.org-beta.io:31094/healthz",
+      "resolved_ip": "192.168.1.6",
+      "http_status": 200
+    },
+    "payment-ca-fed": {
+      "url": "http://payment-ca.org-payment.io:32094/healthz",
+      "resolved_ip": "192.168.1.6",
+      "http_status": 200
+    },
+    "beta-revocation-fed": {
+      "url": "https://beta-revocation.org-beta.io:31492/healthz",
+      "resolved_ip": "192.168.1.6",
+      "http_status": 200
+    },
+    "payment-revocation-fed": {
+      "url": "https://payment-revocation.org-payment.io:32492/healthz",
+      "resolved_ip": "192.168.1.6",
+      "http_status": 200
+    },
+    "audit-collector": {
+      "url": "https://audit-collector.org-audit.io:30893/healthz",
+      "resolved_ip": "192.168.1.6",
+      "http_status": 200,
+      "entries_count": 0
+    }
+  },
+  "discovered_agent_cards": [
+    {
+      "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "trust_domain": "org-payment.io",
+      "name": "Settlement Converger C",
+      "skills": [
+        "settlement.converge"
+      ],
+      "priority": 10,
+      "version": 1795451780988,
+      "endpoint": "https://settlement-converger.org-payment.io:32441",
+      "resolved_machine_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "trust_domain": "org-beta.io",
+      "name": "Hotel Specialist Primary B2",
+      "skills": [
+        "travel.hotel"
+      ],
+      "priority": 10,
+      "version": 1795451780983,
+      "endpoint": "https://hotel-specialist-primary.org-beta.io:31442",
+      "resolved_machine_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+      "trust_domain": "org-beta.io",
+      "name": "Flight Specialist B1",
+      "skills": [
+        "travel.flight"
+      ],
+      "priority": 10,
+      "version": 1795451780744,
+      "endpoint": "https://flight-specialist.org-beta.io:31441",
+      "resolved_machine_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "trust_domain": "org-alpha.io",
+      "name": "Orchestrator Alpha",
+      "skills": [
+        "travel.orchestrate"
+      ],
+      "priority": 10,
+      "version": 1795451780688,
+      "endpoint": "https://orchestrator-alpha.org-alpha.io:30441",
+      "resolved_machine_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup",
+      "trust_domain": "org-beta.io",
+      "name": "Hotel Specialist Backup B2-Sub",
+      "skills": [
+        "travel.hotel"
+      ],
+      "priority": 20,
+      "version": 1795451780745,
+      "endpoint": "https://hotel-specialist-backup.org-beta.io:31443",
+      "resolved_machine_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    }
+  ],
+  "mcp_tool_endpoints": [
+    {
+      "endpoint": "https://travel-ops-mcp.org-payment.io:32442",
+      "resolved_ip": "192.168.1.6",
+      "port": 32442,
+      "peer_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "peer_issuer_domain": "org-payment.io",
+      "issuer_dn": "organizationName=org-payment.io,commonName=org-payment.io LCT Autonomous Root CA",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384"
+    },
+    {
+      "endpoint": "https://payment-vault-mcp.org-payment.io:32443",
+      "resolved_ip": "192.168.1.6",
+      "port": 32443,
+      "peer_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp",
+      "peer_issuer_domain": "org-payment.io",
+      "issuer_dn": "organizationName=org-payment.io,commonName=org-payment.io LCT Autonomous Root CA",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384"
+    }
+  ]
+}

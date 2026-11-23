@@ -1,0 +1,819 @@
+{
+  "task_id": "task-mh-cli-cancel-final",
+  "cancel_http_status": 200,
+  "cancel_response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-7932845e11",
+    "result": {
+      "task": {
+        "id": "task-mh-cli-cancel-final",
+        "contextId": "ctx-task-mh-cli-cancel-final",
+        "status": {
+          "state": "TASK_STATE_CANCELED",
+          "timestamp": "2026-11-23T16:36:38.939873Z",
+          "message": {
+            "messageId": "msg-093f79ca8266",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "text": "Task task-mh-cli-cancel-final canceled with cascading lineage revocation."
+              }
+            ],
+            "contextId": "ctx-task-mh-cli-cancel-final",
+            "taskId": "task-mh-cli-cancel-final"
+          }
+        },
+        "history": [
+          {
+            "messageId": "msg-74242ed98fff",
+            "role": "ROLE_USER",
+            "parts": [
+              {
+                "text": "Stage cancellable Tokyo trip for user:alice@org-alpha.io"
+              },
+              {
+                "data": {
+                  "op": "plan_and_execute_trip",
+                  "pause_before_settlement": true
+                }
+              }
+            ],
+            "contextId": "ctx-task-mh-cli-cancel-final",
+            "taskId": "task-mh-cli-cancel-final"
+          },
+          {
+            "messageId": "msg-62a89b9f6771",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "text": "Staged travel bookings for Tokyo ready for settlement."
+              },
+              {
+                "data": {
+                  "stage": "CONVERGED_READY_FOR_SETTLEMENT",
+                  "task_id": "task-mh-cli-cancel-final",
+                  "sub": "user:alice@org-alpha.io",
+                  "city": "Tokyo",
+                  "orchestrator_plan": {
+                    "city": "Tokyo",
+                    "flight_budget_usd": null,
+                    "hotel_budget_usd": null
+                  },
+                  "orchestrator_llm_trace": {
+                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                    "model": "qwen2.5:3b",
+                    "completion_id": "chatcmpl-95",
+                    "system_fingerprint": "fp_ollama",
+                    "prompt_tokens": 71,
+                    "completion_tokens": 29,
+                    "total_tokens": 100,
+                    "latency_ms": 414.63,
+                    "raw_content": "{\n  \"city\": \"Tokyo\",\n  \"flight_budget_usd\": null,\n  \"hotel_budget_usd\": null\n}"
+                  },
+                  "flight_branch": {
+                    "upstream_status": 200,
+                    "upstream_body": {
+                      "agent": "flight-specialist",
+                      "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                      "flight_search": {
+                        "city": "Tokyo",
+                        "flight_no": "NH-108",
+                        "carrier": "ANA All Nippon",
+                        "origin": "SFO",
+                        "destination": "NRT",
+                        "cabin": "Business",
+                        "price_usd": 580.0,
+                        "lineage_decision": "ALLOW"
+                      },
+                      "flight_booking": {
+                        "booking_ref": "FLT-438A5D3F",
+                        "city": "Tokyo",
+                        "flight_no": "NH-108",
+                        "carrier": "ANA All Nippon",
+                        "charged_usd": 580.0,
+                        "escrow_target": "airline-escrow",
+                        "task_id": "task-mh-cli-cancel-final",
+                        "sub": "user:alice@org-alpha.io",
+                        "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                        "lineage_decision": "ALLOW"
+                      },
+                      "convergence": {
+                        "converged_branch_recorded": true,
+                        "task_id": "task-mh-cli-cancel-final",
+                        "sub": "user:alice@org-alpha.io",
+                        "total_branches_for_task": 2
+                      },
+                      "llm_traces": [
+                        {
+                          "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                          "model": "qwen2.5:3b",
+                          "completion_id": "chatcmpl-361",
+                          "system_fingerprint": "fp_ollama",
+                          "prompt_tokens": 168,
+                          "completion_tokens": 21,
+                          "total_tokens": 189,
+                          "latency_ms": 524.52,
+                          "finish_reason": "tool_calls",
+                          "tool_call_id": "call_gxdpt3dh",
+                          "invoked_tool": "search_flight",
+                          "invoked_arguments": {
+                            "city": "Tokyo"
+                          }
+                        },
+                        {
+                          "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                          "model": "qwen2.5:3b",
+                          "completion_id": "chatcmpl-781",
+                          "system_fingerprint": "fp_ollama",
+                          "prompt_tokens": 208,
+                          "completion_tokens": 42,
+                          "total_tokens": 250,
+                          "latency_ms": 839.36,
+                          "finish_reason": "tool_calls",
+                          "tool_call_id": "call_lgmrx2ar",
+                          "invoked_tool": "book_flight",
+                          "invoked_arguments": {
+                            "amount": 580,
+                            "city": "Tokyo",
+                            "flight_no": "NH-108"
+                          }
+                        }
+                      ]
+                    },
+                    "a2a_task": {
+                      "id": "task-mh-cli-cancel-final",
+                      "contextId": "ctx-task-mh-cli-cancel-final",
+                      "status": {
+                        "state": "TASK_STATE_COMPLETED",
+                        "timestamp": "2026-11-23T16:36:38.765199Z",
+                        "message": {
+                          "messageId": "msg-bc80071f08ea",
+                          "role": "ROLE_AGENT",
+                          "parts": [
+                            {
+                              "text": "Booked flight NH-108 (FLT-438A5D3F) for $580.0."
+                            },
+                            {
+                              "data": {
+                                "agent": "flight-specialist",
+                                "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                                "flight_search": {
+                                  "city": "Tokyo",
+                                  "flight_no": "NH-108",
+                                  "carrier": "ANA All Nippon",
+                                  "origin": "SFO",
+                                  "destination": "NRT",
+                                  "cabin": "Business",
+                                  "price_usd": 580.0,
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "flight_booking": {
+                                  "booking_ref": "FLT-438A5D3F",
+                                  "city": "Tokyo",
+                                  "flight_no": "NH-108",
+                                  "carrier": "ANA All Nippon",
+                                  "charged_usd": 580.0,
+                                  "escrow_target": "airline-escrow",
+                                  "task_id": "task-mh-cli-cancel-final",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "convergence": {
+                                  "converged_branch_recorded": true,
+                                  "task_id": "task-mh-cli-cancel-final",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "total_branches_for_task": 2
+                                },
+                                "llm_traces": [
+                                  {
+                                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                    "model": "qwen2.5:3b",
+                                    "completion_id": "chatcmpl-361",
+                                    "system_fingerprint": "fp_ollama",
+                                    "prompt_tokens": 168,
+                                    "completion_tokens": 21,
+                                    "total_tokens": 189,
+                                    "latency_ms": 524.52,
+                                    "finish_reason": "tool_calls",
+                                    "tool_call_id": "call_gxdpt3dh",
+                                    "invoked_tool": "search_flight",
+                                    "invoked_arguments": {
+                                      "city": "Tokyo"
+                                    }
+                                  },
+                                  {
+                                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                    "model": "qwen2.5:3b",
+                                    "completion_id": "chatcmpl-781",
+                                    "system_fingerprint": "fp_ollama",
+                                    "prompt_tokens": 208,
+                                    "completion_tokens": 42,
+                                    "total_tokens": 250,
+                                    "latency_ms": 839.36,
+                                    "finish_reason": "tool_calls",
+                                    "tool_call_id": "call_lgmrx2ar",
+                                    "invoked_tool": "book_flight",
+                                    "invoked_arguments": {
+                                      "amount": 580,
+                                      "city": "Tokyo",
+                                      "flight_no": "NH-108"
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          ],
+                          "contextId": "ctx-task-mh-cli-cancel-final",
+                          "taskId": "task-mh-cli-cancel-final"
+                        }
+                      },
+                      "history": [
+                        {
+                          "messageId": "msg-0e1ca4b367a6",
+                          "role": "ROLE_USER",
+                          "parts": [
+                            {
+                              "text": "Search and book business flight to Tokyo."
+                            },
+                            {
+                              "data": {
+                                "city": "Tokyo"
+                              }
+                            }
+                          ],
+                          "contextId": "ctx-task-mh-cli-cancel-final",
+                          "taskId": "task-mh-cli-cancel-final"
+                        },
+                        {
+                          "messageId": "msg-bc80071f08ea",
+                          "role": "ROLE_AGENT",
+                          "parts": [
+                            {
+                              "text": "Booked flight NH-108 (FLT-438A5D3F) for $580.0."
+                            },
+                            {
+                              "data": {
+                                "agent": "flight-specialist",
+                                "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                                "flight_search": {
+                                  "city": "Tokyo",
+                                  "flight_no": "NH-108",
+                                  "carrier": "ANA All Nippon",
+                                  "origin": "SFO",
+                                  "destination": "NRT",
+                                  "cabin": "Business",
+                                  "price_usd": 580.0,
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "flight_booking": {
+                                  "booking_ref": "FLT-438A5D3F",
+                                  "city": "Tokyo",
+                                  "flight_no": "NH-108",
+                                  "carrier": "ANA All Nippon",
+                                  "charged_usd": 580.0,
+                                  "escrow_target": "airline-escrow",
+                                  "task_id": "task-mh-cli-cancel-final",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "convergence": {
+                                  "converged_branch_recorded": true,
+                                  "task_id": "task-mh-cli-cancel-final",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "total_branches_for_task": 2
+                                },
+                                "llm_traces": [
+                                  {
+                                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                    "model": "qwen2.5:3b",
+                                    "completion_id": "chatcmpl-361",
+                                    "system_fingerprint": "fp_ollama",
+                                    "prompt_tokens": 168,
+                                    "completion_tokens": 21,
+                                    "total_tokens": 189,
+                                    "latency_ms": 524.52,
+                                    "finish_reason": "tool_calls",
+                                    "tool_call_id": "call_gxdpt3dh",
+                                    "invoked_tool": "search_flight",
+                                    "invoked_arguments": {
+                                      "city": "Tokyo"
+                                    }
+                                  },
+                                  {
+                                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                    "model": "qwen2.5:3b",
+                                    "completion_id": "chatcmpl-781",
+                                    "system_fingerprint": "fp_ollama",
+                                    "prompt_tokens": 208,
+                                    "completion_tokens": 42,
+                                    "total_tokens": 250,
+                                    "latency_ms": 839.36,
+                                    "finish_reason": "tool_calls",
+                                    "tool_call_id": "call_lgmrx2ar",
+                                    "invoked_tool": "book_flight",
+                                    "invoked_arguments": {
+                                      "amount": 580,
+                                      "city": "Tokyo",
+                                      "flight_no": "NH-108"
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          ],
+                          "contextId": "ctx-task-mh-cli-cancel-final",
+                          "taskId": "task-mh-cli-cancel-final"
+                        }
+                      ],
+                      "artifacts": [
+                        {
+                          "artifactId": "art-58cbf5a8183c",
+                          "name": "flight-booking-receipt",
+                          "description": "Confirmed NH-108 to Tokyo",
+                          "parts": [
+                            {
+                              "data": {
+                                "booking_ref": "FLT-438A5D3F",
+                                "city": "Tokyo",
+                                "flight_no": "NH-108",
+                                "carrier": "ANA All Nippon",
+                                "charged_usd": 580.0,
+                                "escrow_target": "airline-escrow",
+                                "task_id": "task-mh-cli-cancel-final",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                                "lineage_decision": "ALLOW"
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "metadata": {
+                        "lineagePath": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                        "stateTransitionHistory": [
+                          {
+                            "state": "TASK_STATE_SUBMITTED",
+                            "timestamp": "2026-11-23T16:36:37.162018Z"
+                          },
+                          {
+                            "state": "TASK_STATE_WORKING",
+                            "timestamp": "2026-11-23T16:36:37.162700Z"
+                          },
+                          {
+                            "state": "TASK_STATE_COMPLETED",
+                            "timestamp": "2026-11-23T16:36:38.765199Z"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "hotel_branch": {
+                    "upstream_status": 200,
+                    "upstream_body": {
+                      "agent": "hotel-specialist-primary",
+                      "instance_label": "primary",
+                      "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                      "hotel_search": {
+                        "city": "Tokyo",
+                        "hotel_id": "HTL-TYO-09",
+                        "hotel_name": "Shinjuku Grand Palace",
+                        "nights": 3,
+                        "total_usd": 360.0,
+                        "lineage_decision": "ALLOW"
+                      },
+                      "hotel_reservation": {
+                        "reservation_ref": "HTL-5E7D3060",
+                        "city": "Tokyo",
+                        "hotel_id": "HTL-TYO-09",
+                        "hotel_name": "Shinjuku Grand Palace",
+                        "nights": 3,
+                        "charged_usd": 360.0,
+                        "escrow_target": "hotel-escrow",
+                        "task_id": "task-mh-cli-cancel-final",
+                        "sub": "user:alice@org-alpha.io",
+                        "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                        "lineage_decision": "ALLOW"
+                      },
+                      "convergence": {
+                        "converged_branch_recorded": true,
+                        "task_id": "task-mh-cli-cancel-final",
+                        "sub": "user:alice@org-alpha.io",
+                        "total_branches_for_task": 1
+                      },
+                      "llm_traces": [
+                        {
+                          "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                          "model": "qwen2.5:3b",
+                          "completion_id": "chatcmpl-822",
+                          "system_fingerprint": "fp_ollama",
+                          "prompt_tokens": 164,
+                          "completion_tokens": 22,
+                          "total_tokens": 186,
+                          "latency_ms": 294.86,
+                          "finish_reason": "tool_calls",
+                          "tool_call_id": "call_8uy6l0kc",
+                          "invoked_tool": "search_hotel",
+                          "invoked_arguments": {
+                            "city": "Tokyo"
+                          }
+                        },
+                        {
+                          "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                          "model": "qwen2.5:3b",
+                          "completion_id": "chatcmpl-86",
+                          "system_fingerprint": "fp_ollama",
+                          "prompt_tokens": 214,
+                          "completion_tokens": 45,
+                          "total_tokens": 259,
+                          "latency_ms": 561.77,
+                          "finish_reason": "tool_calls",
+                          "tool_call_id": "call_p88z2bhp",
+                          "invoked_tool": "reserve_hotel",
+                          "invoked_arguments": {
+                            "city": "Tokyo",
+                            "hotel_id": "HTL-TYO-09",
+                            "amount": 360
+                          }
+                        }
+                      ]
+                    },
+                    "delegated_lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                    "epoch": 0,
+                    "failover_receipts": [],
+                    "a2a_task": {
+                      "id": "task-mh-cli-cancel-final",
+                      "contextId": "ctx-task-mh-cli-cancel-final",
+                      "status": {
+                        "state": "TASK_STATE_COMPLETED",
+                        "timestamp": "2026-11-23T16:36:38.340770Z",
+                        "message": {
+                          "messageId": "msg-954739523772",
+                          "role": "ROLE_AGENT",
+                          "parts": [
+                            {
+                              "text": "Reserved Shinjuku Grand Palace (HTL-5E7D3060) for $360.0."
+                            },
+                            {
+                              "data": {
+                                "agent": "hotel-specialist-primary",
+                                "instance_label": "primary",
+                                "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                                "hotel_search": {
+                                  "city": "Tokyo",
+                                  "hotel_id": "HTL-TYO-09",
+                                  "hotel_name": "Shinjuku Grand Palace",
+                                  "nights": 3,
+                                  "total_usd": 360.0,
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "hotel_reservation": {
+                                  "reservation_ref": "HTL-5E7D3060",
+                                  "city": "Tokyo",
+                                  "hotel_id": "HTL-TYO-09",
+                                  "hotel_name": "Shinjuku Grand Palace",
+                                  "nights": 3,
+                                  "charged_usd": 360.0,
+                                  "escrow_target": "hotel-escrow",
+                                  "task_id": "task-mh-cli-cancel-final",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "convergence": {
+                                  "converged_branch_recorded": true,
+                                  "task_id": "task-mh-cli-cancel-final",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "total_branches_for_task": 1
+                                },
+                                "llm_traces": [
+                                  {
+                                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                    "model": "qwen2.5:3b",
+                                    "completion_id": "chatcmpl-822",
+                                    "system_fingerprint": "fp_ollama",
+                                    "prompt_tokens": 164,
+                                    "completion_tokens": 22,
+                                    "total_tokens": 186,
+                                    "latency_ms": 294.86,
+                                    "finish_reason": "tool_calls",
+                                    "tool_call_id": "call_8uy6l0kc",
+                                    "invoked_tool": "search_hotel",
+                                    "invoked_arguments": {
+                                      "city": "Tokyo"
+                                    }
+                                  },
+                                  {
+                                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                    "model": "qwen2.5:3b",
+                                    "completion_id": "chatcmpl-86",
+                                    "system_fingerprint": "fp_ollama",
+                                    "prompt_tokens": 214,
+                                    "completion_tokens": 45,
+                                    "total_tokens": 259,
+                                    "latency_ms": 561.77,
+                                    "finish_reason": "tool_calls",
+                                    "tool_call_id": "call_p88z2bhp",
+                                    "invoked_tool": "reserve_hotel",
+                                    "invoked_arguments": {
+                                      "city": "Tokyo",
+                                      "hotel_id": "HTL-TYO-09",
+                                      "amount": 360
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          ],
+                          "contextId": "ctx-task-mh-cli-cancel-final",
+                          "taskId": "task-mh-cli-cancel-final"
+                        }
+                      },
+                      "history": [
+                        {
+                          "messageId": "msg-6c206155b50e",
+                          "role": "ROLE_USER",
+                          "parts": [
+                            {
+                              "text": "Search and reserve partner hotel in Tokyo."
+                            },
+                            {
+                              "data": {
+                                "city": "Tokyo",
+                                "simulate_primary_zombie_delay_sec": 0.0
+                              }
+                            }
+                          ],
+                          "contextId": "ctx-task-mh-cli-cancel-final",
+                          "taskId": "task-mh-cli-cancel-final"
+                        },
+                        {
+                          "messageId": "msg-954739523772",
+                          "role": "ROLE_AGENT",
+                          "parts": [
+                            {
+                              "text": "Reserved Shinjuku Grand Palace (HTL-5E7D3060) for $360.0."
+                            },
+                            {
+                              "data": {
+                                "agent": "hotel-specialist-primary",
+                                "instance_label": "primary",
+                                "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                                "hotel_search": {
+                                  "city": "Tokyo",
+                                  "hotel_id": "HTL-TYO-09",
+                                  "hotel_name": "Shinjuku Grand Palace",
+                                  "nights": 3,
+                                  "total_usd": 360.0,
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "hotel_reservation": {
+                                  "reservation_ref": "HTL-5E7D3060",
+                                  "city": "Tokyo",
+                                  "hotel_id": "HTL-TYO-09",
+                                  "hotel_name": "Shinjuku Grand Palace",
+                                  "nights": 3,
+                                  "charged_usd": 360.0,
+                                  "escrow_target": "hotel-escrow",
+                                  "task_id": "task-mh-cli-cancel-final",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "convergence": {
+                                  "converged_branch_recorded": true,
+                                  "task_id": "task-mh-cli-cancel-final",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "total_branches_for_task": 1
+                                },
+                                "llm_traces": [
+                                  {
+                                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                    "model": "qwen2.5:3b",
+                                    "completion_id": "chatcmpl-822",
+                                    "system_fingerprint": "fp_ollama",
+                                    "prompt_tokens": 164,
+                                    "completion_tokens": 22,
+                                    "total_tokens": 186,
+                                    "latency_ms": 294.86,
+                                    "finish_reason": "tool_calls",
+                                    "tool_call_id": "call_8uy6l0kc",
+                                    "invoked_tool": "search_hotel",
+                                    "invoked_arguments": {
+                                      "city": "Tokyo"
+                                    }
+                                  },
+                                  {
+                                    "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                    "model": "qwen2.5:3b",
+                                    "completion_id": "chatcmpl-86",
+                                    "system_fingerprint": "fp_ollama",
+                                    "prompt_tokens": 214,
+                                    "completion_tokens": 45,
+                                    "total_tokens": 259,
+                                    "latency_ms": 561.77,
+                                    "finish_reason": "tool_calls",
+                                    "tool_call_id": "call_p88z2bhp",
+                                    "invoked_tool": "reserve_hotel",
+                                    "invoked_arguments": {
+                                      "city": "Tokyo",
+                                      "hotel_id": "HTL-TYO-09",
+                                      "amount": 360
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          ],
+                          "contextId": "ctx-task-mh-cli-cancel-final",
+                          "taskId": "task-mh-cli-cancel-final"
+                        }
+                      ],
+                      "artifacts": [
+                        {
+                          "artifactId": "art-445e34f61e8d",
+                          "name": "hotel-reservation-receipt",
+                          "description": "Reserved Shinjuku Grand Palace (HTL-TYO-09)",
+                          "parts": [
+                            {
+                              "data": {
+                                "reservation_ref": "HTL-5E7D3060",
+                                "city": "Tokyo",
+                                "hotel_id": "HTL-TYO-09",
+                                "hotel_name": "Shinjuku Grand Palace",
+                                "nights": 3,
+                                "charged_usd": 360.0,
+                                "escrow_target": "hotel-escrow",
+                                "task_id": "task-mh-cli-cancel-final",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                                "lineage_decision": "ALLOW"
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "metadata": {
+                        "lineagePath": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                        "stateTransitionHistory": [
+                          {
+                            "state": "TASK_STATE_SUBMITTED",
+                            "timestamp": "2026-11-23T16:36:37.163027Z"
+                          },
+                          {
+                            "state": "TASK_STATE_WORKING",
+                            "timestamp": "2026-11-23T16:36:37.163522Z"
+                          },
+                          {
+                            "state": "TASK_STATE_COMPLETED",
+                            "timestamp": "2026-11-23T16:36:38.340770Z"
+                          }
+                        ],
+                        "instance": "primary"
+                      }
+                    }
+                  }
+                }
+              }
+            ],
+            "contextId": "ctx-task-mh-cli-cancel-final",
+            "taskId": "task-mh-cli-cancel-final"
+          },
+          {
+            "messageId": "msg-093f79ca8266",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "text": "Task task-mh-cli-cancel-final canceled with cascading lineage revocation."
+              }
+            ],
+            "contextId": "ctx-task-mh-cli-cancel-final",
+            "taskId": "task-mh-cli-cancel-final"
+          }
+        ],
+        "artifacts": [
+          {
+            "artifactId": "art-08a689d1605e",
+            "name": "orchestrator-intent-plan",
+            "description": "Parsed travel itinerary & differentiated budget lattice caps",
+            "parts": [
+              {
+                "data": {
+                  "city": "Tokyo",
+                  "flight_budget_usd": 650.0,
+                  "hotel_budget_usd": 420.0
+                }
+              }
+            ]
+          },
+          {
+            "artifactId": "art-028f102c5990",
+            "name": "flight-specialist-booking",
+            "description": "Flight booking confirmed by FlightSpecialist B1",
+            "parts": [
+              {
+                "data": {
+                  "booking_ref": "FLT-438A5D3F",
+                  "city": "Tokyo",
+                  "flight_no": "NH-108",
+                  "carrier": "ANA All Nippon",
+                  "charged_usd": 580.0,
+                  "escrow_target": "airline-escrow",
+                  "task_id": "task-mh-cli-cancel-final",
+                  "sub": "user:alice@org-alpha.io",
+                  "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/FlightB1",
+                  "lineage_decision": "ALLOW"
+                }
+              }
+            ]
+          },
+          {
+            "artifactId": "art-95e6a3fe8c5b",
+            "name": "hotel-specialist-reservation",
+            "description": "Hotel reservation confirmed by HotelSpecialist B2",
+            "parts": [
+              {
+                "data": {
+                  "reservation_ref": "HTL-5E7D3060",
+                  "city": "Tokyo",
+                  "hotel_id": "HTL-TYO-09",
+                  "hotel_name": "Shinjuku Grand Palace",
+                  "nights": 3,
+                  "charged_usd": 360.0,
+                  "escrow_target": "hotel-escrow",
+                  "task_id": "task-mh-cli-cancel-final",
+                  "sub": "user:alice@org-alpha.io",
+                  "lineage_path": "/task-mh-cli-cancel-final/OrchestratorAlpha/hotel-specialist-primary",
+                  "lineage_decision": "ALLOW"
+                }
+              }
+            ]
+          }
+        ],
+        "metadata": {
+          "lineagePath": "/task-mh-cli-cancel-final/OrchestratorAlpha",
+          "stateTransitionHistory": [
+            {
+              "state": "TASK_STATE_SUBMITTED",
+              "timestamp": "2026-11-23T16:36:36.544256Z"
+            },
+            {
+              "state": "TASK_STATE_WORKING",
+              "timestamp": "2026-11-23T16:36:36.544629Z"
+            },
+            {
+              "state": "TASK_STATE_COMPLETED",
+              "timestamp": "2026-11-23T16:36:38.771640Z"
+            },
+            {
+              "state": "TASK_STATE_CANCELED",
+              "timestamp": "2026-11-23T16:36:38.939873Z"
+            }
+          ],
+          "stagedForSettlement": true,
+          "cascadingRevocation": {
+            "version": 1,
+            "kind": "SUBTREE",
+            "target": "/task-mh-cli-cancel-final/OrchestratorAlpha",
+            "reason": "a2a_cancel_task:task-mh-cli-cancel-final",
+            "requested_by": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+            "timestamp": 1795451798.842982,
+            "trust_domain": "org-alpha.io",
+            "service_signature": "[REDACTED_JWS_SHA256:92fff4fb2dba]",
+            "service_svid": "[REDACTED_JWS_SHA256:220429af3f5c]"
+          }
+        }
+      },
+      "revocation": {
+        "version": 1,
+        "kind": "SUBTREE",
+        "target": "/task-mh-cli-cancel-final/OrchestratorAlpha",
+        "reason": "a2a_cancel_task:task-mh-cli-cancel-final",
+        "requested_by": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+        "timestamp": 1795451798.842982,
+        "trust_domain": "org-alpha.io",
+        "service_signature": "[REDACTED_JWS_SHA256:92fff4fb2dba]",
+        "service_svid": "[REDACTED_JWS_SHA256:220429af3f5c]"
+      }
+    }
+  },
+  "cross_machine_revocation_propagation": {
+    "alpha-revocation": {
+      "url": "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092",
+      "matched_prefix": "/task-mh-cli-cancel-final/OrchestratorAlpha",
+      "propagated": true
+    },
+    "beta-revocation": {
+      "url": "https://beta-revocation.org-beta.io:31492",
+      "trie_version": 1,
+      "propagated": true
+    },
+    "payment-revocation": {
+      "url": "https://payment-revocation.org-payment.io:32492",
+      "trie_version": 1,
+      "propagated": true
+    }
+  },
+  "post_cancel_replay_http_status": 403
+}

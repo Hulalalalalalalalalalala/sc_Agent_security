@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -75,11 +76,15 @@ class WorkloadIdentity:
     workload_svid: str
     issued_at: float
     expires_at: float
+    renewal_generation: int = 0
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False, compare=False
+    )
 
     def __repr__(self) -> str:
         return (
             f"WorkloadIdentity(spiffe_id={self.spiffe_id!r}, "
-            f"alg={self.keypair.alg!r}, jkt={self.jkt!r})"
+            f"alg={self.keypair.alg!r}, jkt={self.jkt!r}, gen={self.renewal_generation})"
         )
 
     @property
@@ -88,10 +93,30 @@ class WorkloadIdentity:
 
     @property
     def jkt(self) -> str:
-        return self.keypair.jkt
+        with self._lock:
+            return self.keypair.jkt
 
     def public_jwk(self) -> Dict[str, Any]:
-        return self.keypair.public_jwk(include_kid=True)
+        with self._lock:
+            return self.keypair.public_jwk(include_kid=True)
+
+    def update_svid(
+        self,
+        workload_svid: str,
+        issued_at: float,
+        expires_at: float,
+        keypair: Optional[KeyPair] = None,
+    ) -> int:
+        """Atomically swap renewed in-memory SVID (and optional rotated keypair)."""
+        with self._lock:
+            if keypair is not None:
+                object.__setattr__(self, "keypair", keypair)
+            object.__setattr__(self, "workload_svid", str(workload_svid))
+            object.__setattr__(self, "issued_at", float(issued_at))
+            object.__setattr__(self, "expires_at", float(expires_at))
+            next_gen = int(self.renewal_generation) + 1
+            object.__setattr__(self, "renewal_generation", next_gen)
+            return next_gen
 
 
 @dataclass
@@ -104,6 +129,7 @@ class TrustDomainCA:
 
     trust_domain: str
     alg: str = "ES256"
+    initial_keypair: Optional[KeyPair] = field(default=None, repr=False)
     active_keypair: KeyPair = field(init=False)
     historical_public_jwks: List[Dict[str, Any]] = field(default_factory=list)
     version: int = 1
@@ -111,10 +137,14 @@ class TrustDomainCA:
     def __post_init__(self) -> None:
         # Validate trust domain syntax via SpiffeId
         SpiffeId.parse(f"spiffe://{self.trust_domain}/authority/ca")
-        self.active_keypair = KeyPair.generate(
-            alg=self.alg,
-            kid=f"{self.trust_domain}-ca-v{self.version}",
-        )
+        if self.initial_keypair is not None:
+            self.alg = self.initial_keypair.alg
+            self.active_keypair = self.initial_keypair
+        else:
+            self.active_keypair = KeyPair.generate(
+                alg=self.alg,
+                kid=f"{self.trust_domain}-ca-v{self.version}",
+            )
 
     @property
     def ca_spiffe_id(self) -> str:

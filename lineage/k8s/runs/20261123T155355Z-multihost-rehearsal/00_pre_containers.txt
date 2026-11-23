@@ -1,0 +1,5 @@
+lct-audit-control-plane	Exited (137) 3 hours ago
+lct-org-pay-control-plane	Exited (137) 3 hours ago
+lct-org-beta-control-plane	Exited (137) 3 hours ago
+lct-org-alpha-control-plane	Exited (137) 3 hours ago
+agent-identity-lab-control-plane	Exited (137) 3 hours ago

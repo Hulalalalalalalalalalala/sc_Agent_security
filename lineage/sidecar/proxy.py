@@ -17,6 +17,7 @@ import hmac
 import math
 import os
 import secrets
+import socket
 import ssl
 import threading
 import time
@@ -197,6 +198,21 @@ class _BoundedTaskListStore:
             return [dict(it) for item_sub, it in entry[0] if item_sub == expected_sub]
 
 
+def _resolve_target_peer_ip(target_url: str) -> Optional[str]:
+    """Resolve target URL hostname via OS/CoreDNS resolver for cross-host audit telemetry."""
+    try:
+        sp = urlsplit(target_url)
+        host = sp.hostname
+        if not host:
+            return None
+        infos = socket.getaddrinfo(host, sp.port or (443 if sp.scheme == "https" else 80), socket.AF_INET)
+        if infos:
+            return str(infos[0][4][0])
+    except Exception:
+        pass
+    return None
+
+
 class LineageSidecar:
     """Dual-listener HTTP Sidecar enforcing LCT governance on inbound & outbound traffic."""
 
@@ -221,6 +237,7 @@ class LineageSidecar:
         allowed_hosts: Iterable[str] = (),
         upstream_timeout: float = 90.0,
         mtls_bundle: Optional[WorkloadMTLSBundle] = None,
+        readiness_check: Optional[Callable[[], Tuple[bool, Dict[str, Any]]]] = None,
     ) -> None:
         self.identity = identity
         self.trust_resolver = trust_resolver
@@ -233,6 +250,7 @@ class LineageSidecar:
         self.is_tool_server = is_tool_server
         self.upstream_timeout = float(upstream_timeout)
         self._mtls_bundle = mtls_bundle
+        self._readiness_check = readiness_check
         self._server_ssl_ctx: Optional[ssl.SSLContext] = (
             mtls_bundle.build_server_ssl_context(require_client_cert=True)
             if mtls_bundle is not None
@@ -272,7 +290,12 @@ class LineageSidecar:
             port=inbound_port,
             public_origin=self.public_origin,
             allowed_hosts=allowed_hosts,
-            ssl_context=self._server_ssl_ctx,
+            ssl_context=self._server_ssl_ctx if mtls_bundle is None else None,
+            ssl_context_provider=(
+                mtls_bundle.server_ssl_context_provider(require_client_cert=True)
+                if mtls_bundle is not None
+                else None
+            ),
             peer_cert_verifier=(
                 mtls_bundle.trust_store.verify_peer_der_cert
                 if mtls_bundle is not None
@@ -308,6 +331,20 @@ class LineageSidecar:
 
     def set_agent_card(self, card: AgentCard) -> None:
         self.agent_card = card
+
+    def on_identity_renewed(self) -> None:
+        """Synchronize `LeafVerifier.self_jkt` and cached `SSLContext` refs after SVID renewal."""
+        self.verifier.self_jkt = self.identity.jkt
+        if self._mtls_bundle is not None:
+            try:
+                self._server_ssl_ctx = self._mtls_bundle.build_server_ssl_context(
+                    require_client_cert=True
+                )
+                self._client_ssl_ctx = self._mtls_bundle.build_client_ssl_context(
+                    check_hostname=True
+                )
+            except Exception:
+                pass
 
     def get_skip_level_results(
         self, task_id: str, expected_sub: Optional[str] = None
@@ -657,6 +694,15 @@ class LineageSidecar:
                     "decision": vres.decision,
                     "active_paths": list(vres.active_paths),
                     "pruned_revoked_paths": list(vres.pruned_revoked_paths),
+                    "peer_spiffe_id": req.peer_spiffe_id,
+                    "peer_issuer_domain": (
+                        SpiffeId.parse(req.peer_spiffe_id).trust_domain
+                        if req.peer_spiffe_id
+                        else None
+                    ),
+                    "tls_version": req.tls_version,
+                    "tls_cipher": req.tls_cipher,
+                    "client_ip": req.client_ip,
                 },
                 decision=vres.decision,
             )
@@ -834,6 +880,15 @@ class LineageSidecar:
                         "result_sha256": sha256_canonical_b64url(resp_json),
                         "active_paths": list(vres.active_paths),
                         "pruned_revoked_paths": list(vres.pruned_revoked_paths),
+                        "peer_spiffe_id": req.peer_spiffe_id,
+                        "peer_issuer_domain": (
+                            SpiffeId.parse(req.peer_spiffe_id).trust_domain
+                            if req.peer_spiffe_id
+                            else None
+                        ),
+                        "tls_version": req.tls_version,
+                        "tls_cipher": req.tls_cipher,
+                        "client_ip": req.client_ip,
                     },
                     decision=vres.decision,
                 )
@@ -856,6 +911,40 @@ class LineageSidecar:
                     "status": "ok",
                     "spiffe_id": self.identity.spiffe_id,
                     "mtls_enabled": self._mtls_bundle is not None,
+                    "svid_generation": self.identity.renewal_generation,
+                },
+                {},
+            )
+
+        if req.method == "GET" and norm_path == "/readyz":
+            if self._readiness_check is not None:
+                ok, detail = self._readiness_check()
+                if not ok:
+                    return (
+                        503,
+                        {
+                            "status": "not_ready",
+                            "spiffe_id": self.identity.spiffe_id,
+                            **detail,
+                        },
+                        {},
+                    )
+                return (
+                    200,
+                    {
+                        "status": "ready",
+                        "spiffe_id": self.identity.spiffe_id,
+                        "svid_generation": self.identity.renewal_generation,
+                        **detail,
+                    },
+                    {},
+                )
+            return (
+                200,
+                {
+                    "status": "ready",
+                    "spiffe_id": self.identity.spiffe_id,
+                    "svid_generation": self.identity.renewal_generation,
                 },
                 {},
             )
@@ -959,6 +1048,7 @@ class LineageSidecar:
                 access_token=compact_out,
             )
 
+            resolved_tool_ip = _resolve_target_peer_ip(target_url)
             if self.audit_emitter is not None:
                 if isinstance(active_tok, LineageToken):
                     self.audit_emitter.emit(
@@ -972,7 +1062,11 @@ class LineageSidecar:
                         parent_block_hash=active_tok.parent_block_hash,
                         current_block_hash=active_tok.leaf_block_hash,
                         permissions_summary=active_tok.leaf_permissions.to_dict(),
-                        action_detail={"action": "call_tool", "target_url": target_url},
+                        action_detail={
+                            "action": "call_tool",
+                            "target_url": target_url,
+                            "resolved_peer_ip": resolved_tool_ip,
+                        },
                         decision="ALLOW",
                     )
                 else:
@@ -993,6 +1087,7 @@ class LineageSidecar:
                             "action": "call_tool_multiparent",
                             "target_url": target_url,
                             "branch_count": len(active_tok.parent_chains),
+                            "resolved_peer_ip": resolved_tool_ip,
                         },
                         decision="ALLOW",
                     )
@@ -1175,6 +1270,7 @@ class LineageSidecar:
                 access_token=compact_out,
             )
 
+            resolved_del_ip = _resolve_target_peer_ip(target_url)
             if self.audit_emitter is not None:
                 if isinstance(out_tok, LineageToken):
                     self.audit_emitter.emit(
@@ -1191,6 +1287,7 @@ class LineageSidecar:
                         action_detail={
                             "delegate_spiffe_id": delegate_spiffe_id,
                             "target_url": target_url,
+                            "resolved_peer_ip": resolved_del_ip,
                         },
                         decision="ALLOW",
                     )
@@ -1210,6 +1307,7 @@ class LineageSidecar:
                             action_detail={
                                 "delegate_spiffe_id": delegate_spiffe_id,
                                 "target_url": target_url,
+                                "resolved_peer_ip": resolved_del_ip,
                             },
                             decision="ALLOW",
                         )

@@ -11,6 +11,7 @@ from lineage.audit.logger import (
     AuditCollectorService,
     AuditEntry,
     AuditEventType,
+    AuditIngestError,
     AuditStreamEmitter,
 )
 
@@ -20,6 +21,7 @@ __all__ = [
     "AuditCollectorService",
     "AuditEntry",
     "AuditEventType",
+    "AuditIngestError",
     "AuditReport",
     "AuditStreamEmitter",
     "CausalChainAuditor",

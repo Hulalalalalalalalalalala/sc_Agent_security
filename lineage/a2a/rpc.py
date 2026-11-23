@@ -688,7 +688,9 @@ class A2AClient:
             "params": dict(params),
         }
         headers = self._build_headers(url, compact_token, accept="application/json")
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
+        with httpx.Client(
+            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
+        ) as client:
             resp = client.post(url, json=payload, headers=headers)
             return resp.status_code, resp.json()
 
@@ -724,6 +726,7 @@ class A2AClient:
         message: Message,
         compact_token: Optional[str] = None,
         configuration: Optional[Mapping[str, Any]] = None,
+        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Tuple[int, str, List[Dict[str, Any]]]:
         """Invoke `SendStreamingMessage` and parse live `text/event-stream` SSE frames."""
         url = f"{self.agent_base_url}{self.rpc_path}"
@@ -738,16 +741,21 @@ class A2AClient:
         }
         headers = self._build_headers(url, compact_token, accept="text/event-stream")
         events: List[Dict[str, Any]] = []
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
+        with httpx.Client(
+            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
+        ) as client:
             with client.stream("POST", url, json=payload, headers=headers) as resp:
                 status_code = resp.status_code
                 content_type = resp.headers.get("content-type", "")
                 if "text/event-stream" not in content_type.lower():
                     raw_body = resp.read().decode("utf-8", errors="replace")
                     try:
-                        events.append(json.loads(raw_body))
+                        err_ev = json.loads(raw_body)
                     except Exception:
-                        events.append({"raw": raw_body})
+                        err_ev = {"raw": raw_body}
+                    events.append(err_ev)
+                    if on_event is not None:
+                        on_event(err_ev)
                     return status_code, content_type, events
 
                 for line in resp.iter_lines():
@@ -757,5 +765,8 @@ class A2AClient:
                     if s.startswith("data:"):
                         data_str = s[len("data:") :].strip()
                         if data_str:
-                            events.append(json.loads(data_str))
+                            ev = json.loads(data_str)
+                            events.append(ev)
+                            if on_event is not None:
+                                on_event(ev)
         return status_code, content_type, events

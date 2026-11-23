@@ -1,0 +1,115 @@
+=== Pinning Genuine Trust Anchors via trust fetch --yes & Verifying Zero-Restart Hot-Reload ===
+============================================================================
+ Fetched Unverified Candidate Bundle from http://192.168.1.6:30094/v1/federation/bundle
+   Domain       : org-alpha.io
+   Trust Anchor : sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9
+   Compare this fingerprint out-of-band with the remote machine's deploy output!
+============================================================================
+[trust] Pinned org-alpha.io -> sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9 in lctmh-alpha/lineage-alpha (hot-reload triggered)
+[trust] Pinned org-alpha.io -> sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9 in lctmh-beta/lineage-beta (hot-reload triggered)
+[trust] Pinned org-alpha.io -> sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9 in lctmh-pay/lineage-pay (hot-reload triggered)
+[trust] Pinned org-alpha.io -> sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9 in lctmh-audit/lineage-audit (hot-reload triggered)
+============================================================================
+ Fetched Unverified Candidate Bundle from http://192.168.1.6:31094/v1/federation/bundle
+   Domain       : org-beta.io
+   Trust Anchor : sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57
+   Compare this fingerprint out-of-band with the remote machine's deploy output!
+============================================================================
+[trust] Pinned org-beta.io -> sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57 in lctmh-alpha/lineage-alpha (hot-reload triggered)
+[trust] Pinned org-beta.io -> sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57 in lctmh-beta/lineage-beta (hot-reload triggered)
+[trust] Pinned org-beta.io -> sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57 in lctmh-pay/lineage-pay (hot-reload triggered)
+[trust] Pinned org-beta.io -> sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57 in lctmh-audit/lineage-audit (hot-reload triggered)
+============================================================================
+ Fetched Unverified Candidate Bundle from http://192.168.1.6:32094/v1/federation/bundle
+   Domain       : org-payment.io
+   Trust Anchor : sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702
+   Compare this fingerprint out-of-band with the remote machine's deploy output!
+============================================================================
+[trust] Pinned org-payment.io -> sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702 in lctmh-alpha/lineage-alpha (hot-reload triggered)
+[trust] Pinned org-payment.io -> sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702 in lctmh-beta/lineage-beta (hot-reload triggered)
+[trust] Pinned org-payment.io -> sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702 in lctmh-pay/lineage-pay (hot-reload triggered)
+[trust] Pinned org-payment.io -> sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702 in lctmh-audit/lineage-audit (hot-reload triggered)
+============================================================================
+ Fetched Unverified Candidate Bundle from https://192.168.1.6:30893/v1/federation/bundle
+   Domain       : org-audit.io
+   Trust Anchor : sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless
+   Compare this fingerprint out-of-band with the remote machine's deploy output!
+============================================================================
+[trust] Pinned org-audit.io -> sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless in lctmh-alpha/lineage-alpha (hot-reload triggered)
+[trust] Pinned org-audit.io -> sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless in lctmh-beta/lineage-beta (hot-reload triggered)
+[trust] Pinned org-audit.io -> sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless in lctmh-pay/lineage-pay (hot-reload triggered)
+[trust] Pinned org-audit.io -> sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless in lctmh-audit/lineage-audit (hot-reload triggered)
+--- Pinned ConfigMaps () ---
+{
+  "lctmh-alpha": {
+    "org-alpha.io": "sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9",
+    "org-audit.io": "sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless",
+    "org-beta.io": "sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57",
+    "org-payment.io": "sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702"
+  },
+  "lctmh-beta": {
+    "org-alpha.io": "sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9",
+    "org-audit.io": "sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless",
+    "org-beta.io": "sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57",
+    "org-payment.io": "sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702"
+  },
+  "lctmh-pay": {
+    "org-alpha.io": "sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9",
+    "org-audit.io": "sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless",
+    "org-beta.io": "sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57",
+    "org-payment.io": "sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702"
+  },
+  "lctmh-audit": {
+    "org-alpha.io": "sha256:7818fcb00e1c6a21e64971ad28399fb0a7eee745115904454f45204c16e15cb8:e7265e4f1a24c0d7d276154353702d7a2e7d297801fb8a3f9e72c75046f206a9",
+    "org-audit.io": "sha256:66817b3473aac37e497c31b5f6ab1cbe2187bb1035fd1599f7a11c3a9acbe396:keyless",
+    "org-beta.io": "sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57",
+    "org-payment.io": "sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702"
+  }
+}
+--- Waiting for all Deployments across all 4 clusters to hot-reload to Ready (zero restarts!) ---
+deployment.apps/alpha-ca condition met
+deployment.apps/alpha-directory condition met
+deployment.apps/alpha-revocation condition met
+deployment.apps/e2e-user-gateway condition met
+deployment.apps/orchestrator-alpha condition met
+=== Cluster lctmh-alpha Pods ===
+NAME                                  READY   STATUS    RESTARTS   AGE     IP            NODE                        NOMINATED NODE   READINESS GATES
+alpha-ca-5785b6bc78-454hq             1/1     Running   0          2m17s   10.241.0.7    lctmh-alpha-control-plane   <none>           <none>
+alpha-directory-f98cfc96b-mmksn       1/1     Running   0          2m17s   10.241.0.9    lctmh-alpha-control-plane   <none>           <none>
+alpha-revocation-74d88c86b-rt2g2      1/1     Running   0          2m17s   10.241.0.8    lctmh-alpha-control-plane   <none>           <none>
+e2e-user-gateway-74648ccd89-wwfqb     1/1     Running   0          2m17s   10.241.0.11   lctmh-alpha-control-plane   <none>           <none>
+orchestrator-alpha-756fffb8bd-bdj7l   2/2     Running   0          2m17s   10.241.0.10   lctmh-alpha-control-plane   <none>           <none>
+deployment.apps/beta-ca condition met
+deployment.apps/beta-directory condition met
+deployment.apps/beta-revocation condition met
+deployment.apps/flight-specialist condition met
+deployment.apps/hotel-specialist-backup condition met
+deployment.apps/hotel-specialist-primary condition met
+=== Cluster lctmh-beta Pods ===
+NAME                                        READY   STATUS    RESTARTS   AGE     IP            NODE                       NOMINATED NODE   READINESS GATES
+beta-ca-7f9fbdc869-48n86                    1/1     Running   0          7m30s   10.242.0.41   lctmh-beta-control-plane   <none>           <none>
+beta-directory-89896bb84-m89vm              1/1     Running   0          7m30s   10.242.0.43   lctmh-beta-control-plane   <none>           <none>
+beta-revocation-7578b64f7b-8cvnz            1/1     Running   0          7m30s   10.242.0.42   lctmh-beta-control-plane   <none>           <none>
+flight-specialist-7d49c8b7cb-699vx          2/2     Running   0          7m30s   10.242.0.44   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-backup-6b7758f8b7-p76tf    2/2     Running   0          7m30s   10.242.0.46   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-primary-74fc59f9f4-vnntz   2/2     Running   0          7m30s   10.242.0.45   lctmh-beta-control-plane   <none>           <none>
+deployment.apps/payment-ca condition met
+deployment.apps/payment-directory condition met
+deployment.apps/payment-revocation condition met
+deployment.apps/payment-vault-mcp condition met
+deployment.apps/settlement-converger condition met
+deployment.apps/travel-ops-mcp condition met
+=== Cluster lctmh-pay Pods ===
+NAME                                    READY   STATUS    RESTARTS   AGE     IP            NODE                      NOMINATED NODE   READINESS GATES
+payment-ca-7f8b578b89-qwgf5             1/1     Running   0          7m30s   10.243.0.40   lctmh-pay-control-plane   <none>           <none>
+payment-directory-7ff6c5d5d6-pznr9      1/1     Running   0          7m30s   10.243.0.42   lctmh-pay-control-plane   <none>           <none>
+payment-revocation-64dd58f468-vhfk9     1/1     Running   0          7m30s   10.243.0.41   lctmh-pay-control-plane   <none>           <none>
+payment-vault-mcp-7f498fc5c-4627n       2/2     Running   0          7m30s   10.243.0.45   lctmh-pay-control-plane   <none>           <none>
+settlement-converger-7f6d79fcbf-ghjnw   2/2     Running   0          7m30s   10.243.0.43   lctmh-pay-control-plane   <none>           <none>
+travel-ops-mcp-6bf486d5d4-7xnd4         2/2     Running   0          7m30s   10.243.0.44   lctmh-pay-control-plane   <none>           <none>
+deployment.apps/audit-ca condition met
+deployment.apps/audit-collector condition met
+=== Cluster lctmh-audit Pods ===
+NAME                               READY   STATUS    RESTARTS   AGE     IP           NODE                        NOMINATED NODE   READINESS GATES
+audit-ca-787fcb9f6d-nkdtg          1/1     Running   0          2m18s   10.244.0.6   lctmh-audit-control-plane   <none>           <none>
+audit-collector-674767c887-vpsp5   1/1     Running   0          2m18s   10.244.0.7   lctmh-audit-control-plane   <none>           <none>

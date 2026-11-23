@@ -118,7 +118,8 @@ class LineagePrefixTrie:
         self._domain_roots: Dict[str, _TrieNode] = {}
         self._quarantined_workloads: Dict[str, RevocationEvent] = {}
         self._events: List[RevocationEvent] = []
-        self._seen_federated_origins: Dict[Tuple[str, int], RevocationEvent] = {}
+        self._seen_federated_origins: Dict[Tuple[str, int, str], RevocationEvent] = {}
+        self._seen_replica_signatures: Dict[str, RevocationEvent] = {}
         self._version: int = 0
 
     @property
@@ -343,17 +344,77 @@ class LineagePrefixTrie:
                 and e.version > since_origin_version
             ]
 
-    def ingest_federated_event(self, event: RevocationEvent) -> RevocationEvent:
+    def apply_verified_replica_event(self, event: RevocationEvent) -> bool:
+        """Apply a cryptographically verified replica event (safe across upstream service restarts)."""
+        with self._cond:
+            if event.service_signature:
+                if event.service_signature in self._seen_replica_signatures:
+                    return False
+            elif event.version <= self._version:
+                return False
+
+            assigned_ver = (
+                event.version
+                if event.version == self._version + 1
+                else (self._version + 1)
+            )
+            stored = (
+                event
+                if assigned_ver == event.version
+                else RevocationEvent(
+                    version=assigned_ver,
+                    kind=event.kind,
+                    target=event.target,
+                    reason=event.reason,
+                    requested_by=event.requested_by,
+                    timestamp=event.timestamp,
+                    service_signature=event.service_signature,
+                    service_svid=event.service_svid,
+                    trust_domain=event.trust_domain,
+                    origin_version=event.origin_version
+                    if event.origin_version is not None
+                    else event.version,
+                )
+            )
+            if stored.kind in (RevocationKind.FULL_CHAIN, RevocationKind.SUBTREE):
+                segments = parse_revocation_prefix(stored.target)
+                target_root = self._select_target_root_locked(stored.trust_domain)
+                self._insert_into_root(target_root, segments, stored)
+            elif stored.kind == RevocationKind.WORKLOAD_QUARANTINE:
+                spiffe = SpiffeId.parse(stored.target)
+                if spiffe.uri not in self._quarantined_workloads:
+                    self._quarantined_workloads[spiffe.uri] = stored
+            else:
+                raise ValueError(f"Unsupported RevocationKind: {stored.kind}")
+
+            self._version = assigned_ver
+            self._events.append(stored)
+            if event.service_signature:
+                self._seen_replica_signatures[event.service_signature] = stored
+            self._cond.notify_all()
+            return True
+
+    def ingest_federated_event(
+        self, event: RevocationEvent, origin_instance_jkt: str = ""
+    ) -> RevocationEvent:
         """Append a cryptographically verified peer-domain RevocationEvent preserving its signature."""
         if not event.trust_domain:
             raise ValueError("Federated RevocationEvent must specify trust_domain")
         orig_ver = (
             event.origin_version if event.origin_version is not None else event.version
         )
-        key = (event.trust_domain, orig_ver)
+        key = (event.trust_domain, origin_instance_jkt, orig_ver)
         with self._cond:
             existing = self._seen_federated_origins.get(key)
             if existing is not None:
+                if (
+                    existing.service_signature != event.service_signature
+                    or existing.core_claims() != event.core_claims()
+                ):
+                    raise ValueError(
+                        f"Equivocated federated RevocationEvent for ({event.trust_domain!r}, "
+                        f"instance_jkt={origin_instance_jkt!r}, origin_version={orig_ver})"
+                    )
                 return existing
 
             next_ver = self._version + 1

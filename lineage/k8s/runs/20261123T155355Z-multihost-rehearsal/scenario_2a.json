@@ -1,0 +1,59 @@
+{
+  "scenario": "2a_a2a_v1_atomic_prune_and_graft_plus_cross_domain_zombie_403_proof",
+  "status": "PASS",
+  "task_id": "task-k8s-s2a-mh-rehearsal-8pass",
+  "a2a_task_state": "TASK_STATE_COMPLETED",
+  "grafted_epoch": 1,
+  "grafted_lineage_path": "/task-k8s-s2a-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-backup-e1",
+  "handled_by_instance": "backup",
+  "failover_receipt": {
+    "receipt_id": "failover-d44a5fc25e924fa0a1ec68e5d41ebd48",
+    "task_id": "task-k8s-s2a-mh-rehearsal-8pass",
+    "parent_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+    "pruned_lineage_path": "/task-k8s-s2a-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-primary",
+    "revocation_version": 6,
+    "revocation_event_sig": "[REDACTED_JWS_SHA256:41df10556cea]",
+    "failed_delegate_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+    "substitute_delegate_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup",
+    "new_lineage_path": "/task-k8s-s2a-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-backup-e1",
+    "old_epoch": 0,
+    "new_epoch": 1,
+    "failure_evidence": {
+      "failed_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "failed_endpoint": "https://hotel-specialist-primary.org-beta.io:31442/a2a",
+      "fault_type": "TIMEOUT",
+      "error_detail": "ReadTimeout: The read operation timed out",
+      "attempt_count": 1,
+      "observed_at": 1795455492.2992911
+    },
+    "timestamp": 1795455492.4657745,
+    "revocation_event": {
+      "version": 6,
+      "kind": "SUBTREE",
+      "target": "/task-k8s-s2a-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-primary",
+      "reason": "atomic_prune:TIMEOUT",
+      "requested_by": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "timestamp": 1795455492.332362,
+      "trust_domain": "org-alpha.io",
+      "service_signature": "[REDACTED_JWS_SHA256:41df10556cea]",
+      "service_svid": "[REDACTED_JWS_SHA256:be6cbc8894f0]"
+    },
+    "revocation_service_svid": "[REDACTED_JWS_SHA256:be6cbc8894f0]",
+    "parent_svid": "[REDACTED_JWS_SHA256:cb4384081c92]",
+    "jws_signature": "[REDACTED_JWS_SHA256:740e65189426]"
+  },
+  "zombie_revocation_proof": {
+    "task_id": "task-k8s-s2a-mh-rehearsal-8pass",
+    "sub": "user:alice@org-alpha.io",
+    "pruned_lineage_path": "/task-k8s-s2a-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-primary",
+    "zombie_mcp_http_status": 403,
+    "zombie_mcp_body": {
+      "error": "LINEAGE_REVOKED",
+      "detail": "Lineage revoked via SUBTREE on '/task-k8s-s2a-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-primary' (v24)",
+      "decision": "DENY",
+      "pruned_revoked_paths": []
+    },
+    "recorded_at": 1795455493.94918
+  },
+  "final_answer": "Confirmed completion of flight booking and hotel reservation for traveler \"user:alice@org-alpha.io\" in Paris. Flight booking (flight_no: AF-065, booking_ref: FLT-6AF3E83B) settled for $490.00 USD in airline-escrow. Hotel reservation (hotel_id: HTL-PAR-07, reservation_ref: HTL-8418821A) settled for $320.00 USD in hotel-escrow. Both settlements are in line with the OrchestratorAlpha's task_id: task-k8s-s2a-mh-rehearsal-8pass and lineage decisions."
+}

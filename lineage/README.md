@@ -63,7 +63,29 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`k8s/K8S_DEPLOYMENT.md`](./k8s/K
 
 ---
 
-## 4. Safe GitHub Packaging & Push (`push_to_github.sh`)
+## 4. 3-Machine Physical Interconnection (`lineage/multihost/`)
+
+Deploy autonomous LCT roles (`alpha,audit`, `beta`, `pay`) across **3 separate physical machines** (macOS, Linux, or Windows + WSL2) over a LAN, hotspot, or Tailscale network with host-NIC `extraPortMappings`, CoreDNS FQDN resolution, SSH-style SHA-256 trust anchor pinning (`lct-trust-anchors` hot-reload), startup-order independence, TLS 1.3 keyless audit collection, and automatic 50%-TTL SVID/X.509 renewal:
+
+```bash
+# 1. Preflight check (ports, Docker, Ollama, peer TCP & HTTP Date clock skew)
+bash lineage/scripts/multihost.sh preflight --roles alpha,audit --alpha-ip <IP1> --beta-ip <IP2> --pay-ip <IP3>
+
+# 2. Deploy local role(s) and print out-of-band SHA-256 trust anchor(s)
+bash lineage/scripts/multihost.sh deploy --roles alpha,audit --alpha-ip <IP1> --beta-ip <IP2> --pay-ip <IP3>
+
+# 3. Pin verified peer anchors (zero-restart hot-reload) & run interactive cross-machine CLI
+bash lineage/scripts/multihost.sh trust add org-beta.io sha256:<X509_SPKI_HEX>:<JWKS_SET_HEX>
+bash lineage/scripts/multihost.sh status
+bash lineage/scripts/multihost.sh send --text "Book Tokyo flight and hotel for Alice" --stream
+bash lineage/scripts/multihost.sh e2e
+```
+
+See [`multihost/MULTIHOST_GUIDE.md`](./multihost/MULTIHOST_GUIDE.md) for complete OS-specific firewall setup, DHCP IP update (`update-peer-ips`), fault injection, and troubleshooting.
+
+---
+
+## 5. Safe GitHub Packaging & Push (`push_to_github.sh`)
 
 ```bash
 # Pre-flight verification (0 files > 50 MB, 0 private keys/tokens, .tools/ & src/ excluded)

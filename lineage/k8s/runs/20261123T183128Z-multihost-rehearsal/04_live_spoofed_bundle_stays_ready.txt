@@ -1,0 +1,31 @@
+=== [HIGH-M6-01] 1. Baseline orchestrator-alpha /readyz before spoofing ===
+200 {"status":"ready","spiffe_id":"spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha","svid_generation":3,"missing_domains":[],"verified_domains":{"org-beta.io":"sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5","org-payment.io":"sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053","org-audit.io":"sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless"},"errors":{},"rejected_bundle_counts":{"org-beta.io":3},"trust_store_version":4,"agent_card_registered":true}
+=== [HIGH-M6-01] 2. Launch rogue-beta-bundle Pod serving forged org-beta.io CA bundle on :8094 ===
+pod/rogue-beta-bundle created
+pod/rogue-beta-bundle condition met
+=== [HIGH-M6-01] 3. Swap beta-ca-federation (:31094) selector to rogue-beta-bundle ===
+service/beta-ca-federation patched
+forged_marker_served_on_31094= True
+=== [HIGH-M6-01] 4. Poll orchestrator-alpha & alpha-directory /readyz until both observe & reject spoofed bundle while staying 200 Ready ===
+orchestrator-alpha /readyz status= 200 {
+  "status": "ready",
+  "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+  "svid_generation": 3,
+  "missing_domains": [],
+  "verified_domains": {
+    "org-beta.io": "sha256:1e598ede2688e810d10254f2f3d7ec3c66695842470a28db52b28f5faa507c5b:6539d0e52607088bab68b3468ce4e6b5360ba676cd37c04dab9bdf00c32adcb5",
+    "org-payment.io": "sha256:d437d30759b54fa7b9ad415a5443c52011e54587993520810378335c768f22c5:01cafcb963902a4b4c7247a4c44c558c7e7b0979574177bbe981cbe5defde053",
+    "org-audit.io": "sha256:adc625932f73674ed99c98af97a292c2e05a52136efbedcdb73076902dc29853:keyless"
+  },
+  "errors": {},
+  "rejected_bundle_counts": {
+    "org-beta.io": 5
+  },
+  "trust_store_version": 4,
+  "agent_card_registered": true
+}
+alpha-directory /readyz status= 200 verified_domains= ['org-beta.io', 'org-payment.io'] rejected_bundle_counts= {'org-beta.io': 5}
+alpha-directory retained verified org-beta.io AgentCards during spoof attack: ['spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary', 'spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist', 'spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup']
+=== [HIGH-M6-01] 5. Restore genuine beta-ca selector & clean up rogue pod ===
+restored_genuine_bundle_forged_marker= None
+[PASS] Spoofed plain-HTTP bundle rejected in live K8s without evicting pinned org-beta.io; /readyz stayed 200 Ready and verified org-beta.io AgentCards remained intact!

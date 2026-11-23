@@ -14,12 +14,14 @@ Eliminates shared multi-domain CA private keys:
 
 from __future__ import annotations
 
+import ssl
 import time
-from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
 
 from lineage.audit import AuditCollectorClient, AuditEventType, AuditStreamEmitter
 from lineage.common.crypto import (
     CryptoError,
+    KeyPair,
     compute_jwk_thumbprint,
     jws_verify_compact,
     require_finite_timestamp,
@@ -27,6 +29,7 @@ from lineage.common.crypto import (
 )
 from lineage.common.http_utils import HTTPRequestContext, ManagedHTTPService
 from lineage.common.mtls import MTLSError, X509DomainAuthority
+from lineage.federation.anchors import compute_bundle_trust_anchor
 from lineage.identity import IdentityError, TrustBundleResolver, TrustDomainCA
 from lineage.k8s.bootstrap_services import K8sServiceAccountVerifier, _extract_bearer
 from lineage.protocol import (
@@ -56,6 +59,11 @@ class AutonomousDomainCAService:
         host: str = "0.0.0.0",
         port: int = 8090,
         federation_port: Optional[int] = None,
+        ca_private_key_pem: Optional[str] = None,
+        x509_private_key_pem: Optional[str] = None,
+        x509_root_cert_pem: Optional[str] = None,
+        audit_ssl_context_provider: Optional[Callable[[], Optional[ssl.SSLContext]]] = None,
+        best_effort_audit: bool = False,
     ) -> None:
         self.trust_domain = trust_domain
         self.allowed_k8s_namespace = allowed_k8s_namespace
@@ -82,8 +90,13 @@ class AutonomousDomainCAService:
             if str(s).strip()
         )
 
-        # Strictly ONE domain's ES256 CA + NameConstraints-bound X.509 Root CA in RAM!
-        self.ca = TrustDomainCA(trust_domain, alg="ES256")
+        # Strictly ONE domain's ES256 CA + NameConstraints-bound X.509 Root CA!
+        init_kp = (
+            KeyPair.from_private_pem(ca_private_key_pem)
+            if ca_private_key_pem is not None
+            else None
+        )
+        self.ca = TrustDomainCA(trust_domain, alg="ES256", initial_keypair=init_kp)
         self.x509_ca = X509DomainAuthority(
             trust_domain,
             allowed_dns_suffixes=(
@@ -93,6 +106,8 @@ class AutonomousDomainCAService:
                 trust_domain,
                 "localhost",
             ),
+            private_key_pem=x509_private_key_pem,
+            root_cert_pem=x509_root_cert_pem,
         )
         self.local_resolver = TrustBundleResolver()
         self.local_resolver.register_domain_ca(self.ca)
@@ -105,8 +120,12 @@ class AutonomousDomainCAService:
         self._audit_emitter: Optional[AuditStreamEmitter] = (
             AuditStreamEmitter(
                 self.ca,
-                collector_client=AuditCollectorClient(audit_collector_url),
+                collector_client=AuditCollectorClient(
+                    audit_collector_url,
+                    ssl_context_provider=audit_ssl_context_provider,
+                ),
                 stream_id=f"spiffe://{trust_domain}/authority/root",
+                best_effort_remote=best_effort_audit,
             )
             if audit_collector_url
             else None
@@ -135,6 +154,8 @@ class AutonomousDomainCAService:
         return url
 
     def stop(self) -> None:
+        if self._audit_emitter is not None:
+            self._audit_emitter.stop()
         if self.federation_http is not None:
             self.federation_http.stop()
         self.http.stop()
@@ -147,10 +168,17 @@ class AutonomousDomainCAService:
     def federation_base_url(self) -> Optional[str]:
         return self.federation_http.base_url if self.federation_http is not None else None
 
+    @property
+    def trust_anchor(self) -> str:
+        raw_bundle = self.ca.export_public_bundle()
+        raw_bundle["x509_root_pem"] = self.x509_ca.export_root_pem()
+        return compute_bundle_trust_anchor(raw_bundle)
+
     def export_federation_bundle(self) -> Dict[str, Any]:
-        """Export public-only ES256 JWKs + X.509 Root CA PEM for peer domain federation."""
+        """Export public-only ES256 JWKs + X.509 Root CA PEM + SHA-256 trust anchor."""
         bundle = self.ca.export_public_bundle()
         bundle["x509_root_pem"] = self.x509_ca.export_root_pem()
+        bundle["trust_anchor"] = compute_bundle_trust_anchor(bundle)
         return bundle
 
     def _resolve_workload_path(self, k8s_ns: str, k8s_sa: str) -> str:
@@ -200,6 +228,7 @@ class AutonomousDomainCAService:
                     "status": "ok",
                     "trust_domain": self.trust_domain,
                     "mode": "federation_readonly",
+                    "trust_anchor": self.trust_anchor,
                 },
                 {},
             )
@@ -225,6 +254,7 @@ class AutonomousDomainCAService:
                     "status": "ok",
                     "trust_domain": self.trust_domain,
                     "allowed_namespace": self.allowed_k8s_namespace,
+                    "trust_anchor": self.trust_anchor,
                 },
                 {},
             )

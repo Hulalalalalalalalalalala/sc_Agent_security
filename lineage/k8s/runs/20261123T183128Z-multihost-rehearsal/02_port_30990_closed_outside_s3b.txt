@@ -1,0 +1,27 @@
+=== [MEDIUM-M6-01] Verify Service/e2e-user-gateway-sync is NOT present outside Scenario 3B ===
+NAME                          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE
+alpha-ca                      ClusterIP   10.97.95.51     <none>        8090/TCP         76s
+alpha-ca-federation           NodePort    10.97.89.154    <none>        8094:30094/TCP   76s
+alpha-directory               ClusterIP   10.97.173.184   <none>        8091/TCP         76s
+alpha-directory-federation    NodePort    10.97.5.175     <none>        8491:30491/TCP   76s
+alpha-revocation              ClusterIP   10.97.209.67    <none>        8092/TCP         76s
+alpha-revocation-federation   NodePort    10.97.218.131   <none>        8492:30492/TCP   76s
+orchestrator-alpha            NodePort    10.97.19.54     <none>        8443:30441/TCP   76s
+Error from server (NotFound): services "e2e-user-gateway-sync" not found
+get svc e2e-user-gateway-sync exit_code=1
+=== [MEDIUM-M6-01] Verify host port 30990 has no active NodePort backing outside Scenario 3B ===
+*   Trying 192.168.1.6:30990...
+* Connected to 192.168.1.6 (192.168.1.6) port 30990
+> POST /sync HTTP/1.1
+> Host: 192.168.1.6:30990
+> User-Agent: curl/8.7.1
+> Accept: */*
+> Content-Length: 2
+> Content-Type: application/x-www-form-urlencoded
+> 
+} [2 bytes data]
+* upload completely sent off: 2 bytes
+* Recv failure: Connection reset by peer
+* Closing connection
+curl 192.168.1.6:30990/sync exit_code=56
+[PASS] Port 30990 unexposed outside Scenario 3B (no Service/e2e-user-gateway-sync; TCP connection reset)

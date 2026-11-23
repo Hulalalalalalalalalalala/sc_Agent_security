@@ -1,0 +1,48 @@
+[e2e] Running Scenario 1 (Cross-Machine A2A v1.0 + SSE + 1-to-N / N-to-1 / M-to-N DAG)...
+[e2e] Scenario 1: PASS
+[e2e] Running Scenario 2A (Downward Atomic Prune-and-Graft on Byzantine/Zombie Node)...
+[e2e] Scenario 2A: PASS
+[e2e] Running Scenario 2B (Real Pod Kill on hotel-specialist-primary -> Failover to Backup)...
+[e2e:local-fault] Executing directly: bash lineage/scripts/multihost fault --kill hotel-primary
+[fault] Terminating hotel-specialist-primary in kind-lctmh-beta (lineage-beta)...
+[fault] hotel-specialist-primary is now offline (replicas=0).
+[e2e] Scenario 2B: PASS
+[e2e:local-fault] Executing directly: bash lineage/scripts/multihost fault --restore hotel-primary
+[fault] Restoring hotel-specialist-primary in kind-lctmh-beta (lineage-beta) to replicas=1...
+[fault] hotel-specialist-primary is Ready (2/2 Running).
+[e2e] Running Scenario 3A (Forged Skip-Level Return Rejected While Intermediate Alive)...
+[e2e] Scenario 3A: PASS
+[e2e] Running Scenario 3B (Mid-Flight Intermediate Pod Kill -> Authenticated Skip-Level Return)...
+[e2e:local-fault] Executing directly: bash lineage/scripts/multihost fault --kill hotel-primary --fast
+[fault] Terminating hotel-specialist-primary in kind-lctmh-beta (lineage-beta)...
+[fault] hotel-specialist-primary is now offline (replicas=0).
+[e2e] Scenario 3B: PASS
+[e2e:local-fault] Executing directly: bash lineage/scripts/multihost fault --restore hotel-primary
+[fault] Restoring hotel-specialist-primary in kind-lctmh-beta (lineage-beta) to replicas=1...
+[fault] hotel-specialist-primary is Ready (2/2 Running).
+[e2e] Running Scenario 4 (A2A CancelTask Cross-Machine Revocation + Fagin Degradation + Concurrency)...
+[e2e] Scenario 4: PASS
+[e2e] Running Scenario 6 (Whole-Machine Beta Partition -> Fail-Closed 503 -> Heal & Recovery)...
+[e2e:local-fault] Executing directly: bash lineage/scripts/multihost fault --partition --role beta
+[fault] Severing cross-machine traffic (TCP 30000-32767) on lctmh-beta-control-plane...
+[fault] Cross-machine network partition active on: beta
+[e2e:local-fault] Executing directly: bash lineage/scripts/multihost fault --heal --role beta
+[fault] Healing cross-machine traffic on lctmh-beta-control-plane...
+[fault] Cross-machine network healed on: beta
+[e2e] Scenario 6: PASS
+[e2e] Running Scenario 5 (100% CausalChainAuditor Reconstruction Over TLS 1.3 Audit Center)...
+[e2e] Scenario 5: PASS
+{
+  "run_id": "mh-rehearsal-8pass",
+  "overall_status": "PASS",
+  "scenarios": [
+    "1",
+    "2A",
+    "2B",
+    "3A",
+    "3B",
+    "4",
+    "6",
+    "5"
+  ]
+}

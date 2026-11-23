@@ -1,0 +1,69 @@
+============================================================================
+ LCT Multi-Host Preflight Check
+============================================================================
+  Local Roles   : beta pay
+  Machine IPs   : alpha=192.168.1.6, beta=192.168.1.6, pay=192.168.1.6, audit=192.168.1.6
+  Host Ports    : 31094 31491 31492 31441 31442 31443 32094 32491 32492 32441 32442 32443
+  LLM Endpoint  : http://host.docker.internal:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling  : docker, kind, kubectl, helm present
+  [OK] Docker   : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Port 31094 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 31491 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 31492 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 31441 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 31442 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 31443 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 32094 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 32491 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 32492 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 32441 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 32442 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Port 32443 : already bound by active lctmh cluster container (re-entrant)
+  [OK] Ports    : all requested host ports (31094 31491 31492 31441 31442 31443 32094 32491 32492 32441 32442 32443) are available
+  [OK] LLM      : http://127.0.0.1:11434/v1/models reachable with model 'qwen2.5:3b'
+  [INFO] Peer alpha (192.168.1.6:30094): not online yet (order-independent boot supported)
+  [INFO] Peer beta (http://192.168.1.6:31094): TCP port bound, service initializing (order-independent boot)
+  [INFO] Peer pay (http://192.168.1.6:32094): TCP port bound, service initializing (order-independent boot)
+  [INFO] Peer audit (192.168.1.6:30893): not online yet (order-independent boot supported)
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): beta pay
+============================================================================
+[deploy] Building image 'lineage-lct:m6' (BASE_IMAGE=ghcr.io/rossoctl/examples/weather_tool:pinned)...
+[deploy] Kind cluster 'lctmh-beta' already exists; reusing.
+[deploy] Loading image 'lineage-lct:m6' into 'lctmh-beta'...
+[deploy] Kind cluster 'lctmh-pay' already exists; reusing.
+[deploy] Loading image 'lineage-lct:m6' into 'lctmh-pay'...
+[deploy] Patching CoreDNS zones (*.org-alpha.io, *.org-beta.io, *.org-payment.io, audit-collector.org-audit.io)...
+[deploy] Applying manifests for role 'beta' (ns=lineage-beta, svid_ttl=120s)...
+[deploy] Applying manifests for role 'pay' (ns=lineage-pay, svid_ttl=120s)...
+[deploy] Waiting for beta-ca (kind-lctmh-beta) to become Ready...
+[deploy] Waiting for payment-ca (kind-lctmh-pay) to become Ready...
+
+============================================================================
+ LCT Multi-Host Deployment Summary (Roles: beta pay)
+============================================================================
+--- Cluster: lctmh-beta (namespace: lineage-beta) ---
+NAME                                        READY   STATUS    RESTARTS   AGE   IP            NODE                       NOMINATED NODE   READINESS GATES
+beta-ca-7f9fbdc869-48n86                    1/1     Running   0          2s    10.242.0.41   lctmh-beta-control-plane   <none>           <none>
+beta-directory-89896bb84-m89vm              0/1     Running   0          2s    10.242.0.43   lctmh-beta-control-plane   <none>           <none>
+beta-revocation-7578b64f7b-8cvnz            0/1     Running   0          2s    10.242.0.42   lctmh-beta-control-plane   <none>           <none>
+flight-specialist-7d49c8b7cb-699vx          1/2     Running   0          2s    10.242.0.44   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-backup-6b7758f8b7-p76tf    1/2     Running   0          2s    10.242.0.46   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-primary-74fc59f9f4-vnntz   1/2     Running   0          2s    10.242.0.45   lctmh-beta-control-plane   <none>           <none>
+--- Cluster: lctmh-pay (namespace: lineage-pay) ---
+NAME                                    READY   STATUS    RESTARTS   AGE   IP            NODE                      NOMINATED NODE   READINESS GATES
+payment-ca-7f8b578b89-qwgf5             1/1     Running   0          1s    10.243.0.40   lctmh-pay-control-plane   <none>           <none>
+payment-directory-7ff6c5d5d6-pznr9      0/1     Running   0          1s    10.243.0.42   lctmh-pay-control-plane   <none>           <none>
+payment-revocation-64dd58f468-vhfk9     0/1     Running   0          1s    10.243.0.41   lctmh-pay-control-plane   <none>           <none>
+payment-vault-mcp-7f498fc5c-4627n       1/2     Running   0          1s    10.243.0.45   lctmh-pay-control-plane   <none>           <none>
+settlement-converger-7f6d79fcbf-ghjnw   1/2     Running   0          1s    10.243.0.43   lctmh-pay-control-plane   <none>           <none>
+travel-ops-mcp-6bf486d5d4-7xnd4         1/2     Running   0          1s    10.243.0.44   lctmh-pay-control-plane   <none>           <none>
+
+============================================================================
+ Local Domain Trust Anchor(s) — Share Out-of-Band & Pin on Peer Machines:
+============================================================================
+  org-beta.io sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57
+    -> Peer command: python3 lineage/multihost/lct_multihost_cli.py trust add org-beta.io sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57
+  org-payment.io sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702
+    -> Peer command: python3 lineage/multihost/lct_multihost_cli.py trust add org-payment.io sha256:8dde2b37b29a3623ae3475d4f7f17aebc589333579f61cf62c8f6ab863f7e219:0cafdd52590fb0c6bc4d24c74e5273eed77aedfba798b6d024bf65ea3a978702
+============================================================================

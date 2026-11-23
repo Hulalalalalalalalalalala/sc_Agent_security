@@ -1,0 +1,10 @@
+{
+  "scenario": "2b_a2a_v1_k8s_replicas_zero_crash_prune_and_graft",
+  "status": "PASS",
+  "task_id": "task-k8s-s2b-mh-rehearsal-8pass",
+  "a2a_task_state": "TASK_STATE_COMPLETED",
+  "grafted_epoch": 1,
+  "grafted_lineage_path": "/task-k8s-s2b-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-backup-e1",
+  "failover_fault_type": "CRASH",
+  "final_answer": "Confirmed completion of the flight booking and hotel reservation for traveler \"user:alice@org-alpha.io\" in Singapore. The flight booking (flight_no: SQ-031, booking_ref: FLT-A63ABD2F) was settled for $620.00 USD in airline-escrow (settlement_id: STL-11EAC614). The hotel reservation (reservation_ref: HTL-47222289, hotel_id: HTL-SIN-02, hotel_name: Marina Bay Crest) was settled for $380.00 USD in hotel-escrow (settlement_id: STL-195E8A64)."
+}

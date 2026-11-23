@@ -1,0 +1,99 @@
+{
+  "scenario": "4_a2a_v1_canceltask_cross_domain_cascade_fagin_dag_concurrency_and_loopback_isolation",
+  "status": "PASS",
+  "cross_pod_loopback_isolation": {
+    "orchestrator-alpha": {
+      "pod_ip": "10.241.0.42",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "ConnectionRefusedError: [Errno 111] Connection refused",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    "flight-specialist": {
+      "pod_ip": "10.242.0.88",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "TimeoutError: timed out",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "TimeoutError: timed out"
+    },
+    "hotel-specialist-primary": {
+      "pod_ip": "10.242.0.98",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "TimeoutError: timed out",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "TimeoutError: timed out"
+    },
+    "settlement-converger": {
+      "pod_ip": "10.243.0.76",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "TimeoutError: timed out",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "TimeoutError: timed out"
+    },
+    "payment-vault-mcp": {
+      "pod_ip": "10.243.0.78",
+      "app_port_9001_blocked": true,
+      "app_port_detail": "TimeoutError: timed out",
+      "sidecar_outbound_8081_blocked": true,
+      "sidecar_outbound_detail": "TimeoutError: timed out"
+    },
+    "inbound_8443_forged_loopback_header_status": 401
+  },
+  "a2a_canceltask_cross_3domain_proof": {
+    "task_id": "task-k8s-s4-bob-cancel-mh-rehearsal-8pass",
+    "unauthorized_carol_cancel_http": 403,
+    "unauthorized_carol_cancel_rpc_code": -32003,
+    "bob_canceled_state": "TASK_STATE_CANCELED",
+    "cascaded_revocation_target": "/task-k8s-s4-bob-cancel-mh-rehearsal-8pass/OrchestratorAlpha",
+    "federated_to_beta_and_payment_revocation": true,
+    "post_cancel_token_replay_http": 403,
+    "post_cancel_token_replay_error": "LINEAGE_REVOKED"
+  },
+  "alice_revoked_branch": "/task-k8s-s4-alice-mh-rehearsal-8pass/OrchestratorAlpha/FlightB1",
+  "alice_revocation_version": 11,
+  "alice_surviving_hotel_settlement": {
+    "settlement_id": "STL-C12B771B",
+    "target": "hotel-escrow",
+    "settled_usd": 360.0,
+    "reference_id": "HTL-847E2E4B",
+    "city": "Tokyo",
+    "task_id": "task-k8s-s4-alice-mh-rehearsal-8pass",
+    "sub": "user:alice@org-alpha.io",
+    "lineage_path": "/task-k8s-s4-alice-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-alice-mh-rehearsal-8pass/OrchestratorAlpha/FlightB1/SettlementC",
+    "lineage_decision": "ALLOW_DEGRADED_DAG"
+  },
+  "alice_degraded_llm_answer": "The hotel reservation and hotel escrow settlement for the hotel with ID \"HTL-TYO-09\" and name \"Shinjuku Grand Palace\" under reservation reference \"HTL-847E2E4B\" were executed under degraded authorization. The settled amount was $360.00.",
+  "alice_revoked_airline_rejection": {
+    "error": "REVOKED_DEPENDENCY_INSUFFICIENT_SURVIVING_PATHS",
+    "detail": "Surviving DAG branches insufficient: {'/task-k8s-s4-alice-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-primary/SettlementC': \"parameter 'amount'=580.0 violates [0, 360.0]\"}",
+    "decision": "DENY",
+    "pruned_revoked_paths": [
+      "/task-k8s-s4-alice-mh-rehearsal-8pass/OrchestratorAlpha/FlightB1/SettlementC"
+    ]
+  },
+  "carol_concurrent_london_settlements": {
+    "airline-escrow": {
+      "settlement_id": "STL-2525AF07",
+      "target": "airline-escrow",
+      "settled_usd": 510.0,
+      "reference_id": "FLT-587C25AE",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-mh-rehearsal-8pass",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-carol-mh-rehearsal-8pass/OrchestratorAlpha/FlightB1/SettlementC",
+      "lineage_decision": "ALLOW"
+    },
+    "hotel-escrow": {
+      "settlement_id": "STL-DA9F14A3",
+      "target": "hotel-escrow",
+      "settled_usd": 340.0,
+      "reference_id": "HTL-AF821C34",
+      "city": "London",
+      "task_id": "task-k8s-s4-carol-mh-rehearsal-8pass",
+      "sub": "user:carol@org-alpha.io",
+      "lineage_path": "/task-k8s-s4-carol-mh-rehearsal-8pass/OrchestratorAlpha/hotel-specialist-primary/SettlementC|/task-k8s-s4-carol-mh-rehearsal-8pass/OrchestratorAlpha/FlightB1/SettlementC",
+      "lineage_decision": "ALLOW"
+    }
+  },
+  "carol_final_answer": "The flight booking for flight_no \"BA-284\" with booking_ref \"FLT-587C25AE\" has been successfully settled with a total amount of 510.0 USD. The hotel reservation for hotel_id \"HTL-LON-04\" with reservation_ref \"HTL-AF821C34\" has also been settled for a total amount of 340.0 USD. Both escrow settlements have been completed successfully."
+}

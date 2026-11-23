@@ -58,6 +58,7 @@ class AgentDirectoryService:
         federation_ssl_context: Optional[ssl.SSLContext] = None,
         federation_peer_cert_verifier: Optional[Callable[[bytes], Tuple[str, str]]] = None,
         mtls_bundle: Optional[WorkloadMTLSBundle] = None,
+        readiness_check: Optional[Callable[[], Tuple[bool, Dict[str, Any]]]] = None,
     ) -> None:
         self.trust_resolver = trust_resolver
         self.revocation_trie = revocation_trie
@@ -70,6 +71,7 @@ class AgentDirectoryService:
         }
         self._client_ssl_context = client_ssl_context
         self._mtls_bundle = mtls_bundle
+        self._readiness_check = readiness_check
         self._lock = threading.RLock()
         self._cards: Dict[str, AgentCard] = {}
         self._quarantined_spiffe_ids: Set[str] = set()
@@ -88,12 +90,15 @@ class AgentDirectoryService:
             peer_cert_verifier=peer_cert_verifier,
         )
         eff_fed_ssl = federation_ssl_context
+        eff_fed_provider: Optional[Callable[[], ssl.SSLContext]] = None
         eff_fed_verifier = federation_peer_cert_verifier
         if eff_fed_ssl is None and mtls_bundle is not None and federation_port is not None:
-            eff_fed_ssl = mtls_bundle.build_server_ssl_context(require_client_cert=True)
+            eff_fed_provider = mtls_bundle.server_ssl_context_provider(
+                require_client_cert=True
+            )
         if eff_fed_verifier is None and mtls_bundle is not None and federation_port is not None:
             eff_fed_verifier = mtls_bundle.trust_store.verify_peer_der_cert
-        self._fed_require_mtls = eff_fed_ssl is not None
+        self._fed_require_mtls = (eff_fed_ssl is not None) or (eff_fed_provider is not None)
         self._federation_http: Optional[ManagedHTTPService] = (
             ManagedHTTPService(
                 service_name="agent-directory-federation",
@@ -101,6 +106,7 @@ class AgentDirectoryService:
                 host=host,
                 port=int(federation_port),
                 ssl_context=eff_fed_ssl,
+                ssl_context_provider=eff_fed_provider,
                 peer_cert_verifier=eff_fed_verifier,
             )
             if federation_port is not None
@@ -376,6 +382,14 @@ class AgentDirectoryService:
     ) -> Tuple[int, Any, Dict[str, str]]:
         if req.method == "GET" and req.path == "/healthz":
             return 200, {"status": "ok", "service": "agent-directory"}, {}
+
+        if req.method == "GET" and req.path == "/readyz":
+            if self._readiness_check is not None:
+                ok, detail = self._readiness_check()
+                if not ok:
+                    return 503, {"status": "not_ready", "service": "agent-directory", **detail}, {}
+                return 200, {"status": "ready", "service": "agent-directory", **detail}, {}
+            return 200, {"status": "ready", "service": "agent-directory"}, {}
 
         if req.method == "GET" and req.path == "/.well-known/jwks.json":
             return (

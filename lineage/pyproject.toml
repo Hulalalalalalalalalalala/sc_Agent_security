@@ -30,6 +30,7 @@ packages = [
     "lineage.federation",
     "lineage.identity",
     "lineage.k8s",
+    "lineage.multihost",
     "lineage.protocol",
     "lineage.registry",
     "lineage.resilience",

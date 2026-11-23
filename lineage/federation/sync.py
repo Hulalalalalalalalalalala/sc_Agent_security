@@ -1,29 +1,41 @@
-"""Cross-Organization Federation Bundle Syncer & Autonomous Workload Bootstrapper.
+"""Cross-Organization Federation Bundle Syncer, Trust Anchor Enforcement & SVID Renewer.
 
 Implements:
 - `FederationBundleSyncer`: Pulls public-only ES256 JWKs + X.509 Root CA PEMs from
-  physically independent Domain CAs (`alpha-ca`, `beta-ca`, `payment-ca`) with strict
-  expected-domain pinning (`FederationSecurityError` on any domain spoofing attempt).
-- `parse_domain_url_map`: Parses `"org-alpha.io=http://...,org-beta.io=http://..."`
-  peer maps safely.
+  physically independent Domain CAs (`alpha-ca`, `beta-ca`, `payment-ca`, plus keyless
+  `org-audit.io`) with strict expected-domain pinning, SSH-style SHA-256 trust anchor
+  verification (`ConfigMap` hot-reload + fail-closed eviction), and startup-order
+  independence (`is_ready()`).
+- `WorkloadIdentityRenewer`: Background SVID & X.509 leaf certificate auto-renewer at
+  ~50% of remaining lifetime, re-reading kubelet-rotated projected ServiceAccount tokens,
+  performing fresh Proof-of-Possession, atomically swapping `WorkloadIdentity` +
+  `WorkloadMTLSBundle` server/client `SSLContext`s, and triggering monotonic `AgentCard`
+  re-registration callbacks.
 - `bootstrap_autonomous_workload`: Bootstraps an in-memory `WorkloadIdentity` (`JWT-SVID`)
-  + `WorkloadMTLSBundle` (`X.509-SVID` + federated X.509 Root CA store) from the
-  workload's own local autonomous Domain CA plus federated peer CAs.
+  + `WorkloadMTLSBundle` (`X.509-SVID` + federated X.509 Root CA store) with optional
+  order-independent peer sync and background auto-renewal.
 """
 
 from __future__ import annotations
 
+import ssl
 import threading
 import time
-from typing import Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import httpx
 
-from lineage.common.crypto import KeyPair
+from lineage.common.crypto import CryptoError, KeyPair
 from lineage.common.mtls import (
     MTLSError,
     WorkloadMTLSBundle,
     X509FederationTrustStore,
+)
+from lineage.federation.anchors import (
+    TrustAnchorPinError,
+    TrustAnchorPinStore,
+    compute_bundle_trust_anchor,
+    extract_canonical_bundle_root_pem,
 )
 from lineage.identity import IdentityError, SpiffeId, TrustBundleResolver, WorkloadIdentity
 from lineage.k8s.bootstrap_services import (
@@ -34,7 +46,7 @@ from lineage.k8s.bootstrap_services import (
 
 
 class FederationSecurityError(Exception):
-    """Raised when a federated peer attempts cross-domain bundle/cert spoofing."""
+    """Raised when a federated peer fails domain or cryptographic trust-anchor verification."""
 
 
 def parse_domain_url_map(spec: str) -> Dict[str, str]:
@@ -65,57 +77,275 @@ class FederationBundleSyncer:
         trust_resolver: Optional[TrustBundleResolver] = None,
         x509_trust_store: Optional[X509FederationTrustStore] = None,
         timeout: float = 3.0,
+        anchor_store: Optional[TrustAnchorPinStore] = None,
+        require_pinned_anchors: bool = False,
+        audit_ca_url: Optional[str] = None,
     ) -> None:
         self.peer_ca_urls: Dict[str, str] = {
             str(td): str(u).rstrip("/") for td, u in peer_ca_urls.items() if str(td)
         }
+        self.audit_ca_url: Optional[str] = (
+            audit_ca_url.strip().rstrip("/") if audit_ca_url and audit_ca_url.strip() else None
+        )
         self.trust_resolver = trust_resolver or TrustBundleResolver()
         self.x509_trust_store = x509_trust_store or X509FederationTrustStore()
         self.timeout = float(timeout)
+        self.anchor_store = anchor_store
+        self.require_pinned_anchors = bool(require_pinned_anchors)
+        self.identity_renewer: Optional["WorkloadIdentityRenewer"] = None
+        self._state_lock = threading.RLock()
+        self._verified_domains: Dict[str, str] = {}
+        self._last_errors: Dict[str, str] = {}
+        self._rejected_bundle_counts: Dict[str, int] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
-    def fetch_and_verify_peer(self, expected_domain: str, ca_url: str) -> None:
-        resp = httpx.get(
-            f"{ca_url.rstrip('/')}/v1/federation/bundle", timeout=self.timeout
-        )
+    def _all_target_urls(self) -> Dict[str, str]:
+        targets = dict(self.peer_ca_urls)
+        if self.audit_ca_url:
+            targets.setdefault("org-audit.io", self.audit_ca_url)
+        return targets
+
+    def _evict_peer_domain(self, domain: str) -> None:
+        self.trust_resolver.evict_domain(domain)
+        self.x509_trust_store.evict_domain(domain)
+        with self._state_lock:
+            self._verified_domains.pop(domain, None)
+
+    def _has_active_verified_pin(self, domain: str) -> bool:
+        """Return True iff `domain` is already verified against the current local pin."""
+        with self._state_lock:
+            cur_verified = self._verified_domains.get(domain)
+        if cur_verified is None:
+            return False
+        if self.anchor_store is not None:
+            cur_pin = self.anchor_store.get_pin(domain)
+            if cur_pin is not None:
+                return cur_verified == cur_pin
+            return not self.require_pinned_anchors
+        return True
+
+    def _reject_remote_candidate(self, domain: str, msg: str) -> None:
+        """Record a rejected remote bundle without evicting an already pin-verified peer."""
+        if not self._has_active_verified_pin(domain):
+            self._evict_peer_domain(domain)
+        with self._state_lock:
+            self._rejected_bundle_counts[domain] = (
+                self._rejected_bundle_counts.get(domain, 0) + 1
+            )
+            self._last_errors[domain] = msg
+
+    def reconcile_anchor_evictions(self) -> bool:
+        """Hot-reload `TrustAnchorPinStore` and evict any domain whose pin was removed or altered."""
+        if self.anchor_store is None:
+            return False
+        changed = self.anchor_store.refresh_if_changed()
+        with self._state_lock:
+            verified_snapshot = dict(self._verified_domains)
+        evicted_any = False
+        for td, prev_anchor in verified_snapshot.items():
+            cur_pin = self.anchor_store.get_pin(td)
+            if self.require_pinned_anchors and cur_pin is None:
+                self._evict_peer_domain(td)
+                with self._state_lock:
+                    self._last_errors[td] = (
+                        f"Missing pinned trust anchor for {td!r} in lct-trust-anchors"
+                    )
+                evicted_any = True
+            elif cur_pin is not None and cur_pin != prev_anchor:
+                self._evict_peer_domain(td)
+                with self._state_lock:
+                    self._last_errors[td] = (
+                        f"Trust anchor pin changed for {td!r}; awaiting re-verification"
+                    )
+                evicted_any = True
+        return changed or evicted_any
+
+    def audit_ssl_context(self) -> Optional[ssl.SSLContext]:
+        """Build a TLS 1.3 client `SSLContext` pinned to `org-audit.io` once verified."""
+        self.reconcile_anchor_evictions()
+        if not self.x509_trust_store.has_domain("org-audit.io"):
+            return None
+        try:
+            return self.x509_trust_store.build_server_verify_ssl_context(
+                expected_trust_domain="org-audit.io",
+                check_hostname=True,
+            )
+        except MTLSError:
+            return None
+
+    def fetch_and_verify_peer(self, expected_domain: str, ca_url: str) -> str:
+        """Fetch, pin-verify, and import a single peer domain's public bundle."""
+        self.reconcile_anchor_evictions()
+        clean_url = ca_url.rstrip("/")
+
+        if self.require_pinned_anchors:
+            if self.anchor_store is None or self.anchor_store.get_pin(expected_domain) is None:
+                self._evict_peer_domain(expected_domain)
+                msg = (
+                    f"Missing required trust anchor pin for {expected_domain!r}. "
+                    f"Pin via: python3 lineage/multihost/lct_multihost_cli.py trust add {expected_domain} <anchor>"
+                )
+                with self._state_lock:
+                    self._last_errors[expected_domain] = msg
+                raise FederationSecurityError(msg)
+
+        verify_arg: Any = True
+        need_post_handshake_probe = False
+        if clean_url.startswith("https://"):
+            if self.x509_trust_store.has_domain(expected_domain):
+                verify_arg = self.x509_trust_store.build_server_verify_ssl_context(
+                    expected_trust_domain=expected_domain,
+                    check_hostname=True,
+                )
+            else:
+                # Candidate bundle fetch ONLY; immediately verified against cryptographic
+                # SPKI pin + TLS 1.3 server certificate handshake before activation!
+                verify_arg = False
+                need_post_handshake_probe = True
+
+        with httpx.Client(verify=verify_arg, timeout=self.timeout) as client:
+            resp = client.get(f"{clean_url}/v1/federation/bundle")
         resp.raise_for_status()
-        data = resp.json()
-        if not isinstance(data, dict):
-            raise FederationSecurityError("Federation bundle response must be a JSON object")
+        try:
+            data = resp.json()
+        except Exception as exc:
+            msg = f"Malformed JSON in federation bundle from {clean_url!r}: {exc}"
+            self._reject_remote_candidate(expected_domain, msg)
+            raise FederationSecurityError(msg) from exc
+
+        return self._verify_and_apply_bundle(
+            expected_domain=expected_domain,
+            data=data,
+            clean_url=clean_url,
+            need_post_handshake_probe=need_post_handshake_probe,
+        )
+
+    def _verify_and_apply_bundle(
+        self,
+        expected_domain: str,
+        data: Mapping[str, Any],
+        clean_url: str = "",
+        need_post_handshake_probe: bool = False,
+    ) -> str:
+        """Cryptographically verify a candidate bundle before mutating live RAM trust stores."""
+        if not isinstance(data, Mapping):
+            msg = "Federation bundle response must be a JSON object"
+            self._reject_remote_candidate(expected_domain, msg)
+            raise FederationSecurityError(msg)
 
         actual_td = str(data.get("trust_domain") or "")
         if actual_td != expected_domain:
-            raise FederationSecurityError(
-                f"Federation bundle spoofing blocked from {ca_url!r}: "
+            msg = (
+                f"Federation bundle spoofing blocked from {clean_url or expected_domain!r}: "
                 f"expected trust_domain={expected_domain!r}, got {actual_td!r}"
             )
+            self._reject_remote_candidate(expected_domain, msg)
+            raise FederationSecurityError(msg)
+
+        is_keyless = expected_domain == "org-audit.io" and not (data.get("keys") or [])
         try:
-            self.trust_resolver.register_bundle(data)
-            if "x509_root_pem" in data and data["x509_root_pem"]:
-                self.x509_trust_store.register_domain_root_pem(
-                    expected_domain, str(data["x509_root_pem"])
+            canonical_root_pem = extract_canonical_bundle_root_pem(data)
+            if self.anchor_store is not None:
+                computed_anchor = self.anchor_store.verify_bundle(
+                    expected_domain=expected_domain,
+                    bundle=data,
+                    require_pin=self.require_pinned_anchors,
+                    allow_keyless_jwks=is_keyless,
                 )
-        except (IdentityError, MTLSError) as exc:
-            raise FederationSecurityError(
-                f"Invalid federation bundle from {expected_domain!r}: {exc}"
-            ) from exc
+            else:
+                computed_anchor = compute_bundle_trust_anchor(
+                    data, allow_keyless_jwks=is_keyless
+                )
+        except (TrustAnchorPinError, CryptoError, MTLSError) as exc:
+            msg = str(exc)
+            self._reject_remote_candidate(expected_domain, msg)
+            raise FederationSecurityError(msg) from exc
+
+        # Pre-validate X.509 certificate extensions + JWKS on isolated scratch stores
+        # BEFORE mutating live RAM stores so malformed candidates never corrupt verified peers!
+        try:
+            scratch_x509 = X509FederationTrustStore()
+            for existing_td, existing_pem in self.x509_trust_store.export_domain_pems().items():
+                if existing_td != expected_domain:
+                    scratch_x509.register_domain_root_pem(existing_td, existing_pem)
+            scratch_x509.register_domain_root_pem(expected_domain, canonical_root_pem)
+
+            if not is_keyless:
+                scratch_jwk = TrustBundleResolver()
+                scratch_jwk.register_bundle(data)
+
+            if need_post_handshake_probe and clean_url:
+                probe_ctx = scratch_x509.build_server_verify_ssl_context(
+                    expected_trust_domain=expected_domain,
+                    check_hostname=True,
+                )
+                with httpx.Client(verify=probe_ctx, timeout=self.timeout) as probe_cli:
+                    pr = probe_cli.get(f"{clean_url}/healthz")
+                    pr.raise_for_status()
+
+            if not is_keyless:
+                self.trust_resolver.register_bundle(data)
+            self.x509_trust_store.register_domain_root_pem(
+                expected_domain, canonical_root_pem
+            )
+        except Exception as exc:
+            msg = f"Invalid federation bundle or TLS leaf proof from {expected_domain!r}: {exc}"
+            self._reject_remote_candidate(expected_domain, msg)
+            if isinstance(exc, (IdentityError, MTLSError, CryptoError, TrustAnchorPinError)):
+                raise FederationSecurityError(msg) from exc
+            raise FederationSecurityError(msg) from exc
+
+        with self._state_lock:
+            self._verified_domains[expected_domain] = computed_anchor
+            self._last_errors.pop(expected_domain, None)
+        return computed_anchor
+
+    def is_ready(self) -> Tuple[bool, Dict[str, Any]]:
+        """Return `(ready_bool, diagnostic_dict)` for Kubernetes `/readyz` probes."""
+        self.reconcile_anchor_evictions()
+        targets = self._all_target_urls()
+        with self._state_lock:
+            missing = sorted(td for td in targets if td not in self._verified_domains)
+            verified = dict(self._verified_domains)
+            # Only expose blocking startup errors for unverified domains; keep rejected spoof telemetry separate!
+            errors = {
+                td: err
+                for td, err in self._last_errors.items()
+                if td in targets and td not in self._verified_domains
+            }
+            rejected_counts = dict(self._rejected_bundle_counts)
+        return (
+            len(missing) == 0,
+            {
+                "missing_domains": missing,
+                "verified_domains": verified,
+                "errors": errors,
+                "rejected_bundle_counts": rejected_counts,
+                "trust_store_version": self.x509_trust_store.version,
+            },
+        )
 
     def sync_all(self, require_all: bool = True, max_wait_sec: float = 45.0) -> None:
-        """Synchronize all configured peer domain bundles (retrying during K8s startup)."""
+        """Synchronize all configured peer domain bundles."""
+        self.reconcile_anchor_evictions()
         deadline = time.time() + max(0.1, float(max_wait_sec))
-        pending = dict(self.peer_ca_urls)
+        pending = self._all_target_urls()
         last_err: Optional[Exception] = None
         while pending:
             for td, url in list(pending.items()):
                 try:
                     self.fetch_and_verify_peer(td, url)
                     pending.pop(td, None)
-                except FederationSecurityError:
-                    # Cryptographic/domain spoofing fails closed immediately!
-                    raise
+                except FederationSecurityError as exc:
+                    last_err = exc
+                    if require_all:
+                        # Cryptographic/domain spoofing or pin mismatch fails closed immediately!
+                        raise
                 except Exception as exc:
                     last_err = exc
+                    with self._state_lock:
+                        self._last_errors[td] = f"{type(exc).__name__}: {exc}"
             if not pending:
                 return
             if not require_all or time.time() >= deadline:
@@ -127,18 +357,23 @@ class FederationBundleSyncer:
                 f"Timed out syncing federation bundles for {sorted(pending.keys())}: {last_err}"
             )
 
-    def start_background_refresh(self, interval_sec: float = 10.0) -> None:
+    def start_background_refresh(self, interval_sec: float = 2.0) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
 
         def _loop() -> None:
+            backoff = 0.5
             while not self._stop.is_set():
                 try:
-                    self.sync_all(require_all=False, max_wait_sec=2.0)
+                    self.sync_all(require_all=False, max_wait_sec=1.5)
+                    ready, _ = self.is_ready()
+                    wait_s = interval_sec if ready else min(interval_sec, backoff)
+                    backoff = 0.5 if ready else min(interval_sec, backoff * 1.5)
                 except Exception:
-                    pass
-                self._stop.wait(interval_sec)
+                    wait_s = min(interval_sec, backoff)
+                    backoff = min(interval_sec, backoff * 1.5)
+                self._stop.wait(wait_s)
 
         self._thread = threading.Thread(
             target=_loop, name="federation-bundle-sync", daemon=True
@@ -146,6 +381,150 @@ class FederationBundleSyncer:
         self._thread.start()
 
     def stop_background_refresh(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if self.identity_renewer is not None:
+            self.identity_renewer.stop()
+
+
+class WorkloadIdentityRenewer:
+    """Automatic background SVID & X.509 leaf certificate renewer at ~50% remaining TTL."""
+
+    def __init__(
+        self,
+        local_ca_url: str,
+        identity: WorkloadIdentity,
+        mtls_bundle: Optional[WorkloadMTLSBundle] = None,
+        trust_resolver: Optional[TrustBundleResolver] = None,
+        x509_trust_store: Optional[X509FederationTrustStore] = None,
+        sa_token_path: str = K8S_SA_TOKEN_PATH,
+        ttl_seconds: float = 1800.0,
+        rotate_keypair: bool = False,
+        on_renewed: Optional[Callable[[WorkloadIdentity, Optional[WorkloadMTLSBundle]], None]] = None,
+        check_interval_sec: Optional[float] = None,
+    ) -> None:
+        self.local_ca_url = local_ca_url.rstrip("/")
+        self.identity = identity
+        self.mtls_bundle = mtls_bundle
+        self.trust_resolver = trust_resolver
+        self.x509_trust_store = x509_trust_store
+        self.sa_token_path = sa_token_path
+        self.ttl_seconds = max(4.0, float(ttl_seconds))
+        self.rotate_keypair = bool(rotate_keypair)
+        self._callbacks: List[Callable[[WorkloadIdentity, Optional[WorkloadMTLSBundle]], None]] = []
+        if on_renewed is not None:
+            self._callbacks.append(on_renewed)
+        self.check_interval_sec = (
+            float(check_interval_sec)
+            if check_interval_sec is not None
+            else max(0.25, min(10.0, self.ttl_seconds * 0.15))
+        )
+        self._lock = threading.Lock()
+        self.renewal_count: int = 0
+        self.last_error: Optional[str] = None
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def add_callback(
+        self, cb: Callable[[WorkloadIdentity, Optional[WorkloadMTLSBundle]], None]
+    ) -> None:
+        with self._lock:
+            self._callbacks.append(cb)
+
+    def should_renew(self, now: Optional[float] = None) -> bool:
+        ts = time.time() if now is None else float(now)
+        lifetime = max(1.0, self.identity.expires_at - self.identity.issued_at)
+        remaining = self.identity.expires_at - ts
+        return remaining <= (0.5 * lifetime)
+
+    def renew_once(self) -> Dict[str, Any]:
+        """Perform an immediate CA PoP renewal, atomically swapping SVID & mTLS leaf cert."""
+        resolved_tok_path = resolve_sa_token_path(self.sa_token_path)
+        with open(resolved_tok_path, "r", encoding="utf-8") as fh:
+            sa_jwt = fh.read().strip()
+        next_keypair = (
+            KeyPair.generate(self.identity.keypair.alg)
+            if self.rotate_keypair
+            else self.identity.keypair
+        )
+        pop_jws = create_ca_pop_jws(next_keypair, sa_jwt)
+        resp = httpx.post(
+            f"{self.local_ca_url}/v1/ca/issue-workload",
+            json={
+                "public_jwk": next_keypair.public_jwk(),
+                "pop_jws": pop_jws,
+                "ttl_seconds": self.ttl_seconds,
+            },
+            headers={"Authorization": f"Bearer {sa_jwt}"},
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        ca_data = resp.json()
+
+        own_td = str(ca_data.get("trust_domain") or self.identity.trust_domain)
+        own_bundle = ca_data.get("bundle")
+        if isinstance(own_bundle, Mapping):
+            if self.trust_resolver is not None:
+                self.trust_resolver.register_bundle(own_bundle)
+            if self.x509_trust_store is not None and (
+                own_bundle.get("x509_root_pem") or own_bundle.get("x509_roots_pem")
+            ):
+                self.x509_trust_store.register_domain_root_pem(
+                    own_td, extract_canonical_bundle_root_pem(own_bundle)
+                )
+
+        self.identity.update_svid(
+            workload_svid=str(ca_data["workload_svid"]),
+            issued_at=float(ca_data["issued_at"]),
+            expires_at=float(ca_data["expires_at"]),
+            keypair=next_keypair,
+        )
+        if self.mtls_bundle is not None and ca_data.get("x509_leaf_pem"):
+            self.mtls_bundle.update_svid(
+                leaf_cert_pem=str(ca_data["x509_leaf_pem"]),
+                keypair=next_keypair,
+            )
+
+        with self._lock:
+            self.renewal_count += 1
+            self.last_error = None
+            cbs = list(self._callbacks)
+
+        for cb in cbs:
+            cb(self.identity, self.mtls_bundle)
+
+        return ca_data
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+
+        def _loop() -> None:
+            retry_backoff = 0.5
+            while not self._stop.is_set():
+                if self.should_renew():
+                    try:
+                        self.renew_once()
+                        retry_backoff = 0.5
+                    except Exception as exc:
+                        with self._lock:
+                            self.last_error = f"{type(exc).__name__}: {exc}"
+                        self._stop.wait(min(self.check_interval_sec, retry_backoff))
+                        retry_backoff = min(5.0, retry_backoff * 1.6)
+                        continue
+                self._stop.wait(self.check_interval_sec)
+
+        self._thread = threading.Thread(
+            target=_loop,
+            name=f"svid-renewer-{self.identity.parsed_spiffe.default_hop_segment}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
@@ -160,12 +539,22 @@ def bootstrap_autonomous_workload(
     require_all_peers: bool = True,
     seed_bundles: Optional[Sequence[Mapping[str, object]]] = None,
     peer_timeout: float = 3.0,
+    svid_ttl_seconds: float = 1800.0,
+    anchor_store: Optional[TrustAnchorPinStore] = None,
+    require_pinned_anchors: bool = False,
+    audit_ca_url: Optional[str] = None,
+    enable_auto_renewal: bool = True,
+    rotate_keypair_on_renewal: bool = False,
+    on_renewed: Optional[Callable[[WorkloadIdentity, Optional[WorkloadMTLSBundle]], None]] = None,
+    refresh_interval_sec: float = 2.0,
 ) -> Tuple[WorkloadIdentity, TrustBundleResolver, WorkloadMTLSBundle, FederationBundleSyncer]:
     """Generate RAM-only ES256 keypair, obtain `JWT-SVID` + `X.509-SVID` from local CA,
-    and synchronize federated JWKS + X.509 Root CAs across peer domains.
+    synchronize federated JWKS + X.509 Root CAs across peer domains, and start automatic
+    50%-lifetime background SVID/X.509 renewal.
     """
     resolved_tok_path = resolve_sa_token_path(sa_token_path)
     keypair = KeyPair.generate("ES256")
+    eff_ttl = max(4.0, float(svid_ttl_seconds))
     deadline = time.time() + max_wait_sec
     last_err: Optional[Exception] = None
     ca_data: Optional[Dict[str, object]] = None
@@ -180,7 +569,7 @@ def bootstrap_autonomous_workload(
                 json={
                     "public_jwk": keypair.public_jwk(),
                     "pop_jws": pop_jws,
-                    "ttl_seconds": 1800.0,
+                    "ttl_seconds": eff_ttl,
                 },
                 headers={"Authorization": f"Bearer {sa_jwt}"},
                 timeout=5.0,
@@ -198,27 +587,35 @@ def bootstrap_autonomous_workload(
             f"Failed to bootstrap workload identity from {local_ca_url}: {last_err}"
         )
 
-    syncer = FederationBundleSyncer(peer_ca_urls=peer_ca_urls, timeout=peer_timeout)
+    syncer = FederationBundleSyncer(
+        peer_ca_urls=peer_ca_urls,
+        timeout=peer_timeout,
+        anchor_store=anchor_store,
+        require_pinned_anchors=require_pinned_anchors,
+        audit_ca_url=audit_ca_url,
+    )
     # Seed own domain bundle immediately, plus any pre-cached public peer bundles
     own_td = str(ca_data["trust_domain"])
     own_bundle = ca_data.get("bundle")
     if isinstance(own_bundle, Mapping):
         syncer.trust_resolver.register_bundle(own_bundle)
-        if own_bundle.get("x509_root_pem"):
+        if own_bundle.get("x509_root_pem") or own_bundle.get("x509_roots_pem"):
             syncer.x509_trust_store.register_domain_root_pem(
-                own_td, str(own_bundle["x509_root_pem"])
+                own_td, extract_canonical_bundle_root_pem(own_bundle)
             )
     if seed_bundles:
         for sb in seed_bundles:
             if isinstance(sb, Mapping) and sb.get("trust_domain"):
                 sb_td = str(sb["trust_domain"])
-                syncer.trust_resolver.register_bundle(sb)
-                if sb.get("x509_root_pem"):
+                if sb.get("keys"):
+                    syncer.trust_resolver.register_bundle(sb)
+                if sb.get("x509_root_pem") or sb.get("x509_roots_pem"):
                     syncer.x509_trust_store.register_domain_root_pem(
-                        sb_td, str(sb["x509_root_pem"])
+                        sb_td, extract_canonical_bundle_root_pem(sb)
                     )
-    syncer.sync_all(require_all=require_all_peers, max_wait_sec=max_wait_sec)
-    syncer.start_background_refresh(interval_sec=15.0)
+    if require_all_peers:
+        syncer.sync_all(require_all=True, max_wait_sec=max_wait_sec)
+    syncer.start_background_refresh(interval_sec=refresh_interval_sec)
 
     identity = WorkloadIdentity(
         spiffe_id=str(ca_data["spiffe_id"]),
@@ -234,4 +631,19 @@ def bootstrap_autonomous_workload(
         leaf_cert_pem=str(ca_data["x509_leaf_pem"]),
         trust_store=syncer.x509_trust_store,
     )
+    if enable_auto_renewal:
+        renewer = WorkloadIdentityRenewer(
+            local_ca_url=local_ca_url,
+            identity=identity,
+            mtls_bundle=mtls_bundle,
+            trust_resolver=syncer.trust_resolver,
+            x509_trust_store=syncer.x509_trust_store,
+            sa_token_path=sa_token_path,
+            ttl_seconds=eff_ttl,
+            rotate_keypair=rotate_keypair_on_renewal,
+            on_renewed=on_renewed,
+        )
+        syncer.identity_renewer = renewer
+        renewer.start()
+
     return identity, syncer.trust_resolver, mtls_bundle, syncer

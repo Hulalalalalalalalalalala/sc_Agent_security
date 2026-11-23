@@ -1,0 +1,1371 @@
+{
+  "task_id": "task-mh-qa-rehearsal-sse",
+  "sub": "user:alice@org-alpha.io",
+  "a2a_result": {
+    "mode": "SendStreamingMessage (SSE)",
+    "http_status": 200,
+    "content_type": "text/event-stream; charset=utf-8",
+    "sse_frame_count": 7,
+    "sse_states": [
+      "TASK_STATE_SUBMITTED",
+      "TASK_STATE_WORKING",
+      "TASK_STATE_COMPLETED"
+    ],
+    "artifact_update_count": 4,
+    "artifact_names": [
+      "orchestrator-intent-plan",
+      "flight-specialist-booking",
+      "hotel-specialist-reservation",
+      "settlement-convergence-summary"
+    ],
+    "terminal_state": "TASK_STATE_COMPLETED",
+    "final_event": {
+      "taskId": "task-mh-qa-rehearsal-sse",
+      "contextId": "ctx-task-mh-qa-rehearsal-sse",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-11-23T18:45:55.346803Z",
+        "message": {
+          "messageId": "msg-f69027a20a01",
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "text": "The flight booking for flight_no NH-108 with booking_ref FLT-6E7C983A has been successfully settled for 580.0 USD. The hotel reservation for hotel_id HTL-TYO-09 with reservation_ref HTL-A977A275 has been settled for 360.0 USD. Both settlements are now complete and confirmed in the Verified MCP JSON."
+            },
+            {
+              "data": {
+                "task_id": "task-mh-qa-rehearsal-sse",
+                "sub": "user:alice@org-alpha.io",
+                "city": "Tokyo",
+                "orchestrator_plan": {
+                  "city": "Tokyo",
+                  "flight_budget_usd": 650,
+                  "hotel_budget_usd": 420
+                },
+                "orchestrator_llm_trace": {
+                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                  "model": "qwen2.5:3b",
+                  "completion_id": "chatcmpl-712",
+                  "system_fingerprint": "fp_ollama",
+                  "prompt_tokens": 81,
+                  "completion_tokens": 30,
+                  "total_tokens": 111,
+                  "latency_ms": 2428.35,
+                  "raw_content": "{\"city\": \"Tokyo\", \"flight_budget_usd\": 650, \"hotel_budget_usd\": 420}"
+                },
+                "flight_branch": {
+                  "upstream_status": 200,
+                  "upstream_body": {
+                    "agent": "flight-specialist",
+                    "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                    "flight_search": {
+                      "city": "Tokyo",
+                      "flight_no": "NH-108",
+                      "carrier": "ANA All Nippon",
+                      "origin": "SFO",
+                      "destination": "NRT",
+                      "cabin": "Business",
+                      "price_usd": 580.0,
+                      "lineage_decision": "ALLOW"
+                    },
+                    "flight_booking": {
+                      "booking_ref": "FLT-6E7C983A",
+                      "city": "Tokyo",
+                      "flight_no": "NH-108",
+                      "carrier": "ANA All Nippon",
+                      "charged_usd": 580.0,
+                      "escrow_target": "airline-escrow",
+                      "task_id": "task-mh-qa-rehearsal-sse",
+                      "sub": "user:alice@org-alpha.io",
+                      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                      "lineage_decision": "ALLOW"
+                    },
+                    "convergence": {
+                      "converged_branch_recorded": true,
+                      "task_id": "task-mh-qa-rehearsal-sse",
+                      "sub": "user:alice@org-alpha.io",
+                      "total_branches_for_task": 1
+                    },
+                    "llm_traces": [
+                      {
+                        "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                        "model": "qwen2.5:3b",
+                        "completion_id": "chatcmpl-126",
+                        "system_fingerprint": "fp_ollama",
+                        "prompt_tokens": 168,
+                        "completion_tokens": 21,
+                        "total_tokens": 189,
+                        "latency_ms": 495.33,
+                        "finish_reason": "tool_calls",
+                        "tool_call_id": "call_uveil9eu",
+                        "invoked_tool": "search_flight",
+                        "invoked_arguments": {
+                          "city": "Tokyo"
+                        }
+                      },
+                      {
+                        "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                        "model": "qwen2.5:3b",
+                        "completion_id": "chatcmpl-548",
+                        "system_fingerprint": "fp_ollama",
+                        "prompt_tokens": 208,
+                        "completion_tokens": 42,
+                        "total_tokens": 250,
+                        "latency_ms": 710.4,
+                        "finish_reason": "tool_calls",
+                        "tool_call_id": "call_fvuzjht8",
+                        "invoked_tool": "book_flight",
+                        "invoked_arguments": {
+                          "amount": 580,
+                          "city": "Tokyo",
+                          "flight_no": "NH-108"
+                        }
+                      }
+                    ]
+                  },
+                  "a2a_task": {
+                    "id": "task-mh-qa-rehearsal-sse",
+                    "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                    "status": {
+                      "state": "TASK_STATE_COMPLETED",
+                      "timestamp": "2026-11-23T18:45:53.252778Z",
+                      "message": {
+                        "messageId": "msg-509ce7cd205a",
+                        "role": "ROLE_AGENT",
+                        "parts": [
+                          {
+                            "text": "Booked flight NH-108 (FLT-6E7C983A) for $580.0."
+                          },
+                          {
+                            "data": {
+                              "agent": "flight-specialist",
+                              "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                              "flight_search": {
+                                "city": "Tokyo",
+                                "flight_no": "NH-108",
+                                "carrier": "ANA All Nippon",
+                                "origin": "SFO",
+                                "destination": "NRT",
+                                "cabin": "Business",
+                                "price_usd": 580.0,
+                                "lineage_decision": "ALLOW"
+                              },
+                              "flight_booking": {
+                                "booking_ref": "FLT-6E7C983A",
+                                "city": "Tokyo",
+                                "flight_no": "NH-108",
+                                "carrier": "ANA All Nippon",
+                                "charged_usd": 580.0,
+                                "escrow_target": "airline-escrow",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "convergence": {
+                                "converged_branch_recorded": true,
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "total_branches_for_task": 1
+                              },
+                              "llm_traces": [
+                                {
+                                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                  "model": "qwen2.5:3b",
+                                  "completion_id": "chatcmpl-126",
+                                  "system_fingerprint": "fp_ollama",
+                                  "prompt_tokens": 168,
+                                  "completion_tokens": 21,
+                                  "total_tokens": 189,
+                                  "latency_ms": 495.33,
+                                  "finish_reason": "tool_calls",
+                                  "tool_call_id": "call_uveil9eu",
+                                  "invoked_tool": "search_flight",
+                                  "invoked_arguments": {
+                                    "city": "Tokyo"
+                                  }
+                                },
+                                {
+                                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                  "model": "qwen2.5:3b",
+                                  "completion_id": "chatcmpl-548",
+                                  "system_fingerprint": "fp_ollama",
+                                  "prompt_tokens": 208,
+                                  "completion_tokens": 42,
+                                  "total_tokens": 250,
+                                  "latency_ms": 710.4,
+                                  "finish_reason": "tool_calls",
+                                  "tool_call_id": "call_fvuzjht8",
+                                  "invoked_tool": "book_flight",
+                                  "invoked_arguments": {
+                                    "amount": 580,
+                                    "city": "Tokyo",
+                                    "flight_no": "NH-108"
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      }
+                    },
+                    "history": [
+                      {
+                        "messageId": "msg-f689630c20ed",
+                        "role": "ROLE_USER",
+                        "parts": [
+                          {
+                            "text": "Search and book business flight to Tokyo."
+                          },
+                          {
+                            "data": {
+                              "city": "Tokyo"
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      },
+                      {
+                        "messageId": "msg-509ce7cd205a",
+                        "role": "ROLE_AGENT",
+                        "parts": [
+                          {
+                            "text": "Booked flight NH-108 (FLT-6E7C983A) for $580.0."
+                          },
+                          {
+                            "data": {
+                              "agent": "flight-specialist",
+                              "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                              "flight_search": {
+                                "city": "Tokyo",
+                                "flight_no": "NH-108",
+                                "carrier": "ANA All Nippon",
+                                "origin": "SFO",
+                                "destination": "NRT",
+                                "cabin": "Business",
+                                "price_usd": 580.0,
+                                "lineage_decision": "ALLOW"
+                              },
+                              "flight_booking": {
+                                "booking_ref": "FLT-6E7C983A",
+                                "city": "Tokyo",
+                                "flight_no": "NH-108",
+                                "carrier": "ANA All Nippon",
+                                "charged_usd": 580.0,
+                                "escrow_target": "airline-escrow",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "convergence": {
+                                "converged_branch_recorded": true,
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "total_branches_for_task": 1
+                              },
+                              "llm_traces": [
+                                {
+                                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                  "model": "qwen2.5:3b",
+                                  "completion_id": "chatcmpl-126",
+                                  "system_fingerprint": "fp_ollama",
+                                  "prompt_tokens": 168,
+                                  "completion_tokens": 21,
+                                  "total_tokens": 189,
+                                  "latency_ms": 495.33,
+                                  "finish_reason": "tool_calls",
+                                  "tool_call_id": "call_uveil9eu",
+                                  "invoked_tool": "search_flight",
+                                  "invoked_arguments": {
+                                    "city": "Tokyo"
+                                  }
+                                },
+                                {
+                                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                  "model": "qwen2.5:3b",
+                                  "completion_id": "chatcmpl-548",
+                                  "system_fingerprint": "fp_ollama",
+                                  "prompt_tokens": 208,
+                                  "completion_tokens": 42,
+                                  "total_tokens": 250,
+                                  "latency_ms": 710.4,
+                                  "finish_reason": "tool_calls",
+                                  "tool_call_id": "call_fvuzjht8",
+                                  "invoked_tool": "book_flight",
+                                  "invoked_arguments": {
+                                    "amount": 580,
+                                    "city": "Tokyo",
+                                    "flight_no": "NH-108"
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      }
+                    ],
+                    "artifacts": [
+                      {
+                        "artifactId": "art-130a4a3c1317",
+                        "name": "flight-booking-receipt",
+                        "description": "Confirmed NH-108 to Tokyo",
+                        "parts": [
+                          {
+                            "data": {
+                              "booking_ref": "FLT-6E7C983A",
+                              "city": "Tokyo",
+                              "flight_no": "NH-108",
+                              "carrier": "ANA All Nippon",
+                              "charged_usd": 580.0,
+                              "escrow_target": "airline-escrow",
+                              "task_id": "task-mh-qa-rehearsal-sse",
+                              "sub": "user:alice@org-alpha.io",
+                              "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                              "lineage_decision": "ALLOW"
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "metadata": {
+                      "lineagePath": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                      "stateTransitionHistory": [
+                        {
+                          "state": "TASK_STATE_SUBMITTED",
+                          "timestamp": "2026-11-23T18:45:51.724867Z"
+                        },
+                        {
+                          "state": "TASK_STATE_WORKING",
+                          "timestamp": "2026-11-23T18:45:51.725443Z"
+                        },
+                        {
+                          "state": "TASK_STATE_COMPLETED",
+                          "timestamp": "2026-11-23T18:45:53.252778Z"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "hotel_branch": {
+                  "upstream_status": 200,
+                  "upstream_body": {
+                    "agent": "hotel-specialist-primary",
+                    "instance_label": "primary",
+                    "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                    "hotel_search": {
+                      "city": "Tokyo",
+                      "hotel_id": "HTL-TYO-09",
+                      "hotel_name": "Shinjuku Grand Palace",
+                      "nights": 3,
+                      "total_usd": 360.0,
+                      "lineage_decision": "ALLOW"
+                    },
+                    "hotel_reservation": {
+                      "reservation_ref": "HTL-A977A275",
+                      "city": "Tokyo",
+                      "hotel_id": "HTL-TYO-09",
+                      "hotel_name": "Shinjuku Grand Palace",
+                      "nights": 3,
+                      "charged_usd": 360.0,
+                      "escrow_target": "hotel-escrow",
+                      "task_id": "task-mh-qa-rehearsal-sse",
+                      "sub": "user:alice@org-alpha.io",
+                      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                      "lineage_decision": "ALLOW"
+                    },
+                    "convergence": {
+                      "converged_branch_recorded": true,
+                      "task_id": "task-mh-qa-rehearsal-sse",
+                      "sub": "user:alice@org-alpha.io",
+                      "total_branches_for_task": 2
+                    },
+                    "llm_traces": [
+                      {
+                        "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                        "model": "qwen2.5:3b",
+                        "completion_id": "chatcmpl-305",
+                        "system_fingerprint": "fp_ollama",
+                        "prompt_tokens": 164,
+                        "completion_tokens": 22,
+                        "total_tokens": 186,
+                        "latency_ms": 773.2,
+                        "finish_reason": "tool_calls",
+                        "tool_call_id": "call_6m85pafs",
+                        "invoked_tool": "search_hotel",
+                        "invoked_arguments": {
+                          "city": "Tokyo"
+                        }
+                      },
+                      {
+                        "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                        "model": "qwen2.5:3b",
+                        "completion_id": "chatcmpl-125",
+                        "system_fingerprint": "fp_ollama",
+                        "prompt_tokens": 214,
+                        "completion_tokens": 45,
+                        "total_tokens": 259,
+                        "latency_ms": 1003.53,
+                        "finish_reason": "tool_calls",
+                        "tool_call_id": "call_3nj82tqi",
+                        "invoked_tool": "reserve_hotel",
+                        "invoked_arguments": {
+                          "city": "Tokyo",
+                          "hotel_id": "HTL-TYO-09",
+                          "amount": 360
+                        }
+                      }
+                    ]
+                  },
+                  "delegated_lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                  "epoch": 0,
+                  "failover_receipts": [],
+                  "a2a_task": {
+                    "id": "task-mh-qa-rehearsal-sse",
+                    "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                    "status": {
+                      "state": "TASK_STATE_COMPLETED",
+                      "timestamp": "2026-11-23T18:45:53.694204Z",
+                      "message": {
+                        "messageId": "msg-740ffabaf973",
+                        "role": "ROLE_AGENT",
+                        "parts": [
+                          {
+                            "text": "Reserved Shinjuku Grand Palace (HTL-A977A275) for $360.0."
+                          },
+                          {
+                            "data": {
+                              "agent": "hotel-specialist-primary",
+                              "instance_label": "primary",
+                              "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                              "hotel_search": {
+                                "city": "Tokyo",
+                                "hotel_id": "HTL-TYO-09",
+                                "hotel_name": "Shinjuku Grand Palace",
+                                "nights": 3,
+                                "total_usd": 360.0,
+                                "lineage_decision": "ALLOW"
+                              },
+                              "hotel_reservation": {
+                                "reservation_ref": "HTL-A977A275",
+                                "city": "Tokyo",
+                                "hotel_id": "HTL-TYO-09",
+                                "hotel_name": "Shinjuku Grand Palace",
+                                "nights": 3,
+                                "charged_usd": 360.0,
+                                "escrow_target": "hotel-escrow",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "convergence": {
+                                "converged_branch_recorded": true,
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "total_branches_for_task": 2
+                              },
+                              "llm_traces": [
+                                {
+                                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                  "model": "qwen2.5:3b",
+                                  "completion_id": "chatcmpl-305",
+                                  "system_fingerprint": "fp_ollama",
+                                  "prompt_tokens": 164,
+                                  "completion_tokens": 22,
+                                  "total_tokens": 186,
+                                  "latency_ms": 773.2,
+                                  "finish_reason": "tool_calls",
+                                  "tool_call_id": "call_6m85pafs",
+                                  "invoked_tool": "search_hotel",
+                                  "invoked_arguments": {
+                                    "city": "Tokyo"
+                                  }
+                                },
+                                {
+                                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                  "model": "qwen2.5:3b",
+                                  "completion_id": "chatcmpl-125",
+                                  "system_fingerprint": "fp_ollama",
+                                  "prompt_tokens": 214,
+                                  "completion_tokens": 45,
+                                  "total_tokens": 259,
+                                  "latency_ms": 1003.53,
+                                  "finish_reason": "tool_calls",
+                                  "tool_call_id": "call_3nj82tqi",
+                                  "invoked_tool": "reserve_hotel",
+                                  "invoked_arguments": {
+                                    "city": "Tokyo",
+                                    "hotel_id": "HTL-TYO-09",
+                                    "amount": 360
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      }
+                    },
+                    "history": [
+                      {
+                        "messageId": "msg-034e87d7e08b",
+                        "role": "ROLE_USER",
+                        "parts": [
+                          {
+                            "text": "Search and reserve partner hotel in Tokyo."
+                          },
+                          {
+                            "data": {
+                              "city": "Tokyo",
+                              "simulate_primary_zombie_delay_sec": 0.0
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      },
+                      {
+                        "messageId": "msg-740ffabaf973",
+                        "role": "ROLE_AGENT",
+                        "parts": [
+                          {
+                            "text": "Reserved Shinjuku Grand Palace (HTL-A977A275) for $360.0."
+                          },
+                          {
+                            "data": {
+                              "agent": "hotel-specialist-primary",
+                              "instance_label": "primary",
+                              "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                              "hotel_search": {
+                                "city": "Tokyo",
+                                "hotel_id": "HTL-TYO-09",
+                                "hotel_name": "Shinjuku Grand Palace",
+                                "nights": 3,
+                                "total_usd": 360.0,
+                                "lineage_decision": "ALLOW"
+                              },
+                              "hotel_reservation": {
+                                "reservation_ref": "HTL-A977A275",
+                                "city": "Tokyo",
+                                "hotel_id": "HTL-TYO-09",
+                                "hotel_name": "Shinjuku Grand Palace",
+                                "nights": 3,
+                                "charged_usd": 360.0,
+                                "escrow_target": "hotel-escrow",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "convergence": {
+                                "converged_branch_recorded": true,
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "total_branches_for_task": 2
+                              },
+                              "llm_traces": [
+                                {
+                                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                  "model": "qwen2.5:3b",
+                                  "completion_id": "chatcmpl-305",
+                                  "system_fingerprint": "fp_ollama",
+                                  "prompt_tokens": 164,
+                                  "completion_tokens": 22,
+                                  "total_tokens": 186,
+                                  "latency_ms": 773.2,
+                                  "finish_reason": "tool_calls",
+                                  "tool_call_id": "call_6m85pafs",
+                                  "invoked_tool": "search_hotel",
+                                  "invoked_arguments": {
+                                    "city": "Tokyo"
+                                  }
+                                },
+                                {
+                                  "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                  "model": "qwen2.5:3b",
+                                  "completion_id": "chatcmpl-125",
+                                  "system_fingerprint": "fp_ollama",
+                                  "prompt_tokens": 214,
+                                  "completion_tokens": 45,
+                                  "total_tokens": 259,
+                                  "latency_ms": 1003.53,
+                                  "finish_reason": "tool_calls",
+                                  "tool_call_id": "call_3nj82tqi",
+                                  "invoked_tool": "reserve_hotel",
+                                  "invoked_arguments": {
+                                    "city": "Tokyo",
+                                    "hotel_id": "HTL-TYO-09",
+                                    "amount": 360
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      }
+                    ],
+                    "artifacts": [
+                      {
+                        "artifactId": "art-780844dbde27",
+                        "name": "hotel-reservation-receipt",
+                        "description": "Reserved Shinjuku Grand Palace (HTL-TYO-09)",
+                        "parts": [
+                          {
+                            "data": {
+                              "reservation_ref": "HTL-A977A275",
+                              "city": "Tokyo",
+                              "hotel_id": "HTL-TYO-09",
+                              "hotel_name": "Shinjuku Grand Palace",
+                              "nights": 3,
+                              "charged_usd": 360.0,
+                              "escrow_target": "hotel-escrow",
+                              "task_id": "task-mh-qa-rehearsal-sse",
+                              "sub": "user:alice@org-alpha.io",
+                              "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                              "lineage_decision": "ALLOW"
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "metadata": {
+                      "lineagePath": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                      "stateTransitionHistory": [
+                        {
+                          "state": "TASK_STATE_SUBMITTED",
+                          "timestamp": "2026-11-23T18:45:51.730024Z"
+                        },
+                        {
+                          "state": "TASK_STATE_WORKING",
+                          "timestamp": "2026-11-23T18:45:51.730295Z"
+                        },
+                        {
+                          "state": "TASK_STATE_COMPLETED",
+                          "timestamp": "2026-11-23T18:45:53.694204Z"
+                        }
+                      ],
+                      "instance": "primary"
+                    }
+                  }
+                },
+                "settlement_convergence": {
+                  "upstream_status": 200,
+                  "upstream_body": {
+                    "agent": "settlement-converger",
+                    "task_id": "task-mh-qa-rehearsal-sse",
+                    "sub": "user:alice@org-alpha.io",
+                    "city": "Tokyo",
+                    "flight_booking": {
+                      "booking_ref": "FLT-6E7C983A",
+                      "city": "Tokyo",
+                      "flight_no": "NH-108",
+                      "carrier": "ANA All Nippon",
+                      "charged_usd": 580.0,
+                      "escrow_target": "airline-escrow",
+                      "task_id": "task-mh-qa-rehearsal-sse",
+                      "sub": "user:alice@org-alpha.io",
+                      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                      "lineage_decision": "ALLOW"
+                    },
+                    "hotel_reservation": {
+                      "reservation_ref": "HTL-A977A275",
+                      "city": "Tokyo",
+                      "hotel_id": "HTL-TYO-09",
+                      "hotel_name": "Shinjuku Grand Palace",
+                      "nights": 3,
+                      "charged_usd": 360.0,
+                      "escrow_target": "hotel-escrow",
+                      "task_id": "task-mh-qa-rehearsal-sse",
+                      "sub": "user:alice@org-alpha.io",
+                      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                      "lineage_decision": "ALLOW"
+                    },
+                    "settlement_outcomes": {
+                      "airline-escrow": {
+                        "http_status": 200,
+                        "response": {
+                          "jsonrpc": "2.0",
+                          "id": 1,
+                          "result": {
+                            "data": {
+                              "settlement_id": "STL-C113F71F",
+                              "target": "airline-escrow",
+                              "settled_usd": 580.0,
+                              "reference_id": "FLT-6E7C983A",
+                              "city": "Tokyo",
+                              "task_id": "task-mh-qa-rehearsal-sse",
+                              "sub": "user:alice@org-alpha.io",
+                              "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                              "lineage_decision": "ALLOW"
+                            }
+                          }
+                        }
+                      },
+                      "hotel-escrow": {
+                        "http_status": 200,
+                        "response": {
+                          "jsonrpc": "2.0",
+                          "id": 1,
+                          "result": {
+                            "data": {
+                              "settlement_id": "STL-317010AB",
+                              "target": "hotel-escrow",
+                              "settled_usd": 360.0,
+                              "reference_id": "HTL-A977A275",
+                              "city": "Tokyo",
+                              "task_id": "task-mh-qa-rehearsal-sse",
+                              "sub": "user:alice@org-alpha.io",
+                              "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                              "lineage_decision": "ALLOW"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "completed_settlements": {
+                      "airline-escrow": {
+                        "settlement_id": "STL-C113F71F",
+                        "target": "airline-escrow",
+                        "settled_usd": 580.0,
+                        "reference_id": "FLT-6E7C983A",
+                        "city": "Tokyo",
+                        "task_id": "task-mh-qa-rehearsal-sse",
+                        "sub": "user:alice@org-alpha.io",
+                        "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                        "lineage_decision": "ALLOW"
+                      },
+                      "hotel-escrow": {
+                        "settlement_id": "STL-317010AB",
+                        "target": "hotel-escrow",
+                        "settled_usd": 360.0,
+                        "reference_id": "HTL-A977A275",
+                        "city": "Tokyo",
+                        "task_id": "task-mh-qa-rehearsal-sse",
+                        "sub": "user:alice@org-alpha.io",
+                        "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                        "lineage_decision": "ALLOW"
+                      }
+                    },
+                    "final_answer": "The flight booking for flight_no NH-108 with booking_ref FLT-6E7C983A has been successfully settled for 580.0 USD. The hotel reservation for hotel_id HTL-TYO-09 with reservation_ref HTL-A977A275 has been settled for 360.0 USD. Both settlements are now complete and confirmed in the Verified MCP JSON.",
+                    "llm_trace": {
+                      "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                      "model": "qwen2.5:3b",
+                      "completion_id": "chatcmpl-760",
+                      "system_fingerprint": "fp_ollama",
+                      "prompt_tokens": 722,
+                      "completion_tokens": 89,
+                      "total_tokens": 811,
+                      "latency_ms": 1201.79
+                    }
+                  },
+                  "a2a_task": {
+                    "id": "task-mh-qa-rehearsal-sse",
+                    "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                    "status": {
+                      "state": "TASK_STATE_COMPLETED",
+                      "timestamp": "2026-11-23T18:45:55.341477Z",
+                      "message": {
+                        "messageId": "msg-a97452241b79",
+                        "role": "ROLE_AGENT",
+                        "parts": [
+                          {
+                            "text": "The flight booking for flight_no NH-108 with booking_ref FLT-6E7C983A has been successfully settled for 580.0 USD. The hotel reservation for hotel_id HTL-TYO-09 with reservation_ref HTL-A977A275 has been settled for 360.0 USD. Both settlements are now complete and confirmed in the Verified MCP JSON."
+                          },
+                          {
+                            "data": {
+                              "agent": "settlement-converger",
+                              "task_id": "task-mh-qa-rehearsal-sse",
+                              "sub": "user:alice@org-alpha.io",
+                              "city": "Tokyo",
+                              "flight_booking": {
+                                "booking_ref": "FLT-6E7C983A",
+                                "city": "Tokyo",
+                                "flight_no": "NH-108",
+                                "carrier": "ANA All Nippon",
+                                "charged_usd": 580.0,
+                                "escrow_target": "airline-escrow",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "hotel_reservation": {
+                                "reservation_ref": "HTL-A977A275",
+                                "city": "Tokyo",
+                                "hotel_id": "HTL-TYO-09",
+                                "hotel_name": "Shinjuku Grand Palace",
+                                "nights": 3,
+                                "charged_usd": 360.0,
+                                "escrow_target": "hotel-escrow",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "settlement_outcomes": {
+                                "airline-escrow": {
+                                  "http_status": 200,
+                                  "response": {
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "result": {
+                                      "data": {
+                                        "settlement_id": "STL-C113F71F",
+                                        "target": "airline-escrow",
+                                        "settled_usd": 580.0,
+                                        "reference_id": "FLT-6E7C983A",
+                                        "city": "Tokyo",
+                                        "task_id": "task-mh-qa-rehearsal-sse",
+                                        "sub": "user:alice@org-alpha.io",
+                                        "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                        "lineage_decision": "ALLOW"
+                                      }
+                                    }
+                                  }
+                                },
+                                "hotel-escrow": {
+                                  "http_status": 200,
+                                  "response": {
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "result": {
+                                      "data": {
+                                        "settlement_id": "STL-317010AB",
+                                        "target": "hotel-escrow",
+                                        "settled_usd": 360.0,
+                                        "reference_id": "HTL-A977A275",
+                                        "city": "Tokyo",
+                                        "task_id": "task-mh-qa-rehearsal-sse",
+                                        "sub": "user:alice@org-alpha.io",
+                                        "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                        "lineage_decision": "ALLOW"
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "completed_settlements": {
+                                "airline-escrow": {
+                                  "settlement_id": "STL-C113F71F",
+                                  "target": "airline-escrow",
+                                  "settled_usd": 580.0,
+                                  "reference_id": "FLT-6E7C983A",
+                                  "city": "Tokyo",
+                                  "task_id": "task-mh-qa-rehearsal-sse",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "hotel-escrow": {
+                                  "settlement_id": "STL-317010AB",
+                                  "target": "hotel-escrow",
+                                  "settled_usd": 360.0,
+                                  "reference_id": "HTL-A977A275",
+                                  "city": "Tokyo",
+                                  "task_id": "task-mh-qa-rehearsal-sse",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                  "lineage_decision": "ALLOW"
+                                }
+                              },
+                              "final_answer": "The flight booking for flight_no NH-108 with booking_ref FLT-6E7C983A has been successfully settled for 580.0 USD. The hotel reservation for hotel_id HTL-TYO-09 with reservation_ref HTL-A977A275 has been settled for 360.0 USD. Both settlements are now complete and confirmed in the Verified MCP JSON.",
+                              "llm_trace": {
+                                "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                "model": "qwen2.5:3b",
+                                "completion_id": "chatcmpl-760",
+                                "system_fingerprint": "fp_ollama",
+                                "prompt_tokens": 722,
+                                "completion_tokens": 89,
+                                "total_tokens": 811,
+                                "latency_ms": 1201.79
+                              }
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      }
+                    },
+                    "history": [
+                      {
+                        "messageId": "msg-48519a073f32",
+                        "role": "ROLE_USER",
+                        "parts": [
+                          {
+                            "text": "Settle converged airline and hotel escrows for Tokyo"
+                          },
+                          {
+                            "data": {
+                              "op": "settle_converged_dag",
+                              "city": "Tokyo",
+                              "requested_targets": null
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      },
+                      {
+                        "messageId": "msg-a97452241b79",
+                        "role": "ROLE_AGENT",
+                        "parts": [
+                          {
+                            "text": "The flight booking for flight_no NH-108 with booking_ref FLT-6E7C983A has been successfully settled for 580.0 USD. The hotel reservation for hotel_id HTL-TYO-09 with reservation_ref HTL-A977A275 has been settled for 360.0 USD. Both settlements are now complete and confirmed in the Verified MCP JSON."
+                          },
+                          {
+                            "data": {
+                              "agent": "settlement-converger",
+                              "task_id": "task-mh-qa-rehearsal-sse",
+                              "sub": "user:alice@org-alpha.io",
+                              "city": "Tokyo",
+                              "flight_booking": {
+                                "booking_ref": "FLT-6E7C983A",
+                                "city": "Tokyo",
+                                "flight_no": "NH-108",
+                                "carrier": "ANA All Nippon",
+                                "charged_usd": 580.0,
+                                "escrow_target": "airline-escrow",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "hotel_reservation": {
+                                "reservation_ref": "HTL-A977A275",
+                                "city": "Tokyo",
+                                "hotel_id": "HTL-TYO-09",
+                                "hotel_name": "Shinjuku Grand Palace",
+                                "nights": 3,
+                                "charged_usd": 360.0,
+                                "escrow_target": "hotel-escrow",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "settlement_outcomes": {
+                                "airline-escrow": {
+                                  "http_status": 200,
+                                  "response": {
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "result": {
+                                      "data": {
+                                        "settlement_id": "STL-C113F71F",
+                                        "target": "airline-escrow",
+                                        "settled_usd": 580.0,
+                                        "reference_id": "FLT-6E7C983A",
+                                        "city": "Tokyo",
+                                        "task_id": "task-mh-qa-rehearsal-sse",
+                                        "sub": "user:alice@org-alpha.io",
+                                        "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                        "lineage_decision": "ALLOW"
+                                      }
+                                    }
+                                  }
+                                },
+                                "hotel-escrow": {
+                                  "http_status": 200,
+                                  "response": {
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "result": {
+                                      "data": {
+                                        "settlement_id": "STL-317010AB",
+                                        "target": "hotel-escrow",
+                                        "settled_usd": 360.0,
+                                        "reference_id": "HTL-A977A275",
+                                        "city": "Tokyo",
+                                        "task_id": "task-mh-qa-rehearsal-sse",
+                                        "sub": "user:alice@org-alpha.io",
+                                        "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                        "lineage_decision": "ALLOW"
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "completed_settlements": {
+                                "airline-escrow": {
+                                  "settlement_id": "STL-C113F71F",
+                                  "target": "airline-escrow",
+                                  "settled_usd": 580.0,
+                                  "reference_id": "FLT-6E7C983A",
+                                  "city": "Tokyo",
+                                  "task_id": "task-mh-qa-rehearsal-sse",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                  "lineage_decision": "ALLOW"
+                                },
+                                "hotel-escrow": {
+                                  "settlement_id": "STL-317010AB",
+                                  "target": "hotel-escrow",
+                                  "settled_usd": 360.0,
+                                  "reference_id": "HTL-A977A275",
+                                  "city": "Tokyo",
+                                  "task_id": "task-mh-qa-rehearsal-sse",
+                                  "sub": "user:alice@org-alpha.io",
+                                  "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                  "lineage_decision": "ALLOW"
+                                }
+                              },
+                              "final_answer": "The flight booking for flight_no NH-108 with booking_ref FLT-6E7C983A has been successfully settled for 580.0 USD. The hotel reservation for hotel_id HTL-TYO-09 with reservation_ref HTL-A977A275 has been settled for 360.0 USD. Both settlements are now complete and confirmed in the Verified MCP JSON.",
+                              "llm_trace": {
+                                "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+                                "model": "qwen2.5:3b",
+                                "completion_id": "chatcmpl-760",
+                                "system_fingerprint": "fp_ollama",
+                                "prompt_tokens": 722,
+                                "completion_tokens": 89,
+                                "total_tokens": 811,
+                                "latency_ms": 1201.79
+                              }
+                            }
+                          }
+                        ],
+                        "contextId": "ctx-task-mh-qa-rehearsal-sse",
+                        "taskId": "task-mh-qa-rehearsal-sse"
+                      }
+                    ],
+                    "artifacts": [
+                      {
+                        "artifactId": "art-fe74180d5989",
+                        "name": "split-escrow-settlement",
+                        "description": "Converged MultiParentToken escrow settlement receipts",
+                        "parts": [
+                          {
+                            "text": "The flight booking for flight_no NH-108 with booking_ref FLT-6E7C983A has been successfully settled for 580.0 USD. The hotel reservation for hotel_id HTL-TYO-09 with reservation_ref HTL-A977A275 has been settled for 360.0 USD. Both settlements are now complete and confirmed in the Verified MCP JSON."
+                          },
+                          {
+                            "data": {
+                              "airline-escrow": {
+                                "settlement_id": "STL-C113F71F",
+                                "target": "airline-escrow",
+                                "settled_usd": 580.0,
+                                "reference_id": "FLT-6E7C983A",
+                                "city": "Tokyo",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                "lineage_decision": "ALLOW"
+                              },
+                              "hotel-escrow": {
+                                "settlement_id": "STL-317010AB",
+                                "target": "hotel-escrow",
+                                "settled_usd": 360.0,
+                                "reference_id": "HTL-A977A275",
+                                "city": "Tokyo",
+                                "task_id": "task-mh-qa-rehearsal-sse",
+                                "sub": "user:alice@org-alpha.io",
+                                "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+                                "lineage_decision": "ALLOW"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "metadata": {
+                      "lineagePath": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/SettleTrigger",
+                      "stateTransitionHistory": [
+                        {
+                          "state": "TASK_STATE_SUBMITTED",
+                          "timestamp": "2026-11-23T18:45:53.768414Z"
+                        },
+                        {
+                          "state": "TASK_STATE_WORKING",
+                          "timestamp": "2026-11-23T18:45:53.768937Z"
+                        },
+                        {
+                          "state": "TASK_STATE_COMPLETED",
+                          "timestamp": "2026-11-23T18:45:55.341477Z"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "contextId": "ctx-task-mh-qa-rehearsal-sse",
+          "taskId": "task-mh-qa-rehearsal-sse"
+        }
+      },
+      "final": true
+    }
+  },
+  "hop_by_hop_mtls_and_lct_trace": [
+    {
+      "hop_index": 0,
+      "event_type": "GATEWAY_ENTRY_MTLS",
+      "caller_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway",
+      "target_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "peer_cert_issuer_domain": "org-alpha.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 0,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha",
+      "node_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "node_issuer_domain": "org-alpha.io",
+      "peer_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway",
+      "peer_cert_issuer_domain": "org-alpha.io",
+      "resolved_peer_ip": null,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+      "node_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "node_issuer_domain": "org-beta.io",
+      "peer_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "peer_cert_issuer_domain": "org-alpha.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+      "node_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+      "node_issuer_domain": "org-beta.io",
+      "peer_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "peer_cert_issuer_domain": "org-alpha.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "TOOL_INVOCATION",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": "search_flight",
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "TOOL_INVOCATION",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": "search_hotel",
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "TOOL_INVOCATION",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": "book_flight",
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 2,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "TOOL_INVOCATION",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": "reserve_hotel",
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 2,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "peer_cert_issuer_domain": "org-beta.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 1,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/SettleTrigger",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "peer_cert_issuer_domain": "org-alpha.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 2,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "peer_cert_issuer_domain": "org-payment.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 2,
+      "event_type": "TOOL_INVOCATION",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "peer_cert_issuer_domain": "org-payment.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": "execute_settlement",
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 2,
+      "event_type": "INBOUND_AUTHZ",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "peer_cert_issuer_domain": "org-payment.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": null,
+      "decision": "ALLOW"
+    },
+    {
+      "hop_index": 2,
+      "event_type": "TOOL_INVOCATION",
+      "lineage_path": "/task-mh-qa-rehearsal-sse/OrchestratorAlpha/FlightB1/SettlementC|/task-mh-qa-rehearsal-sse/OrchestratorAlpha/hotel-specialist-primary/SettlementC",
+      "node_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp",
+      "node_issuer_domain": "org-payment.io",
+      "peer_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "peer_cert_issuer_domain": "org-payment.io",
+      "resolved_peer_ip": "192.168.1.6",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "tool": "execute_settlement",
+      "decision": "ALLOW"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+.:53 {
+    errors
+    health {
+       lameduck 5s
+    }
+    ready
+    hosts {
+        192.168.1.6 alpha-ca.org-alpha.io alpha-directory.org-alpha.io alpha-revocation.org-alpha.io orchestrator-alpha.org-alpha.io e2e-user-gateway.org-alpha.io
+        192.168.1.6 beta-ca.org-beta.io beta-directory.org-beta.io beta-revocation.org-beta.io flight-specialist.org-beta.io hotel-specialist-primary.org-beta.io hotel-specialist-backup.org-beta.io
+        192.168.1.6 payment-ca.org-payment.io payment-directory.org-payment.io payment-revocation.org-payment.io settlement-converger.org-payment.io travel-ops-mcp.org-payment.io payment-vault-mcp.org-payment.io
+        192.168.1.6 audit-collector.org-audit.io
+        fallthrough
+    }
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+       pods insecure
+       fallthrough in-addr.arpa ip6.arpa
+       ttl 30
+    }
+    prometheus :9153
+    forward . /etc/resolv.conf {
+       max_concurrent 1000
+    }
+    cache 30 {
+       disable success cluster.local
+       disable denial cluster.local
+    }
+    loop
+    reload
+    loadbalance
+}

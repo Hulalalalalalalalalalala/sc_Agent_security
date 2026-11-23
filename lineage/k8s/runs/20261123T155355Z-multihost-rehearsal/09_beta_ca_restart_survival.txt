@@ -1,0 +1,7 @@
+=== CA Pod Restart Survival Test (kubectl delete pod -l app=beta-ca) ===
+Before delete: {"status":"ok","trust_domain":"org-beta.io","mode":"federation_readonly","trust_anchor":"sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57"}
+pod "beta-ca-7f9fbdc869-scrdt" deleted from lineage-beta namespace
+Waiting for deployment "beta-ca" rollout to finish: 0 of 1 updated replicas are available...
+deployment "beta-ca" successfully rolled out
+After delete : {"status":"ok","trust_domain":"org-beta.io","mode":"federation_readonly","trust_anchor":"sha256:383028be5a23a4f4c95aca274fb781416c1956e23cf1b39c7970100161e05a3e:0e66f1c63a8054663425f0f72e2d5edacc5800599f5caaebd079b4707867cd57"}
+[PASS] beta-ca preserved identical trust_anchor across Pod deletion & restart!

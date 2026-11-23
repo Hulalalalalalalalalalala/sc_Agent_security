@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import enum
+import ssl
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Tuple
 
 import httpx
 
@@ -173,9 +174,12 @@ class AuditStreamEmitter:
         signer: WorkloadIdentity | TrustDomainCA,
         collector_client: Optional["AuditCollectorClient"] = None,
         stream_id: Optional[str] = None,
+        best_effort_remote: bool = False,
+        max_pending_remote: int = 4096,
     ) -> None:
         self._signer = signer
         self._collector = collector_client
+        self._best_effort_remote = bool(best_effort_remote)
         if isinstance(signer, TrustDomainCA):
             self.node_spiffe_id = signer.root_authority_spiffe_id
             self.auth_mode = "domain_authority"
@@ -189,9 +193,73 @@ class AuditStreamEmitter:
 
         self.stream_id = stream_id or self.node_spiffe_id
         self._lock = threading.Lock()
+        self._ship_lock = threading.Lock()
+        self._pending_remote: Deque[AuditEntry] = deque(maxlen=max(64, int(max_pending_remote)))
+        self._flush_stop = threading.Event()
+        self._flush_thread: Optional[threading.Thread] = None
         self._seq: int = 0
         self._prev_hash: str = "GENESIS"
         self._local_entries: List[AuditEntry] = []
+        if self._best_effort_remote and self._collector is not None:
+            self._start_background_flusher()
+
+    def _start_background_flusher(self) -> None:
+        def _loop() -> None:
+            while not self._flush_stop.is_set():
+                try:
+                    self.flush_pending()
+                except Exception:
+                    pass
+                self._flush_stop.wait(1.0)
+
+        self._flush_thread = threading.Thread(
+            target=_loop, name=f"audit-flush-{self.stream_id[-24:]}", daemon=True
+        )
+        self._flush_thread.start()
+
+    def flush_pending(self) -> int:
+        """Drain buffered entries to remote `AuditCollectorService` in strict `stream_seq` order."""
+        if self._collector is None:
+            return 0
+        flushed = 0
+        with self._ship_lock:
+            while True:
+                with self._lock:
+                    if not self._pending_remote:
+                        break
+                    head = self._pending_remote[0]
+                try:
+                    self._collector.ship(head)
+                except AuditIngestError:
+                    # If collector already recorded this seq (`Duplicate or replayed`), pop & advance
+                    with self._lock:
+                        if self._pending_remote and self._pending_remote[0] is head:
+                            self._pending_remote.popleft()
+                    continue
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 403 and "Duplicate or replayed" in exc.response.text:
+                        with self._lock:
+                            if self._pending_remote and self._pending_remote[0] is head:
+                                self._pending_remote.popleft()
+                        continue
+                    break
+                except Exception:
+                    break
+                with self._lock:
+                    if self._pending_remote and self._pending_remote[0] is head:
+                        self._pending_remote.popleft()
+                flushed += 1
+        return flushed
+
+    def stop(self) -> None:
+        self._flush_stop.set()
+        if self._flush_thread is not None:
+            self._flush_thread.join(timeout=1.5)
+            self._flush_thread = None
+        try:
+            self.flush_pending()
+        except Exception:
+            pass
 
     def emit(
         self,
@@ -225,6 +293,17 @@ class AuditStreamEmitter:
         receipt_dict = dict(receipt_payload) if receipt_payload is not None else None
 
         with self._lock:
+            # Dynamically read live SVID & keypair on every emission so SVID/key renewal
+            # takes effect immediately without stale SVID expiration errors!
+            if isinstance(self._signer, TrustDomainCA):
+                live_svid_or_domain = self._signer.trust_domain
+                live_keypair = self._signer.active_keypair
+            else:
+                live_svid_or_domain = self._signer.workload_svid
+                live_keypair = self._signer.keypair
+            self.node_svid_or_domain = live_svid_or_domain
+            self._keypair = live_keypair
+
             seq = self._seq
             prev_h = self._prev_hash
 
@@ -237,7 +316,7 @@ class AuditStreamEmitter:
                 sub=sub,
                 node_spiffe_id=self.node_spiffe_id,
                 auth_mode=self.auth_mode,
-                node_svid_or_domain=self.node_svid_or_domain,
+                node_svid_or_domain=live_svid_or_domain,
                 lineage_path=lineage_path,
                 hop_index=int(hop_index),
                 epoch=int(epoch),
@@ -261,7 +340,7 @@ class AuditStreamEmitter:
                     "stream_seq": seq,
                     "entry_hash": entry_h,
                 },
-                keypair=self._keypair,
+                keypair=live_keypair,
                 typ="lct-audit-sig+jwt",
             )
             final_entry = AuditEntry(
@@ -274,9 +353,14 @@ class AuditStreamEmitter:
             self._seq += 1
             self._prev_hash = entry_h
             self._local_entries.append(final_entry)
+            if self._collector is not None and self._best_effort_remote:
+                self._pending_remote.append(final_entry)
 
         if self._collector is not None:
-            self._collector.ship(final_entry)
+            if self._best_effort_remote:
+                self.flush_pending()
+            else:
+                self._collector.ship(final_entry)
 
         return final_entry
 
@@ -294,17 +378,38 @@ class AuditCollectorService:
         host: str = "127.0.0.1",
         port: int = 0,
         authorized_auditors: Iterable[str] = (),
+        ssl_context: Optional[ssl.SSLContext] = None,
+        ssl_context_provider: Optional[Callable[[], ssl.SSLContext]] = None,
+        public_bundle_provider: Optional[Callable[[], Dict[str, Any]]] = None,
+        readiness_check: Optional[Callable[[], Tuple[bool, Dict[str, Any]]]] = None,
+        max_ingest_age_seconds: float = 3600.0,
+        max_future_skew_seconds: float = 30.0,
+        stream_timestamp_tolerance_seconds: float = 5.0,
+        max_entries: int = 100_000,
+        max_streams: int = 10_000,
     ) -> None:
         if not isinstance(trust_resolver, TrustBundleResolver):
             raise TypeError(
                 "AuditCollectorService requires a TrustBundleResolver (unauthenticated ingest mode is forbidden)"
             )
+        if max_ingest_age_seconds <= 0 or max_future_skew_seconds < 0:
+            raise ValueError("max_ingest_age_seconds must be > 0 and max_future_skew_seconds >= 0")
+        if max_entries <= 0 or max_streams <= 0:
+            raise ValueError("max_entries and max_streams must be positive")
         self.trust_resolver = trust_resolver
         self._authorized_auditors: FrozenSet[str] = frozenset(str(s) for s in authorized_auditors if s)
+        self._public_bundle_provider = public_bundle_provider
+        self._readiness_check = readiness_check
+        self.max_ingest_age_seconds = float(max_ingest_age_seconds)
+        self.max_future_skew_seconds = float(max_future_skew_seconds)
+        self.stream_timestamp_tolerance_seconds = float(stream_timestamp_tolerance_seconds)
+        self.max_entries = int(max_entries)
+        self.max_streams = int(max_streams)
         self._lock = threading.Lock()
         self._entries: List[Dict[str, Any]] = []
         # Anti-replay / anti-overwrite index `(stream_id, stream_seq) -> entry_hash`
         self._seen_stream_seqs: Dict[Tuple[str, int], str] = {}
+        self._stream_seq_timestamps: Dict[str, Dict[int, float]] = {}
         self._query_replay_lock = threading.Lock()
         self._seen_query_jtis: "OrderedDict[str, float]" = OrderedDict()
         self._http = ManagedHTTPService(
@@ -312,6 +417,8 @@ class AuditCollectorService:
             dispatcher=self._dispatch,
             host=host,
             port=port,
+            ssl_context=ssl_context,
+            ssl_context_provider=ssl_context_provider,
         )
 
     def start(self) -> str:
@@ -328,8 +435,27 @@ class AuditCollectorService:
     def port(self) -> int:
         return self._http.port
 
-    def _verify_entry_on_ingest(self, entry: AuditEntry) -> None:
-        """Verify entry_hash, CA/TrustBundle signature, and stream hash-chain continuity."""
+    def _verify_entry_on_ingest(
+        self, entry: AuditEntry, now: Optional[float] = None
+    ) -> None:
+        """Verify timestamp bounds, entry_hash, CA/TrustBundle signature, and stream claims."""
+        now_ts = time.time() if now is None else float(now)
+        try:
+            entry_ts = require_finite_timestamp(entry.timestamp, "entry.timestamp")
+        except (CryptoError, ValueError, TypeError) as exc:
+            raise AuditIngestError(f"Invalid AuditEntry timestamp: {exc}") from exc
+
+        if entry_ts > (now_ts + self.max_future_skew_seconds):
+            raise AuditIngestError(
+                f"AuditEntry timestamp {entry_ts:.3f} exceeds max future skew "
+                f"({self.max_future_skew_seconds}s ahead of {now_ts:.3f})"
+            )
+        if entry_ts < (now_ts - self.max_ingest_age_seconds):
+            raise AuditIngestError(
+                f"AuditEntry timestamp {entry_ts:.3f} is older than max_ingest_age_seconds "
+                f"({self.max_ingest_age_seconds}s before {now_ts:.3f})"
+            )
+
         expected_hash = entry.compute_expected_hash()
         if entry.entry_hash != expected_hash:
             raise AuditIngestError("AuditEntry entry_hash mismatch")
@@ -376,6 +502,15 @@ class AuditCollectorService:
             raise AuditIngestError("stream_seq>0 cannot have prev_entry_hash='GENESIS'")
 
         with self._lock:
+            if len(self._entries) >= self.max_entries:
+                raise AuditIngestError(
+                    f"AuditCollectorService entry capacity limit reached ({self.max_entries})"
+                )
+            stream_ts_map = self._stream_seq_timestamps.get(entry.stream_id)
+            if stream_ts_map is None and len(self._stream_seq_timestamps) >= self.max_streams:
+                raise AuditIngestError(
+                    f"AuditCollectorService stream capacity limit reached ({self.max_streams})"
+                )
             seq_key = (entry.stream_id, entry.stream_seq)
             if seq_key in self._seen_stream_seqs:
                 raise AuditIngestError(
@@ -390,6 +525,24 @@ class AuditCollectorService:
                 # Out-of-order TCP packet arrived after seq+1; CausalChainAuditor verifies full chain
                 pass
 
+            if stream_ts_map:
+                tol = self.stream_timestamp_tolerance_seconds
+                for existing_seq, existing_ts in stream_ts_map.items():
+                    if existing_seq < entry.stream_seq and entry.timestamp < (existing_ts - tol):
+                        raise AuditIngestError(
+                            f"Non-monotonic AuditEntry timestamp on stream {entry.stream_id!r}: "
+                            f"seq={entry.stream_seq} ts={entry.timestamp:.3f} < prior seq={existing_seq} ts={existing_ts:.3f} - {tol}s"
+                        )
+                    if existing_seq > entry.stream_seq and entry.timestamp > (existing_ts + tol):
+                        raise AuditIngestError(
+                            f"Non-monotonic AuditEntry timestamp on stream {entry.stream_id!r}: "
+                            f"seq={entry.stream_seq} ts={entry.timestamp:.3f} > later seq={existing_seq} ts={existing_ts:.3f} + {tol}s"
+                        )
+
+            if stream_ts_map is None:
+                stream_ts_map = {}
+                self._stream_seq_timestamps[entry.stream_id] = stream_ts_map
+            stream_ts_map[entry.stream_seq] = float(entry.timestamp)
             self._seen_stream_seqs[seq_key] = entry.entry_hash
             self._entries.append(entry.to_dict())
             return len(self._entries)
@@ -479,6 +632,19 @@ class AuditCollectorService:
         if req.method == "GET" and req.path == "/healthz":
             return 200, {"status": "ok", "count": len(self._entries)}, {}
 
+        if req.method == "GET" and req.path == "/readyz":
+            if self._readiness_check is not None:
+                ok, detail = self._readiness_check()
+                if not ok:
+                    return 503, {"status": "not_ready", **detail}, {}
+                return 200, {"status": "ready", "count": len(self._entries), **detail}, {}
+            return 200, {"status": "ready", "count": len(self._entries)}, {}
+
+        if req.method == "GET" and req.path in ("/v1/federation/bundle", "/v1/ca/bundles"):
+            if self._public_bundle_provider is None:
+                return 404, {"error": "bundle_not_configured"}, {}
+            return 200, self._public_bundle_provider(), {}
+
         if req.method == "POST" and req.path == "/v1/audit/append":
             body = req.json()
             entry_raw = body.get("entry", body)
@@ -511,24 +677,45 @@ class AuditCollectorService:
 
 
 class AuditCollectorClient:
-    """HTTP client shipping signed AuditEntry records to AuditCollectorService."""
+    """HTTP/HTTPS client shipping signed AuditEntry records to AuditCollectorService."""
 
     def __init__(
         self,
         collector_url: str,
         timeout: float = 3.0,
         signer: Optional[WorkloadIdentity | TrustDomainCA] = None,
+        ssl_context: Optional[ssl.SSLContext] = None,
+        ssl_context_provider: Optional[Callable[[], Optional[ssl.SSLContext]]] = None,
     ) -> None:
         self.collector_url = collector_url.rstrip("/")
         self.timeout = timeout
         self.signer = signer
+        self.ssl_context = ssl_context
+        self.ssl_context_provider = ssl_context_provider
+
+    def verify_kwarg(self) -> Any:
+        if self.ssl_context_provider is not None:
+            ctx = self.ssl_context_provider()
+            if ctx is not None:
+                return ctx
+            if self.collector_url.startswith("https://"):
+                raise RuntimeError(
+                    f"TLS trust anchor for audit collector {self.collector_url!r} is not yet verified"
+                )
+        if self.ssl_context is not None:
+            return self.ssl_context
+        return True
+
+    def healthz(self) -> httpx.Response:
+        with httpx.Client(verify=self.verify_kwarg(), timeout=self.timeout) as client:
+            return client.get(f"{self.collector_url}/healthz")
 
     def ship(self, entry: AuditEntry) -> None:
-        resp = httpx.post(
-            f"{self.collector_url}/v1/audit/append",
-            json={"entry": entry.to_dict()},
-            timeout=self.timeout,
-        )
+        with httpx.Client(verify=self.verify_kwarg(), timeout=self.timeout) as client:
+            resp = client.post(
+                f"{self.collector_url}/v1/audit/append",
+                json={"entry": entry.to_dict()},
+            )
         resp.raise_for_status()
 
     def fetch_entries(
@@ -564,11 +751,11 @@ class AuditCollectorClient:
                 headers["X-LCT-Audit-SVID"] = active_signer.workload_svid
                 headers["X-LCT-Audit-Auth"] = q_jws
 
-        resp = httpx.get(
-            f"{self.collector_url}/v1/audit/entries",
-            params=params,
-            headers=headers,
-            timeout=self.timeout,
-        )
+        with httpx.Client(verify=self.verify_kwarg(), timeout=self.timeout) as client:
+            resp = client.get(
+                f"{self.collector_url}/v1/audit/entries",
+                params=params,
+                headers=headers,
+            )
         resp.raise_for_status()
         return [AuditEntry.from_dict(e) for e in resp.json().get("entries", [])]
