@@ -6,7 +6,7 @@ import ssl
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 import httpx
 
@@ -68,6 +68,7 @@ class RevocationService:
         federation_peer_cert_verifier: Optional[Callable[[bytes], Tuple[str, str]]] = None,
         mtls_bundle: Optional[WorkloadMTLSBundle] = None,
         readiness_check: Optional[Callable[[], Tuple[bool, Dict[str, Any]]]] = None,
+        descriptor_store: Optional[Any] = None,
     ) -> None:
         self.service_identity = service_identity
         self.trust_resolver = trust_resolver
@@ -77,8 +78,11 @@ class RevocationService:
             SpiffeId.parse(a).uri for a in authorized_admins
         }
         self._cmd_replay_cache = JTIReplayCache(ttl_seconds=300.0)
+        self.descriptor_store = descriptor_store
         self.strict_domain_isolation = bool(
-            strict_domain_isolation or peer_revocation_urls is not None
+            strict_domain_isolation
+            or peer_revocation_urls is not None
+            or descriptor_store is not None
         )
         self.peer_revocation_urls: Dict[str, str] = {
             str(td): str(u).rstrip("/")
@@ -130,7 +134,7 @@ class RevocationService:
         url = self._http.start()
         if self._federation_http is not None:
             self._federation_http.start()
-        if self.peer_revocation_urls:
+        if self.peer_revocation_urls or self.descriptor_store is not None:
             self.start_federation_sync()
         return url
 
@@ -144,13 +148,31 @@ class RevocationService:
         self,
         peer_url: Optional[str] = None,
         expected_domain: Optional[str] = None,
+        expected_spiffe_id: Optional[str] = None,
     ) -> Any:
         if self._mtls_bundle is not None:
             return self._mtls_bundle.verify_for_target(
                 target_url=peer_url,
                 expected_trust_domain=expected_domain,
+                expected_spiffe_id=expected_spiffe_id,
             )
         return self._client_ssl_context if self._client_ssl_context is not None else True
+
+    def _resolve_peer_revocation_targets(
+        self,
+    ) -> Dict[str, List[Tuple[str, Optional[str]]]]:
+        targets: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+        if self.descriptor_store is not None:
+            for peer_td, locs in self.descriptor_store.peer_locators(
+                "revocation_federation",
+                exclude_domain=self.service_identity.trust_domain,
+            ).items():
+                targets[peer_td] = [(loc.origin_url, loc.spiffe_id) for loc in locs]
+        for peer_td, peer_url in list(self.peer_revocation_urls.items()):
+            lst = targets.setdefault(peer_td, [])
+            if all(u != peer_url for u, _ in lst):
+                lst.append((peer_url, None))
+        return targets
 
     @property
     def federation_base_url(self) -> Optional[str]:
@@ -230,37 +252,56 @@ class RevocationService:
             for d in (strict_required_domains or ())
             if str(d).strip() and str(d).strip().lower() != self.service_identity.trust_domain
         }
+        target_map = self._resolve_peer_revocation_targets()
         if self.strict_domain_isolation:
             for req_td in sorted(strict_set):
-                if req_td not in self.peer_revocation_urls:
+                if req_td not in target_map or not target_map[req_td]:
                     raise RevocationError(
-                        f"Federated revocation peer for required trust_domain {req_td!r} is not configured"
+                        f"Federated revocation peer for required trust_domain {req_td!r} has no verified locator/URL"
                     )
 
         imported = 0
-        for peer_td, peer_url in list(self.peer_revocation_urls.items()):
+        for peer_td, candidates in target_map.items():
             is_strict = peer_td in strict_set
             with self._fed_lock:
                 since_v = self._peer_cursors.get(peer_td, 0)
                 known_peer_jkt = self._peer_instance_jkts.get(peer_td, "")
                 last_peer_ts = self._peer_last_timestamps.get(peer_td, 0.0)
-            try:
-                with httpx.Client(
-                    verify=self._http_verify_kwarg(peer_url=peer_url, expected_domain=peer_td),
-                    timeout=httpx.Timeout(connect=2.5, read=3.0, write=3.0, pool=3.0),
-                ) as client:
-                    resp = client.get(
-                        f"{peer_url}/v1/federation/events",
-                        params={"since_version": since_v},
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-            except Exception as exc:
+            data: Optional[Dict[str, Any]] = None
+            chosen_url = ""
+            chosen_spiffe: Optional[str] = None
+            last_conn_exc: Optional[Exception] = None
+            for cand_url, cand_spiffe in candidates:
+                try:
+                    with httpx.Client(
+                        verify=self._http_verify_kwarg(
+                            peer_url=cand_url,
+                            expected_domain=peer_td,
+                            expected_spiffe_id=cand_spiffe,
+                        ),
+                        timeout=httpx.Timeout(connect=2.5, read=3.0, write=3.0, pool=3.0),
+                        trust_env=False,
+                    ) as client:
+                        resp = client.get(
+                            f"{cand_url}/v1/federation/events",
+                            params={"since_version": since_v},
+                        )
+                        resp.raise_for_status()
+                        data = resp.json()
+                        chosen_url = cand_url
+                        chosen_spiffe = cand_spiffe
+                        break
+                except Exception as exc:
+                    last_conn_exc = exc
+                    continue
+
+            if data is None:
                 if is_strict:
                     raise RevocationError(
-                        f"Federated revocation peer {peer_td!r} ({peer_url}) unreachable during HIGH_RISK anchor: {exc}"
-                    ) from exc
+                        f"Federated revocation peer {peer_td!r} unreachable across {[u for u, _ in candidates]} during HIGH_RISK anchor: {last_conn_exc}"
+                    ) from last_conn_exc
                 continue
+            peer_url = chosen_url
 
             if not isinstance(data, Mapping) or data.get("trust_domain") != peer_td:
                 if is_strict:
@@ -305,8 +346,13 @@ class RevocationService:
                 # Peer revocation service genuinely restarted with a new RAM keypair: re-pull from v0!
                 try:
                     with httpx.Client(
-                        verify=self._http_verify_kwarg(peer_url=peer_url, expected_domain=peer_td),
+                        verify=self._http_verify_kwarg(
+                            peer_url=peer_url,
+                            expected_domain=peer_td,
+                            expected_spiffe_id=chosen_spiffe,
+                        ),
                         timeout=httpx.Timeout(connect=2.5, read=3.0, write=3.0, pool=3.0),
+                        trust_env=False,
                     ) as client:
                         resp0 = client.get(
                             f"{peer_url}/v1/federation/events",
@@ -394,17 +440,25 @@ class RevocationService:
 
     def _notify_federation_peers(self) -> None:
         """Zero-trust wakeup signal prompting peer domain revocation nodes to pull `/v1/federation/events`."""
-        if not self.peer_revocation_urls:
+        target_map = self._resolve_peer_revocation_targets()
+        if not target_map:
             return
-        for peer_td, peer_url in list(self.peer_revocation_urls.items()):
-            try:
-                with httpx.Client(
-                    verify=self._http_verify_kwarg(peer_url=peer_url, expected_domain=peer_td),
-                    timeout=0.6,
-                ) as client:
-                    client.post(f"{peer_url}/v1/federation/notify", json={})
-            except Exception:
-                pass
+        for peer_td, candidates in target_map.items():
+            for peer_url, cand_spiffe in candidates:
+                try:
+                    with httpx.Client(
+                        verify=self._http_verify_kwarg(
+                            peer_url=peer_url,
+                            expected_domain=peer_td,
+                            expected_spiffe_id=cand_spiffe,
+                        ),
+                        timeout=0.6,
+                        trust_env=False,
+                    ) as client:
+                        client.post(f"{peer_url}/v1/federation/notify", json={})
+                    break
+                except Exception:
+                    continue
 
     @property
     def base_url(self) -> str:
@@ -800,20 +854,35 @@ class RevocationService:
                     self.strict_domain_isolation
                     and resolved_td != self.service_identity.trust_domain
                 ):
-                    peer_url = self.peer_revocation_urls.get(resolved_td)
-                    if not peer_url:
+                    candidates = self._resolve_peer_revocation_targets().get(resolved_td, [])
+                    if not candidates:
                         raise RevocationError(
                             f"Local revocation service ({self.service_identity.trust_domain}) "
                             f"cannot sign revocations for foreign domain {resolved_td!r}"
                         )
                     # Route signed caller command to the authoritative home domain RevocationService
-                    with httpx.Client(
-                        verify=self._http_verify_kwarg(
-                            peer_url=peer_url, expected_domain=resolved_td
-                        ),
-                        timeout=3.0,
-                    ) as client:
-                        fwd_r = client.post(f"{peer_url}/v1/revoke/prefix", json=body)
+                    fwd_r: Optional[httpx.Response] = None
+                    last_fwd_exc: Optional[Exception] = None
+                    for peer_url, cand_spiffe in candidates:
+                        try:
+                            with httpx.Client(
+                                verify=self._http_verify_kwarg(
+                                    peer_url=peer_url,
+                                    expected_domain=resolved_td,
+                                    expected_spiffe_id=cand_spiffe,
+                                ),
+                                timeout=3.0,
+                                trust_env=False,
+                            ) as client:
+                                fwd_r = client.post(f"{peer_url}/v1/revoke/prefix", json=body)
+                            break
+                        except Exception as exc:
+                            last_fwd_exc = exc
+                            continue
+                    if fwd_r is None:
+                        raise RevocationError(
+                            f"Authoritative peer {resolved_td} unreachable for revocation forwarding: {last_fwd_exc}"
+                        ) from last_fwd_exc
                     if fwd_r.status_code != 200:
                         raise RevocationError(
                             f"Authoritative peer {resolved_td} rejected revocation: {fwd_r.text}"
@@ -1261,11 +1330,20 @@ class RevocationReplicaClient:
                 "command_jws": cmd_jws,
             }
 
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
-            resp = client.post(
-                f"{self.revocation_url}/v1/revoke/prefix",
-                json=req_body,
-            )
+        try:
+            with httpx.Client(
+                verify=self._verify_kwarg(),
+                timeout=max(self.timeout, 12.0),
+                trust_env=False,
+            ) as client:
+                resp = client.post(
+                    f"{self.revocation_url}/v1/revoke/prefix",
+                    json=req_body,
+                )
+        except Exception as exc:
+            raise RevocationError(
+                f"Prefix revocation transport failed against {self.revocation_url}: {exc}"
+            ) from exc
         if resp.status_code != 200:
             raise RevocationError(
                 f"Prefix revocation rejected ({resp.status_code}): {resp.text}"
@@ -1316,11 +1394,20 @@ class RevocationReplicaClient:
                 "command_jws": cmd_jws,
             }
 
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
-            resp = client.post(
-                f"{self.revocation_url}/v1/revoke/workload",
-                json=req_body,
-            )
+        try:
+            with httpx.Client(
+                verify=self._verify_kwarg(),
+                timeout=max(self.timeout, 12.0),
+                trust_env=False,
+            ) as client:
+                resp = client.post(
+                    f"{self.revocation_url}/v1/revoke/workload",
+                    json=req_body,
+                )
+        except Exception as exc:
+            raise RevocationError(
+                f"Workload quarantine transport failed against {self.revocation_url}: {exc}"
+            ) from exc
         if resp.status_code != 200:
             raise RevocationError(
                 f"Workload quarantine rejected ({resp.status_code}): {resp.text}"

@@ -1,0 +1,38 @@
+============================================================================
+ LCT Identity-Addressed Multi-Host Preflight Check
+============================================================================
+  Local Roles     : audit
+  Self-Locator IP : 10.29.77.23 (macos:en0, prio=10)
+  Local NodePorts : {"audit": {"audit_collector": 30851, "ca_federation": 30850}}
+  Bootstrap Seeds : 10.29.77.23:30100
+  LLM Endpoint    : http://host.docker.internal:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling    : docker, kind, kubectl present
+  [OK] Docker     : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Ports      : local NodePorts verified conflict-free on 0.0.0.0
+  [OK] Seed (http://10.29.77.23:30100): reachable, clock skew=-0.659s (<= 10s)
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): audit
+============================================================================
+[deploy] Building image 'lineage-lct:m7-r2' (BASE_IMAGE=ghcr.io/rossoctl/examples/weather_tool:pinned)...
+[deploy] Creating Kind cluster 'lctmh-audit' with local extraPortMappings ({"audit_collector": 30851, "ca_federation": 30850})...
+[deploy] Loading image 'lineage-lct:m7-r2' into 'lctmh-audit'...
+[deploy] Applying identity-addressed manifests for role 'audit' (ns=lineage-audit, svid_ttl=1800s)...
+[deploy] Host self-locator agent active: {"daemon_pid": 83139, "state_dir": "/var/folders/wt/1f_5dmrj15xf4hzwyc4f1g240000gn/T/lct-locator-agent"}
+[deploy] Waiting for audit-ca (kind-lctmh-audit) to become Ready...
+[deploy] Wrote local trust anchor line(s) to /Users/hulalala/Desktop/A/lineage/k8s/runs/20261124-131005-identity-addressing-rehearsal/anchors.txt
+
+============================================================================
+ LCT Identity-Addressed Deployment Summary (Roles: audit)
+============================================================================
+--- Cluster: lctmh-audit (namespace: lineage-audit) ---
+NAME                              READY   STATUS    RESTARTS   AGE   IP           NODE                        NOMINATED NODE   READINESS GATES
+audit-ca-96fb5ddd-t95tg           1/1     Running   0          9s    10.244.0.2   lctmh-audit-control-plane   <none>           <none>
+audit-collector-cc79685d4-hfd7x   0/1     Running   0          8s    10.244.0.3   lctmh-audit-control-plane   <none>           <none>
+
+============================================================================
+ Shareable Seed Endpoint(s) & Domain Trust Anchor(s) for Peer Machines:
+============================================================================
+  [seed:audit] --seed 10.29.77.23:30850
+  org-audit.io sha256:78424aee1b4522763a75925e9d03b2a9c13249f5c7efd9f6f11405f0a08bda8a:keyless
+    -> Peer pin command: bash lineage/scripts/multihost.sh trust add org-audit.io sha256:78424aee1b4522763a75925e9d03b2a9c13249f5c7efd9f6f11405f0a08bda8a:keyless
+============================================================================

@@ -1,0 +1,30 @@
+=== kind-lctmh-alpha ===
+NAME                                 READY   STATUS    RESTARTS   AGE   IP            NODE                        NOMINATED NODE   READINESS GATES
+alpha-ca-c54447f99-h28vf             1/1     Running   0          92m   10.241.0.6    lctmh-alpha-control-plane   <none>           <none>
+alpha-directory-55c9856c8c-pg446     1/1     Running   0          92m   10.241.0.8    lctmh-alpha-control-plane   <none>           <none>
+alpha-revocation-759bff67c4-d7wbd    1/1     Running   0          92m   10.241.0.7    lctmh-alpha-control-plane   <none>           <none>
+alpha-sts-5698775b74-vsf7g           1/1     Running   0          53m   10.241.0.17   lctmh-alpha-control-plane   <none>           <none>
+e2e-user-gateway-864bdbdffb-c29x4    1/1     Running   0          11m   10.241.0.22   lctmh-alpha-control-plane   <none>           <none>
+orchestrator-alpha-cfbfdf75b-xdljk   2/2     Running   0          24m   10.241.0.20   lctmh-alpha-control-plane   <none>           <none>
+=== kind-lctmh-beta ===
+NAME                                        READY   STATUS    RESTARTS   AGE   IP            NODE                       NOMINATED NODE   READINESS GATES
+beta-ca-6ddbc4d9b9-v8wbg                    1/1     Running   0          91m   10.242.0.4    lctmh-beta-control-plane   <none>           <none>
+beta-directory-7f48bf5655-2nhqv             1/1     Running   0          91m   10.242.0.6    lctmh-beta-control-plane   <none>           <none>
+beta-revocation-8cc77d8f4-ftrqz             1/1     Running   0          91m   10.242.0.7    lctmh-beta-control-plane   <none>           <none>
+beta-sts-85498bb855-w4kjz                   1/1     Running   0          91m   10.242.0.5    lctmh-beta-control-plane   <none>           <none>
+flight-specialist-78c7d5846f-v9br4          2/2     Running   0          74m   10.242.0.13   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-backup-6c75f667bd-gz2ss    2/2     Running   0          74m   10.242.0.15   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-primary-5c49fb9d6d-l4xn8   2/2     Running   0          74m   10.242.0.14   lctmh-beta-control-plane   <none>           <none>
+=== kind-lctmh-pay ===
+NAME                                   READY   STATUS    RESTARTS   AGE   IP            NODE                      NOMINATED NODE   READINESS GATES
+payment-ca-546f9f54d5-gdkfk            1/1     Running   0          91m   10.243.0.6    lctmh-pay-control-plane   <none>           <none>
+payment-directory-59c95b9449-wmfg9     1/1     Running   0          91m   10.243.0.4    lctmh-pay-control-plane   <none>           <none>
+payment-revocation-748cfdb9d4-mhprz    1/1     Running   0          91m   10.243.0.7    lctmh-pay-control-plane   <none>           <none>
+payment-sts-56b497894f-zqrmn           1/1     Running   0          91m   10.243.0.5    lctmh-pay-control-plane   <none>           <none>
+payment-vault-mcp-5b4bf58958-vftkb     2/2     Running   0          74m   10.243.0.14   lctmh-pay-control-plane   <none>           <none>
+settlement-converger-bdf757945-7d292   2/2     Running   0          74m   10.243.0.12   lctmh-pay-control-plane   <none>           <none>
+travel-ops-mcp-7948f789f4-w6gd2        2/2     Running   0          74m   10.243.0.13   lctmh-pay-control-plane   <none>           <none>
+=== kind-lctmh-audit ===
+NAME                               READY   STATUS    RESTARTS   AGE    IP           NODE                        NOMINATED NODE   READINESS GATES
+audit-ca-579b5bc5d-ft94r           1/1     Running   0          4m9s   10.244.0.5   lctmh-audit-control-plane   <none>           <none>
+audit-collector-57fd9f47fc-q5kkn   1/1     Running   0          4m9s   10.244.0.6   lctmh-audit-control-plane   <none>           <none>

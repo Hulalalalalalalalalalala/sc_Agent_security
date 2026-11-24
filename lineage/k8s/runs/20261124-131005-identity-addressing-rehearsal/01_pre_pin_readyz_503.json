@@ -1,0 +1,18 @@
+{
+  "status_code": 503,
+  "body": {
+    "status": "not_ready",
+    "service": "agent-directory",
+    "mode": "identity_descriptors",
+    "awaiting_peer_trust_pins": true,
+    "missing_domains": [],
+    "verified_domains": {},
+    "errors": {},
+    "rejected_bundle_counts": {},
+    "rejected_descriptor_counts": {},
+    "ignored_unpinned_domains": [
+      "org-audit.io"
+    ],
+    "trust_store_version": 1
+  }
+}

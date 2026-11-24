@@ -200,6 +200,7 @@ class TrustAnchorPinStore:
     def __init__(
         self,
         initial_pins: Optional[Mapping[str, str]] = None,
+        static_pins: Optional[Mapping[str, str]] = None,
         env_pins_spec: Optional[str] = None,
         pins_dir: Optional[str] = None,
         anchors_dir: Optional[str] = None,
@@ -217,8 +218,13 @@ class TrustAnchorPinStore:
         if eff_env:
             for td, anc in parse_env_trust_anchors(eff_env).items():
                 self._manual_pins[td] = anc
+        merged_initial: Dict[str, str] = {}
+        if static_pins:
+            merged_initial.update(static_pins)
         if initial_pins:
-            for td, raw_anc in initial_pins.items():
+            merged_initial.update(initial_pins)
+        if merged_initial:
+            for td, raw_anc in merged_initial.items():
                 norm_td = str(td).strip().lower()
                 SpiffeId.parse(f"spiffe://{norm_td}/authority/ca")
                 emb_td, anc = parse_trust_anchor_value(str(raw_anc))

@@ -22,7 +22,7 @@ import ssl
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -68,6 +68,9 @@ from lineage.revocation.service import RevocationReplicaClient
 from lineage.sidecar.context import (
     ActiveRequestStore,
     MultiParentConvergenceInbox,
+    OAuthActiveRequestStore,
+    OAuthConvergenceInbox,
+    OAuthRequestContext,
     lineage_context_scope,
 )
 from lineage.verifier.policy_verifier import (
@@ -85,6 +88,18 @@ def _extract_dpop_token(auth_header: Optional[str]) -> Optional[str]:
         return None
     scheme, token = parts[0], parts[1].strip()
     if scheme.upper() != "DPOP":
+        return None
+    return token if token else None
+
+
+def _extract_bearer_token(auth_header: Optional[str]) -> Optional[str]:
+    if not auth_header or not isinstance(auth_header, str):
+        return None
+    parts = auth_header.strip().split(None, 1)
+    if len(parts) != 2:
+        return None
+    scheme, token = parts[0], parts[1].strip()
+    if scheme.upper() != "BEARER":
         return None
     return token if token else None
 
@@ -238,7 +253,22 @@ class LineageSidecar:
         upstream_timeout: float = 90.0,
         mtls_bundle: Optional[WorkloadMTLSBundle] = None,
         readiness_check: Optional[Callable[[], Tuple[bool, Dict[str, Any]]]] = None,
+        delegation_mode: str = "lct",
+        oauth_central_verifier: Optional[Any] = None,
+        oauth_local_verifier: Optional[Any] = None,
+        oauth_exchange_client: Optional[Any] = None,
+        oauth_central_sts_origins_provider: Optional[Callable[[], Sequence[str]]] = None,
+        oauth_domain_sts_origins_provider: Optional[Callable[[str], Sequence[str]]] = None,
     ) -> None:
+        norm_dm = (delegation_mode or "lct").strip().lower()
+        if norm_dm not in ("lct", "dual", "oauth_centralized", "oauth_federated"):
+            raise ValueError(f"Unsupported delegation_mode {delegation_mode!r}")
+        self.delegation_mode = norm_dm
+        self.oauth_central_verifier = oauth_central_verifier
+        self.oauth_local_verifier = oauth_local_verifier
+        self.oauth_exchange_client = oauth_exchange_client
+        self._oauth_central_sts_origins_provider = oauth_central_sts_origins_provider
+        self._oauth_domain_sts_origins_provider = oauth_domain_sts_origins_provider
         self.identity = identity
         self.trust_resolver = trust_resolver
         self.app_upstream_url = app_upstream_url.rstrip("/")
@@ -278,6 +308,8 @@ class LineageSidecar:
         )
         self.active_requests = ActiveRequestStore()
         self.convergence_inbox = MultiParentConvergenceInbox()
+        self.oauth_active_requests = OAuthActiveRequestStore()
+        self.oauth_convergence_inbox = OAuthConvergenceInbox()
         self.detector = ThreeLayerFaultDetector()
         self._skip_receipt_replay_cache = JTIReplayCache(ttl_seconds=600.0)
         self._skip_level_results = _BoundedTaskListStore()
@@ -329,8 +361,32 @@ class LineageSidecar:
     def outbound_url(self) -> str:
         return self._outbound_http.base_url
 
+    def set_public_origins(
+        self,
+        primary_origin: Optional[str],
+        extra_origins: Iterable[str] = (),
+    ) -> None:
+        """Atomically update signed public origin(s) in RAM on live host IP change."""
+        clean_primary = (
+            validate_clean_endpoint_url(primary_origin, "public_origin")
+            if primary_origin is not None
+            else None
+        )
+        clean_extras = tuple(
+            validate_clean_endpoint_url(o, "extra_origin")
+            for o in extra_origins
+            if o
+        )
+        self.public_origin = clean_primary
+        self._inbound_http.set_public_origins(clean_primary, clean_extras)
+
     def set_agent_card(self, card: AgentCard) -> None:
         self.agent_card = card
+        if card.locators:
+            self.set_public_origins(
+                card.locators[0].origin_url,
+                [loc.origin_url for loc in card.locators[1:]],
+            )
 
     def on_identity_renewed(self) -> None:
         """Synchronize `LeafVerifier.self_jkt` and cached `SSLContext` refs after SVID renewal."""
@@ -560,6 +616,27 @@ class LineageSidecar:
 
         # Standard protected routes (/mcp, /a2a/task, /a2a/converge, /v1/task-result, etc.)
         compact_token = _extract_dpop_token(req.header("Authorization"))
+        if compact_token is None and self.delegation_mode in (
+            "dual",
+            "oauth_centralized",
+            "oauth_federated",
+        ):
+            bearer_jwt = _extract_bearer_token(req.header("Authorization"))
+            if bearer_jwt is not None:
+                return self._handle_inbound_oauth_request(
+                    req=req,
+                    norm_path=norm_path,
+                    bearer_jwt=bearer_jwt,
+                )
+        if self.delegation_mode in ("oauth_centralized", "oauth_federated"):
+            return (
+                401,
+                {
+                    "error": "missing_or_invalid_authorization_scheme",
+                    "detail": f"Sidecar configured strictly for {self.delegation_mode}; expected 'Authorization: Bearer <jwt>'",
+                },
+                {},
+            )
         dpop_proof = req.header("DPoP")
         if compact_token is None:
             return (
@@ -897,6 +974,477 @@ class LineageSidecar:
         finally:
             self.active_requests.release(req_ctx.request_id)
 
+    def _resolve_oauth_sts_origins(
+        self, delegation_mode: str, target_trust_domain: Optional[str] = None
+    ) -> List[str]:
+        if delegation_mode == "oauth_centralized":
+            if self._oauth_central_sts_origins_provider is not None:
+                return [str(x) for x in self._oauth_central_sts_origins_provider() if str(x).strip()]
+            return []
+        eff_td = (target_trust_domain or self.identity.trust_domain).strip().lower()
+        if self._oauth_domain_sts_origins_provider is not None:
+            return [str(x) for x in self._oauth_domain_sts_origins_provider(eff_td) if str(x).strip()]
+        if self._oauth_central_sts_origins_provider is not None and eff_td == "org-alpha.io":
+            return [str(x) for x in self._oauth_central_sts_origins_provider() if str(x).strip()]
+        return []
+
+    def _handle_inbound_oauth_request(
+        self,
+        *,
+        req: HTTPRequestContext,
+        norm_path: str,
+        bearer_jwt: str,
+    ) -> Tuple[int, Any, Dict[str, str]]:
+        """Inbound RFC 8693 OAuth 2.0 Bearer verification (flat scope + audience check)."""
+        from lineage.oauth_sts.keycloak_realm import spiffe_id_to_oauth_client_id
+
+        hdr_mode = (req.header("X-LCT-Delegation-Mode") or "").strip().lower()
+        if self.delegation_mode in ("oauth_centralized", "oauth_federated"):
+            eff_mode = self.delegation_mode
+        elif hdr_mode in ("oauth_centralized", "oauth_federated"):
+            eff_mode = hdr_mode
+        else:
+            eff_mode = "oauth_centralized"
+
+        verifier = (
+            self.oauth_central_verifier
+            if eff_mode == "oauth_centralized"
+            else (self.oauth_local_verifier or self.oauth_central_verifier)
+        )
+        if verifier is None:
+            return (
+                503,
+                {
+                    "error": "oauth_verifier_not_configured",
+                    "detail": f"No OIDC/OAuth JWKS verifier configured for mode {eff_mode!r}",
+                },
+                {},
+            )
+
+        if self._mtls_bundle is not None and not req.peer_spiffe_id:
+            return (
+                403,
+                {
+                    "error": "unauthenticated_mtls_peer",
+                    "detail": "Missing authenticated mTLS peer X.509-SVID certificate",
+                },
+                {},
+            )
+
+        body_json = req.json() if req.body else {}
+        is_mcp_route = self.is_tool_server or norm_path == "/mcp"
+        required_scopes: List[str] = []
+        if is_mcp_route:
+            params = body_json.get("params") or {}
+            tool_name = str(params.get("name") or "") if isinstance(params, Mapping) else ""
+            if tool_name == "execute_settlement":
+                required_scopes = ["travel:pay"]
+            elif tool_name in (
+                "search_flight",
+                "search_flights",
+                "book_flight",
+                "search_hotel",
+                "search_hotels",
+                "reserve_hotel",
+                "record_itinerary_audit",
+            ):
+                required_scopes = ["travel:book"]
+
+        own_cid = spiffe_id_to_oauth_client_id(self.identity.spiffe_id)
+        try:
+            verified_jwt = verifier.verify_jwt(
+                bearer_jwt,
+                expected_audience=(self.identity.spiffe_id, own_cid),
+                required_scopes=required_scopes,
+            )
+        except Exception as exc:
+            err_msg = str(exc)
+            st_err = 403 if "insufficient_oauth_scope" in err_msg else 401
+            return st_err, {"error": "oauth_verification_failed", "detail": err_msg}, {}
+
+        # Extract task_id from header or JSON-RPC message if present
+        task_id = (req.header("X-LCT-Task-Id") or "").strip()
+        if not task_id and isinstance(body_json, Mapping):
+            task_id = str(body_json.get("task_id") or "").strip()
+            if not task_id and isinstance(body_json.get("params"), Mapping):
+                p_msg = body_json["params"].get("message")
+                if isinstance(p_msg, Mapping):
+                    task_id = str(p_msg.get("taskId") or "").strip()
+        if not task_id:
+            task_id = f"task-oauth-{secrets.token_hex(5)}"
+
+        if req.method == "POST" and norm_path == "/a2a/converge":
+            branch_key = f"/oauth/{eff_mode}/{verified_jwt.azp or 'branch'}-{secrets.token_hex(2)}"
+            cnt = self.oauth_convergence_inbox.add_branch(
+                task_id=task_id,
+                sub=verified_jwt.canonical_lct_sub,
+                delegation_mode=eff_mode,
+                access_token=bearer_jwt,
+                branch_key=branch_key,
+                branch_payload=body_json.get("branch_data", body_json),
+            )
+            return (
+                200,
+                {
+                    "converged_branch_recorded": True,
+                    "delegation_mode": eff_mode,
+                    "task_id": task_id,
+                    "sub": verified_jwt.canonical_lct_sub,
+                    "total_branches_for_task": cnt,
+                },
+                {},
+            )
+
+        oauth_ctx = self.oauth_active_requests.register(
+            delegation_mode=eff_mode,
+            task_id=task_id,
+            sub=verified_jwt.canonical_lct_sub,
+            access_token=bearer_jwt,
+            issuer=verified_jwt.issuer,
+            scopes=verified_jwt.scopes,
+            azp=verified_jwt.azp,
+            act=verified_jwt.act,
+            jti=verified_jwt.jti,
+        )
+        fwd_path = "/mcp" if norm_path == "/mcp" else req.path
+        fwd_url = f"{self.app_upstream_url}{fwd_path}" + (
+            f"?{req.query_raw}" if req.query_raw else ""
+        )
+        up_headers: Dict[str, str] = {
+            "Content-Type": "application/json",
+            "X-LCT-Loopback-Auth": self.loopback_secret,
+            "X-LCT-Request-Id": oauth_ctx.request_id,
+            "X-LCT-Task-Id": oauth_ctx.task_id,
+            "X-LCT-Sub": oauth_ctx.sub,
+            "X-LCT-Lineage-Path": f"/{oauth_ctx.task_id}/oauth/{eff_mode}/{own_cid}",
+            "X-LCT-Decision": "ALLOW_OAUTH_FLAT_SCOPE",
+        }
+        a2a_ver = req.header("A2A-Version")
+        if a2a_ver:
+            up_headers["A2A-Version"] = a2a_ver
+        accept_hdr = req.header("Accept")
+        if accept_hdr:
+            up_headers["Accept"] = accept_hdr
+
+        wants_sse = (
+            not is_mcp_route
+            and (
+                (accept_hdr is not None and "text/event-stream" in accept_hdr.lower())
+                or body_json.get("method") in ("SendStreamingMessage", "message/stream")
+            )
+        )
+        if wants_sse:
+            stream_client = httpx.Client(timeout=self.upstream_timeout, follow_redirects=False)
+            try:
+                stream_ctx = stream_client.stream(
+                    method=req.method,
+                    url=fwd_url,
+                    content=req.body,
+                    headers=up_headers,
+                )
+                up_resp = stream_ctx.__enter__()
+                up_ct = up_resp.headers.get("content-type", "")
+                out_extra = {}
+                if up_resp.headers.get("a2a-version"):
+                    out_extra["A2A-Version"] = up_resp.headers["a2a-version"]
+                if "text/event-stream" not in up_ct.lower():
+                    raw_b = up_resp.read()
+                    st_code = up_resp.status_code
+                    stream_ctx.__exit__(None, None, None)
+                    stream_client.close()
+                    self.oauth_active_requests.release(oauth_ctx.request_id)
+                    return st_code, strict_json_loads(raw_b), out_extra
+
+                def _relay_oauth_sse() -> Iterator[str]:
+                    try:
+                        for line in up_resp.iter_lines():
+                            s = line.strip()
+                            if s.startswith("data:"):
+                                yield f"{s}\n\n"
+                    finally:
+                        try:
+                            stream_ctx.__exit__(None, None, None)
+                        finally:
+                            stream_client.close()
+                            self.oauth_active_requests.release(oauth_ctx.request_id)
+
+                return up_resp.status_code, SSEResponse(frames=_relay_oauth_sse()), out_extra
+            except Exception:
+                stream_client.close()
+                self.oauth_active_requests.release(oauth_ctx.request_id)
+                raise
+
+        try:
+            fwd_resp = httpx.request(
+                method=req.method,
+                url=fwd_url,
+                content=req.body,
+                headers=up_headers,
+                timeout=self.upstream_timeout,
+                follow_redirects=False,
+            )
+            out_hdrs: Dict[str, str] = {}
+            if fwd_resp.headers.get("a2a-version"):
+                out_hdrs["A2A-Version"] = fwd_resp.headers["a2a-version"]
+            return fwd_resp.status_code, fwd_resp.json(), out_hdrs
+        finally:
+            self.oauth_active_requests.release(oauth_ctx.request_id)
+
+    def _handle_outbound_oauth_proxy_call(
+        self,
+        *,
+        action: str,
+        body: Mapping[str, Any],
+        delegation_mode: str,
+        subject_token: str,
+        task_id: str,
+        converged_payloads: Dict[str, dict],
+    ) -> Tuple[int, Any, Dict[str, str]]:
+        """Execute outbound RFC 8693 Token Exchange (`oauth_centralized` or `oauth_federated`)."""
+        if self.oauth_exchange_client is None:
+            return 503, {"error": "oauth_exchange_client_not_configured"}, {}
+
+        if action == "call_tool":
+            raw_target_url = str(body.get("target_url") or "").strip()
+            req_skill = str(body.get("required_skill") or "").strip()
+            eff_spiffe_id: Optional[str] = (
+                str(body["target_spiffe_id"]).strip() if body.get("target_spiffe_id") else None
+            )
+            eff_trust_domain: Optional[str] = (
+                str(body["target_trust_domain"]).strip() if body.get("target_trust_domain") else None
+            )
+            candidate_urls: List[str] = []
+            if raw_target_url:
+                candidate_urls = [_validate_outbound_target_url(raw_target_url)]
+            elif self.directory_client is not None and (req_skill or eff_spiffe_id):
+                mcp_path = str(body.get("mcp_path") or "/mcp").strip() or "/mcp"
+                tool_card: Optional[AgentCard] = None
+                if eff_spiffe_id:
+                    tool_card = self.directory_client.get_agent(eff_spiffe_id)
+                if tool_card is None and req_skill:
+                    found_tools = self.directory_client.discover(
+                        skill=req_skill, trust_domain=eff_trust_domain, only_healthy=True
+                    )
+                    if found_tools:
+                        tool_card = found_tools[0]
+                if tool_card is None:
+                    return 404, {"error": "mcp_tool_server_not_found", "required_skill": req_skill}, {}
+                eff_spiffe_id = tool_card.spiffe_id
+                eff_trust_domain = tool_card.trust_domain
+                for orig in tool_card.candidate_origins():
+                    candidate_urls.append(
+                        _validate_outbound_target_url(f"{orig.rstrip('/')}{mcp_path}", expected_origin=orig)
+                    )
+            else:
+                return 400, {"error": "missing_target_url_or_skill"}, {}
+
+            sts_origins = self._resolve_oauth_sts_origins(delegation_mode, eff_trust_domain)
+            try:
+                ex_out = self.oauth_exchange_client.exchange_token(
+                    sts_origins=sts_origins,
+                    subject_token=subject_token,
+                    target_audience=eff_spiffe_id or req_skill or "mcp-tool",
+                    caller_spiffe_id=self.identity.spiffe_id,
+                    caller_workload_svid=self.identity.workload_svid,
+                )
+            except Exception as exc:
+                return 502, {"error": "oauth_sts_exchange_failed", "detail": str(exc)}, {}
+
+            timeout_val = _require_finite_timeout(body.get("timeout"), 60.0)
+            payload = body.get("payload") or {}
+            resp: Optional[httpx.Response] = None
+            last_exc: Optional[Exception] = None
+            for target_url in candidate_urls:
+                try:
+                    with httpx.Client(
+                        verify=self._outbound_verify_kwarg(
+                            target_url=target_url,
+                            expected_trust_domain=eff_trust_domain,
+                            expected_spiffe_id=eff_spiffe_id,
+                        ),
+                        timeout=timeout_val,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        resp = client.post(
+                            target_url,
+                            json=payload,
+                            headers={
+                                "Authorization": f"Bearer {ex_out.access_token}",
+                                "X-LCT-Delegation-Mode": delegation_mode,
+                                "X-LCT-Task-Id": task_id,
+                            },
+                        )
+                    break
+                except httpx.HTTPError as exc:
+                    last_exc = exc
+                    continue
+
+            if resp is None:
+                return 502, {"error": "upstream_transport_error", "detail": str(last_exc)}, {}
+            return (
+                resp.status_code,
+                {
+                    "upstream_status": resp.status_code,
+                    "upstream_body": resp.json(),
+                    "converged_branch_payloads": converged_payloads,
+                    "target_spiffe_id": eff_spiffe_id,
+                    "resolved_locator": str(resp.request.url),
+                    "oauth_telemetry": {
+                        "delegation_mode": delegation_mode,
+                        "sts_endpoint": ex_out.sts_endpoint,
+                        "sts_rtt_ms": ex_out.rtt_ms,
+                        "sts_exchanges": 1,
+                        "exchanged_scope": ex_out.scope,
+                    },
+                },
+                {},
+            )
+
+        if action == "delegate_agent":
+            payload = body.get("payload") or {}
+            raw_task_path = str(body.get("task_path", "/a2a/task"))
+            norm_tp_path, norm_tp_query = validate_origin_form_target(raw_task_path)
+            task_path = norm_tp_path + (f"?{norm_tp_query}" if norm_tp_query else "")
+            extra_del_headers: Dict[str, str] = {}
+            if norm_tp_path in ("/", "/a2a") or body.get("a2a_v1"):
+                extra_del_headers["A2A-Version"] = "1.0"
+
+            timeout_del = _require_finite_timeout(body.get("timeout"), 60.0)
+            del_candidate_urls: List[str] = []
+            delegate_spiffe_id: Optional[str] = None
+            delegate_td: Optional[str] = None
+            if "delegate_spiffe_id" in body and "target_url" in body:
+                delegate_spiffe_id = str(body["delegate_spiffe_id"])
+                delegate_td = SpiffeId.parse(delegate_spiffe_id).trust_domain
+                del_candidate_urls = [_validate_outbound_target_url(body["target_url"])]
+            elif "required_skill" in body and self.directory_client is not None:
+                cards = self.directory_client.discover(
+                    skill=str(body["required_skill"]),
+                    only_healthy=True,
+                )
+                if not cards:
+                    return 404, {"error": "no_candidate_for_skill"}, {}
+                chosen = cards[0]
+                delegate_spiffe_id = chosen.spiffe_id
+                delegate_td = chosen.trust_domain
+                for orig in chosen.candidate_origins():
+                    del_candidate_urls.append(
+                        _validate_outbound_target_url(f"{orig.rstrip('/')}{task_path}", expected_origin=orig)
+                    )
+            else:
+                return 400, {"error": "missing_delegate_target_or_skill"}, {}
+
+            # Note: In `oauth_federated`, if crossing domain boundary, we first ensure we hold a
+            # local domain token (if incoming token was from upstream), then exchange at `delegate_td`'s STS!
+            sts_origins = self._resolve_oauth_sts_origins(delegation_mode, delegate_td)
+            try:
+                ex_out = self.oauth_exchange_client.exchange_token(
+                    sts_origins=sts_origins,
+                    subject_token=subject_token,
+                    target_audience=delegate_spiffe_id or "agent",
+                    caller_spiffe_id=self.identity.spiffe_id,
+                    caller_workload_svid=self.identity.workload_svid,
+                )
+            except Exception as exc:
+                return 502, {"error": "oauth_sts_exchange_failed", "detail": str(exc)}, {}
+
+            resp_del: Optional[httpx.Response] = None
+            last_del_exc: Optional[Exception] = None
+            # Support failover to secondary card in OAuth mode (WITHOUT Prune-and-Graft revocation —
+            # empirically demonstrating why zombie T_1 remains valid in OAuth!)
+            all_cards = (
+                self.directory_client.discover(skill=str(body["required_skill"]), only_healthy=True)
+                if ("required_skill" in body and self.directory_client is not None and body.get("use_prune_and_graft"))
+                else []
+            )
+            attempt_targets: List[Tuple[str, Optional[str], str, float]] = [
+                (u, delegate_spiffe_id, ex_out.access_token, timeout_del) for u in del_candidate_urls
+            ]
+            total_sts_exchanges = 1
+            total_sts_rtt_ms = ex_out.rtt_ms
+
+            idx = 0
+            while idx < len(attempt_targets):
+                target_url, exp_spiffe, tok_to_send, req_to = attempt_targets[idx]
+                try:
+                    with httpx.Client(
+                        verify=self._outbound_verify_kwarg(
+                            target_url=target_url,
+                            expected_spiffe_id=exp_spiffe,
+                        ),
+                        timeout=req_to,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        resp_del = client.post(
+                            target_url,
+                            json=payload,
+                            headers={
+                                "Authorization": f"Bearer {tok_to_send}",
+                                "X-LCT-Delegation-Mode": delegation_mode,
+                                "X-LCT-Task-Id": task_id,
+                                **extra_del_headers,
+                            },
+                        )
+                    break
+                except httpx.HTTPError as exc:
+                    last_del_exc = exc
+                    if not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+                        while (
+                            idx + 1 < len(attempt_targets)
+                            and attempt_targets[idx + 1][1] == exp_spiffe
+                        ):
+                            idx += 1
+                    # If primary timed out and backup card exists, perform a second STS exchange to backup!
+                    if idx == len(attempt_targets) - 1 and len(all_cards) > 1:
+                        b_card = all_cards[1]
+                        if b_card.spiffe_id != delegate_spiffe_id:
+                            b_sts = self._resolve_oauth_sts_origins(delegation_mode, b_card.trust_domain)
+                            ex_b = self.oauth_exchange_client.exchange_token(
+                                sts_origins=b_sts,
+                                subject_token=subject_token,
+                                target_audience=b_card.spiffe_id,
+                                caller_spiffe_id=self.identity.spiffe_id,
+                                caller_workload_svid=self.identity.workload_svid,
+                            )
+                            total_sts_exchanges += 1
+                            total_sts_rtt_ms = round(total_sts_rtt_ms + ex_b.rtt_ms, 2)
+                            backup_to = max(timeout_del * 20.0, 35.0)
+                            for b_orig in b_card.candidate_origins():
+                                attempt_targets.append(
+                                    (
+                                        _validate_outbound_target_url(f"{b_orig.rstrip('/')}{task_path}", expected_origin=b_orig),
+                                        b_card.spiffe_id,
+                                        ex_b.access_token,
+                                        backup_to,
+                                    )
+                                )
+                            delegate_spiffe_id = b_card.spiffe_id
+                    idx += 1
+
+            if resp_del is None:
+                return 502, {"error": "upstream_transport_error", "detail": str(last_del_exc)}, {}
+            return (
+                resp_del.status_code,
+                {
+                    "upstream_status": resp_del.status_code,
+                    "upstream_body": resp_del.json(),
+                    "delegate_spiffe_id": delegate_spiffe_id,
+                    "resolved_locator": str(resp_del.request.url),
+                    "oauth_telemetry": {
+                        "delegation_mode": delegation_mode,
+                        "sts_endpoint": ex_out.sts_endpoint,
+                        "sts_rtt_ms": total_sts_rtt_ms,
+                        "sts_exchanges": total_sts_exchanges,
+                        "exchanged_scope": ex_out.scope,
+                    },
+                },
+                {},
+            )
+
+        return 400, {"error": f"unsupported_oauth_proxy_action:{action}"}, {}
+
     # -------------------------------------------------------------------------
     # Outbound Delegation & Tool Call Proxy Dispatcher (Localhost Only)
     # -------------------------------------------------------------------------
@@ -985,6 +1533,8 @@ class LineageSidecar:
                     {},
                 )
             conv_payloads = self.convergence_inbox.peek_branch_payloads(tid, sub_val)
+            if not conv_payloads:
+                conv_payloads = self.oauth_convergence_inbox.peek_branch_payloads(tid, sub_val)
             scrubbed_skip = [
                 redact_sensitive(r)
                 for r in self.get_skip_level_results(tid, expected_sub=sub_val)
@@ -1005,8 +1555,49 @@ class LineageSidecar:
                 {},
             )
 
+        if action == "resolve_card":
+            if self.directory_client is None:
+                return 500, {"error": "directory_client_not_configured"}, {}
+            sp_query = str(body.get("spiffe_id") or "").strip()
+            sk_query = str(body.get("required_skill") or "").strip()
+            td_query = str(body.get("trust_domain") or "").strip() or None
+            resolved_card: Optional[AgentCard] = None
+            if sp_query:
+                resolved_card = self.directory_client.get_agent(sp_query)
+            elif sk_query:
+                found = self.directory_client.discover(
+                    skill=sk_query, trust_domain=td_query, only_healthy=True
+                )
+                if found:
+                    resolved_card = found[0]
+            if resolved_card is None:
+                return 404, {"error": "card_not_found"}, {}
+            return (
+                200,
+                {
+                    "agent_card": resolved_card.to_dict(),
+                    "spiffe_id": resolved_card.spiffe_id,
+                    "candidate_origins": resolved_card.candidate_origins(),
+                },
+                {},
+            )
+
         request_id = body.get("request_id")
         use_converged = bool(body.get("use_converged_multiparent", False))
+
+        # Check OAuth 2.0 active request / converged inbox first when request_id is req-oauth-* or LCT inbox empty
+        if not use_converged and isinstance(request_id, str) and request_id.startswith("req-oauth-"):
+            oauth_ctx = self.oauth_active_requests.get(request_id)
+            if oauth_ctx is None:
+                return 404, {"error": "unknown_or_expired_request_id"}, {}
+            return self._handle_outbound_oauth_proxy_call(
+                action=action,
+                body=body,
+                delegation_mode=oauth_ctx.delegation_mode,
+                subject_token=oauth_ctx.access_token,
+                task_id=oauth_ctx.task_id,
+                converged_payloads={},
+            )
 
         active_tok: LineageToken | MultiParentToken
         converged_payloads: Dict[str, dict] = {}
@@ -1022,6 +1613,19 @@ class LineageSidecar:
                     )
                 )
             except (KeyError, TokenError) as exc:
+                oauth_conv = self.oauth_convergence_inbox.get_latest_token_and_payloads(
+                    task_id, sub
+                )
+                if oauth_conv is not None:
+                    o_mode, o_tok, o_payloads = oauth_conv
+                    return self._handle_outbound_oauth_proxy_call(
+                        action=action,
+                        body=body,
+                        delegation_mode=o_mode,
+                        subject_token=o_tok,
+                        task_id=task_id,
+                        converged_payloads=o_payloads,
+                    )
                 return (
                     400,
                     {"error": "convergence_assembly_failed", "detail": str(exc)},
@@ -1037,18 +1641,62 @@ class LineageSidecar:
 
         # Action 1: Direct Tool Invocation (or Converged MultiParent Tool Invocation)
         if action == "call_tool":
-            target_url = _validate_outbound_target_url(body.get("target_url"))
+            raw_target_url = str(body.get("target_url") or "").strip()
+            req_skill = str(body.get("required_skill") or "").strip()
+            eff_spiffe_id: Optional[str] = (
+                str(body["target_spiffe_id"]).strip()
+                if body.get("target_spiffe_id")
+                else None
+            )
+            eff_trust_domain: Optional[str] = (
+                str(body["target_trust_domain"]).strip()
+                if body.get("target_trust_domain")
+                else None
+            )
+            candidate_urls: List[str] = []
+            if raw_target_url:
+                candidate_urls = [_validate_outbound_target_url(raw_target_url)]
+            elif self.directory_client is not None and (req_skill or eff_spiffe_id):
+                mcp_path = str(body.get("mcp_path") or "/mcp").strip() or "/mcp"
+                tool_card: Optional[AgentCard] = None
+                if eff_spiffe_id:
+                    tool_card = self.directory_client.get_agent(eff_spiffe_id)
+                if tool_card is None and req_skill:
+                    found_tools = self.directory_client.discover(
+                        skill=req_skill,
+                        trust_domain=eff_trust_domain,
+                        only_healthy=True,
+                    )
+                    if found_tools:
+                        tool_card = found_tools[0]
+                if tool_card is None:
+                    return (
+                        404,
+                        {
+                            "error": "mcp_tool_server_not_found",
+                            "required_skill": req_skill,
+                            "target_spiffe_id": eff_spiffe_id,
+                        },
+                        {},
+                    )
+                eff_spiffe_id = tool_card.spiffe_id
+                eff_trust_domain = tool_card.trust_domain
+                for orig in tool_card.candidate_origins():
+                    candidate_urls.append(
+                        _validate_outbound_target_url(
+                            f"{orig.rstrip('/')}{mcp_path}",
+                            expected_origin=orig,
+                        )
+                    )
+            else:
+                return 400, {"error": "missing_target_url_or_skill"}, {}
+
             timeout_val = _require_finite_timeout(body.get("timeout"), 60.0)
             payload = body.get("payload") or {}
             compact_out = active_tok.encode_compact()
-            dpop = create_dpop_proof(
-                signer=self.identity,
-                htm="POST",
-                htu=target_url,
-                access_token=compact_out,
-            )
+            primary_tool_url = candidate_urls[0]
 
-            resolved_tool_ip = _resolve_target_peer_ip(target_url)
+            resolved_tool_ip = _resolve_target_peer_ip(primary_tool_url)
             if self.audit_emitter is not None:
                 if isinstance(active_tok, LineageToken):
                     self.audit_emitter.emit(
@@ -1064,7 +1712,8 @@ class LineageSidecar:
                         permissions_summary=active_tok.leaf_permissions.to_dict(),
                         action_detail={
                             "action": "call_tool",
-                            "target_url": target_url,
+                            "target_spiffe_id": eff_spiffe_id,
+                            "target_url": primary_tool_url,
                             "resolved_peer_ip": resolved_tool_ip,
                         },
                         decision="ALLOW",
@@ -1085,43 +1734,56 @@ class LineageSidecar:
                         ),
                         action_detail={
                             "action": "call_tool_multiparent",
-                            "target_url": target_url,
+                            "target_spiffe_id": eff_spiffe_id,
+                            "target_url": primary_tool_url,
                             "branch_count": len(active_tok.parent_chains),
                             "resolved_peer_ip": resolved_tool_ip,
                         },
                         decision="ALLOW",
                     )
 
-            try:
-                with httpx.Client(
-                    verify=self._outbound_verify_kwarg(
-                        target_url=target_url,
-                        expected_trust_domain=(
-                            str(body["target_trust_domain"])
-                            if body.get("target_trust_domain")
-                            else None
+            resp: Optional[httpx.Response] = None
+            last_tool_exc: Optional[Exception] = None
+            for idx, target_url in enumerate(candidate_urls):
+                dpop = create_dpop_proof(
+                    signer=self.identity,
+                    htm="POST",
+                    htu=target_url,
+                    access_token=compact_out,
+                )
+                eff_to = (
+                    httpx.Timeout(connect=2.5, read=timeout_val, write=10.0, pool=5.0)
+                    if idx + 1 < len(candidate_urls)
+                    else timeout_val
+                )
+                try:
+                    with httpx.Client(
+                        verify=self._outbound_verify_kwarg(
+                            target_url=target_url,
+                            expected_trust_domain=eff_trust_domain,
+                            expected_spiffe_id=eff_spiffe_id,
                         ),
-                        expected_spiffe_id=(
-                            str(body["target_spiffe_id"])
-                            if body.get("target_spiffe_id")
-                            else None
-                        ),
-                    ),
-                    timeout=timeout_val,
-                    follow_redirects=False,
-                ) as client:
-                    resp = client.post(
-                        target_url,
-                        json=payload,
-                        headers={
-                            "Authorization": f"DPoP {compact_out}",
-                            "DPoP": dpop,
-                        },
-                    )
-            except httpx.HTTPError as exc:
+                        timeout=eff_to,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        resp = client.post(
+                            target_url,
+                            json=payload,
+                            headers={
+                                "Authorization": f"DPoP {compact_out}",
+                                "DPoP": dpop,
+                            },
+                        )
+                    break
+                except httpx.HTTPError as exc:
+                    last_tool_exc = exc
+                    continue
+
+            if resp is None:
                 return (
                     502,
-                    {"error": "upstream_transport_error", "detail": str(exc)},
+                    {"error": "upstream_transport_error", "detail": str(last_tool_exc)},
                     {},
                 )
             return (
@@ -1130,6 +1792,8 @@ class LineageSidecar:
                     "upstream_status": resp.status_code,
                     "upstream_body": resp.json(),
                     "converged_branch_payloads": converged_payloads,
+                    "target_spiffe_id": eff_spiffe_id,
+                    "resolved_locator": str(resp.request.url),
                 },
                 {},
             )
@@ -1205,6 +1869,7 @@ class LineageSidecar:
                 )
 
             timeout_del = _require_finite_timeout(body.get("timeout"), 60.0)
+            del_candidate_urls: List[str] = []
             if (
                 "delegate_spiffe_id" in body
                 and "delegate_jkt" in body
@@ -1212,7 +1877,7 @@ class LineageSidecar:
             ):
                 delegate_spiffe_id = str(body["delegate_spiffe_id"])
                 delegate_jkt = str(body["delegate_jkt"])
-                target_url = _validate_outbound_target_url(body["target_url"])
+                del_candidate_urls = [_validate_outbound_target_url(body["target_url"])]
             elif "required_skill" in body and self.directory_client is not None:
                 excluded_visited: Set[str] = set()
                 if isinstance(active_tok, LineageToken):
@@ -1230,10 +1895,13 @@ class LineageSidecar:
                 chosen = cards[0]
                 delegate_spiffe_id = chosen.spiffe_id
                 delegate_jkt = chosen.jkt
-                target_url = _validate_outbound_target_url(
-                    f"{chosen.endpoint.rstrip('/')}{task_path}",
-                    expected_origin=chosen.endpoint,
-                )
+                for orig in chosen.candidate_origins():
+                    del_candidate_urls.append(
+                        _validate_outbound_target_url(
+                            f"{orig.rstrip('/')}{task_path}",
+                            expected_origin=orig,
+                        )
+                    )
             else:
                 return 400, {"error": "missing_delegate_target_or_skill"}, {}
 
@@ -1249,8 +1917,6 @@ class LineageSidecar:
                         issuer_return_endpoint=self.inbound_url,
                     )
                 else:
-                    # Pass `explicit_perms` (which may be `None`) so each DAG branch
-                    # preserves its own leaf_permissions without truncation!
                     out_tok = active_tok.attenuate_to_delegate(
                         issuer_identity=self.identity,
                         delegate_spiffe_id=delegate_spiffe_id,
@@ -1263,14 +1929,9 @@ class LineageSidecar:
                 return 403, {"error": "attenuation_rejected", "detail": str(exc)}, {}
 
             compact_out = out_tok.encode_compact()
-            dpop = create_dpop_proof(
-                signer=self.identity,
-                htm="POST",
-                htu=target_url,
-                access_token=compact_out,
-            )
+            primary_del_url = del_candidate_urls[0]
 
-            resolved_del_ip = _resolve_target_peer_ip(target_url)
+            resolved_del_ip = _resolve_target_peer_ip(primary_del_url)
             if self.audit_emitter is not None:
                 if isinstance(out_tok, LineageToken):
                     self.audit_emitter.emit(
@@ -1286,7 +1947,7 @@ class LineageSidecar:
                         permissions_summary=out_tok.leaf_permissions.to_dict(),
                         action_detail={
                             "delegate_spiffe_id": delegate_spiffe_id,
-                            "target_url": target_url,
+                            "target_url": primary_del_url,
                             "resolved_peer_ip": resolved_del_ip,
                         },
                         decision="ALLOW",
@@ -1306,42 +1967,64 @@ class LineageSidecar:
                             permissions_summary=ch.leaf_permissions.to_dict(),
                             action_detail={
                                 "delegate_spiffe_id": delegate_spiffe_id,
-                                "target_url": target_url,
+                                "target_url": primary_del_url,
                                 "resolved_peer_ip": resolved_del_ip,
                             },
                             decision="ALLOW",
                         )
 
-            del_headers = {
-                "Authorization": f"DPoP {compact_out}",
-                "DPoP": dpop,
-                **extra_del_headers,
-            }
-            try:
-                with httpx.Client(
-                    verify=self._outbound_verify_kwarg(
-                        target_url=target_url,
-                        expected_spiffe_id=delegate_spiffe_id,
-                    ),
-                    timeout=timeout_del,
-                    follow_redirects=False,
-                ) as client:
-                    resp = client.post(
-                        target_url,
-                        json=payload,
-                        headers=del_headers,
-                    )
-            except httpx.HTTPError as exc:
+            resp_del: Optional[httpx.Response] = None
+            last_del_exc: Optional[Exception] = None
+            for idx, target_url in enumerate(del_candidate_urls):
+                dpop = create_dpop_proof(
+                    signer=self.identity,
+                    htm="POST",
+                    htu=target_url,
+                    access_token=compact_out,
+                )
+                del_headers = {
+                    "Authorization": f"DPoP {compact_out}",
+                    "DPoP": dpop,
+                    **extra_del_headers,
+                }
+                eff_to = (
+                    httpx.Timeout(connect=2.5, read=timeout_del, write=10.0, pool=5.0)
+                    if idx + 1 < len(del_candidate_urls)
+                    else timeout_del
+                )
+                try:
+                    with httpx.Client(
+                        verify=self._outbound_verify_kwarg(
+                            target_url=target_url,
+                            expected_spiffe_id=delegate_spiffe_id,
+                        ),
+                        timeout=eff_to,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        resp_del = client.post(
+                            target_url,
+                            json=payload,
+                            headers=del_headers,
+                        )
+                    break
+                except httpx.HTTPError as exc:
+                    last_del_exc = exc
+                    continue
+
+            if resp_del is None:
                 return (
                     502,
-                    {"error": "upstream_transport_error", "detail": str(exc)},
+                    {"error": "upstream_transport_error", "detail": str(last_del_exc)},
                     {},
                 )
             return (
-                resp.status_code,
+                resp_del.status_code,
                 {
-                    "upstream_status": resp.status_code,
-                    "upstream_body": resp.json(),
+                    "upstream_status": resp_del.status_code,
+                    "upstream_body": resp_del.json(),
+                    "delegate_spiffe_id": delegate_spiffe_id,
+                    "resolved_locator": str(resp_del.request.url),
                 },
                 {},
             )
@@ -1449,6 +2132,9 @@ class MCPToolSidecarNode:
         audit_collector_url: Optional[str] = None,
         risk_classifier: Optional[RiskClassifier] = None,
         inbound_port: int = 0,
+        delegation_mode: str = "lct",
+        oauth_central_verifier: Optional[Any] = None,
+        oauth_local_verifier: Optional[Any] = None,
     ) -> None:
         self.identity = identity
         self.tools = dict(tools)
@@ -1485,6 +2171,9 @@ class MCPToolSidecarNode:
             risk_classifier=risk_classifier,
             is_tool_server=True,
             inbound_port=inbound_port,
+            delegation_mode=delegation_mode,
+            oauth_central_verifier=oauth_central_verifier,
+            oauth_local_verifier=oauth_local_verifier,
         )
 
     def start(self) -> str:
@@ -1604,6 +2293,12 @@ class AgentSidecarNode:
         mode: VerificationMode = VerificationMode.ADAPTIVE_RISK_ANCHORED,
         priority: int = 100,
         inbound_port: int = 0,
+        delegation_mode: str = "lct",
+        oauth_central_verifier: Optional[Any] = None,
+        oauth_local_verifier: Optional[Any] = None,
+        oauth_exchange_client: Optional[Any] = None,
+        oauth_central_sts_origins_provider: Optional[Callable[[], Sequence[str]]] = None,
+        oauth_domain_sts_origins_provider: Optional[Callable[[str], Sequence[str]]] = None,
     ) -> None:
         self.identity = identity
         self.name = name
@@ -1648,6 +2343,12 @@ class AgentSidecarNode:
             audit_emitter=self.audit_emitter,
             is_tool_server=False,
             inbound_port=inbound_port,
+            delegation_mode=delegation_mode,
+            oauth_central_verifier=oauth_central_verifier,
+            oauth_local_verifier=oauth_local_verifier,
+            oauth_exchange_client=oauth_exchange_client,
+            oauth_central_sts_origins_provider=oauth_central_sts_origins_provider,
+            oauth_domain_sts_origins_provider=oauth_domain_sts_origins_provider,
         )
 
     def start(self, register_in_directory: bool = True) -> AgentCard:
@@ -1680,22 +2381,29 @@ class AgentSidecarNode:
         tool_name: str,
         arguments: Mapping[str, Any],
         method: str = "tools/call",
+        target_spiffe_id: Optional[str] = None,
+        target_trust_domain: Optional[str] = None,
     ) -> Tuple[int, Dict[str, Any]]:
         """Invoke an MCP tool strictly through the local outbound `LineageSidecar`."""
+        call_json: Dict[str, Any] = {
+            "action": "call_tool",
+            "request_id": request_id,
+            "target_url": target_mcp_url,
+            "payload": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": {"name": tool_name, "arguments": dict(arguments)},
+            },
+        }
+        if target_spiffe_id:
+            call_json["target_spiffe_id"] = target_spiffe_id
+        if target_trust_domain:
+            call_json["target_trust_domain"] = target_trust_domain
         resp = httpx.post(
             f"{self.sidecar.outbound_url}/v1/proxy/call",
             headers={"X-LCT-Loopback-Auth": self._loopback_secret},
-            json={
-                "action": "call_tool",
-                "request_id": request_id,
-                "target_url": target_mcp_url,
-                "payload": {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": method,
-                    "params": {"name": tool_name, "arguments": dict(arguments)},
-                },
-            },
+            json=call_json,
             timeout=10.0,
         )
         return resp.status_code, resp.json()

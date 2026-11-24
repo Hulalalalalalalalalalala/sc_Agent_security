@@ -15,8 +15,9 @@ Eliminates shared multi-domain CA private keys:
 from __future__ import annotations
 
 import ssl
+import threading
 import time
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from lineage.audit import AuditCollectorClient, AuditEventType, AuditStreamEmitter
 from lineage.common.crypto import (
@@ -30,6 +31,12 @@ from lineage.common.crypto import (
 from lineage.common.http_utils import HTTPRequestContext, ManagedHTTPService
 from lineage.common.mtls import MTLSError, X509DomainAuthority
 from lineage.federation.anchors import compute_bundle_trust_anchor
+from lineage.federation.locators import (
+    DomainDescriptorStore,
+    ServiceLocator,
+    SignedDomainDescriptor,
+    ingest_descriptor_http_request,
+)
 from lineage.identity import IdentityError, TrustBundleResolver, TrustDomainCA
 from lineage.k8s.bootstrap_services import K8sServiceAccountVerifier, _extract_bearer
 from lineage.protocol import (
@@ -63,12 +70,26 @@ class AutonomousDomainCAService:
         x509_private_key_pem: Optional[str] = None,
         x509_root_cert_pem: Optional[str] = None,
         audit_ssl_context_provider: Optional[Callable[[], Optional[ssl.SSLContext]]] = None,
+        audit_locator_provider: Optional[Callable[[], Sequence[ServiceLocator]]] = None,
+        audit_ssl_for_locator: Optional[Callable[[ServiceLocator], Optional[ssl.SSLContext]]] = None,
         best_effort_audit: bool = False,
+        descriptor_store: Optional[DomainDescriptorStore] = None,
+        allowed_locator_cidrs: Optional[Iterable[str] | str] = None,
+        on_descriptor_learned: Optional[Callable[[SignedDomainDescriptor], None]] = None,
+        oidc_verifier: Optional[Any] = None,
+        require_oidc_user_token: bool = False,
     ) -> None:
         self.trust_domain = trust_domain
         self.allowed_k8s_namespace = allowed_k8s_namespace
         self.authorized_gateway_sa = authorized_gateway_sa
         self.sa_path_overrides: Dict[str, str] = dict(sa_path_overrides or {})
+        self.descriptor_store = descriptor_store
+        self.allowed_locator_cidrs = allowed_locator_cidrs
+        self.on_descriptor_learned = on_descriptor_learned
+        self.oidc_verifier = oidc_verifier
+        self.require_oidc_user_token = bool(require_oidc_user_token)
+        self._desc_lock = threading.Lock()
+        self._descriptor_version = int(time.time() * 1000)
 
         domain_short = trust_domain.strip().lower().removeprefix("org-").split(".", 1)[0]
         self.authorized_revocation_sas = frozenset(
@@ -121,13 +142,15 @@ class AutonomousDomainCAService:
             AuditStreamEmitter(
                 self.ca,
                 collector_client=AuditCollectorClient(
-                    audit_collector_url,
+                    audit_collector_url or "",
                     ssl_context_provider=audit_ssl_context_provider,
+                    locator_provider=audit_locator_provider,
+                    ssl_context_for_locator=audit_ssl_for_locator,
                 ),
                 stream_id=f"spiffe://{trust_domain}/authority/root",
                 best_effort_remote=best_effort_audit,
             )
-            if audit_collector_url
+            if (audit_collector_url or audit_locator_provider is not None)
             else None
         )
         self.http = ManagedHTTPService(
@@ -180,6 +203,29 @@ class AutonomousDomainCAService:
         bundle["x509_root_pem"] = self.x509_ca.export_root_pem()
         bundle["trust_anchor"] = compute_bundle_trust_anchor(bundle)
         return bundle
+
+    def publish_domain_locators(
+        self,
+        locators: Mapping[str, Iterable[ServiceLocator | Mapping[str, Any]]],
+        ttl_seconds: float = 3600.0,
+    ) -> SignedDomainDescriptor:
+        """Sign and publish an updated `SignedDomainDescriptor` with strictly monotonic `version`."""
+        with self._desc_lock:
+            self._descriptor_version = max(
+                self._descriptor_version + 1, int(time.time() * 1000)
+            )
+            ver = self._descriptor_version
+        desc = SignedDomainDescriptor.sign_with_domain_ca(
+            self.ca,
+            x509_root_pem=self.x509_ca.export_root_pem(),
+            locators=locators,
+            version=ver,
+            ttl_seconds=ttl_seconds,
+            allowed_cidrs=self.allowed_locator_cidrs,
+        )
+        if self.descriptor_store is not None:
+            self.descriptor_store.set_own_descriptor(desc)
+        return desc
 
     def _resolve_workload_path(self, k8s_ns: str, k8s_sa: str) -> str:
         if k8s_ns != self.allowed_k8s_namespace:
@@ -237,6 +283,16 @@ class AutonomousDomainCAService:
             "/v1/ca/bundles",
         ):
             return 200, self.export_federation_bundle(), {}
+        if req.method == "GET" and req.path == "/v1/federation/descriptors":
+            if self.descriptor_store is None:
+                return 200, {"trust_domain": self.trust_domain, "descriptors": []}, {}
+            return 200, self.descriptor_store.export_gossip_payload(), {}
+        if req.method == "POST" and req.path == "/v1/federation/descriptors":
+            return ingest_descriptor_http_request(
+                req,
+                self.descriptor_store,
+                on_descriptor_learned=self.on_descriptor_learned,
+            )
         return (
             403,
             {
@@ -264,6 +320,11 @@ class AutonomousDomainCAService:
             "/v1/ca/bundles",
         ):
             return 200, self.export_federation_bundle(), {}
+
+        if req.method == "GET" and req.path == "/v1/federation/descriptors":
+            if self.descriptor_store is None:
+                return 200, {"trust_domain": self.trust_domain, "descriptors": []}, {}
+            return 200, self.descriptor_store.export_gossip_payload(), {}
 
         # All mutating CA routes require a K8s SA JWT strictly in `self.allowed_k8s_namespace`!
         try:
@@ -329,20 +390,32 @@ class AutonomousDomainCAService:
             except (CryptoError, DPoPError, IdentityError, MTLSError, ValueError, TypeError) as exc:
                 return 400, {"error": "invalid_workload_csr", "detail": str(exc)}, {}
 
-            return (
-                200,
-                {
-                    "trust_domain": self.trust_domain,
-                    "spiffe_id": spiffe_id,
-                    "workload_svid": svid,
-                    "x509_leaf_pem": x509_leaf_pem,
-                    "x509_root_pem": self.x509_ca.export_root_pem(),
-                    "bundle": self.export_federation_bundle(),
-                    "issued_at": iat,
-                    "expires_at": exp,
-                },
-                {},
+            out_issue: Dict[str, Any] = {
+                "trust_domain": self.trust_domain,
+                "spiffe_id": spiffe_id,
+                "workload_svid": svid,
+                "x509_leaf_pem": x509_leaf_pem,
+                "x509_root_pem": self.x509_ca.export_root_pem(),
+                "bundle": self.export_federation_bundle(),
+                "issued_at": iat,
+                "expires_at": exp,
+            }
+            if self.descriptor_store is not None:
+                out_issue["descriptors"] = self.descriptor_store.export_gossip_payload()[
+                    "descriptors"
+                ]
+            return 200, out_issue, {}
+
+        if req.method == "POST" and req.path in (
+            "/v1/ca/learn-descriptors",
+            "/v1/federation/descriptors",
+        ):
+            status_code, out_body, hdrs = ingest_descriptor_http_request(
+                req,
+                self.descriptor_store,
+                on_descriptor_learned=self.on_descriptor_learned,
             )
+            return status_code, out_body, hdrs
 
         # Root user-token minting & domain-CA audit logging gated to authorized entry gateway SA
         if (
@@ -370,7 +443,60 @@ class AutonomousDomainCAService:
                     },
                     {},
                 )
+            raw_oidc_token = str(body.get("user_oidc_token") or "").strip()
+            hop0_oidc_detail: Optional[Dict[str, Any]] = None
+            resolved_sub = str(body.get("sub") or "").strip()
+
+            if raw_oidc_token or self.require_oidc_user_token:
+                if not raw_oidc_token:
+                    return (
+                        401,
+                        {
+                            "error": "missing_user_oidc_token",
+                            "detail": "Domain CA requires a cryptographic Hop-0 user_oidc_token",
+                        },
+                        {},
+                    )
+                if self.oidc_verifier is None:
+                    return (
+                        401,
+                        {
+                            "error": "oidc_verifier_not_configured",
+                            "detail": "user_oidc_token supplied, but OIDC JWKS verifier is not configured",
+                        },
+                        {},
+                    )
+                try:
+                    verified_oidc = self.oidc_verifier.verify_jwt(raw_oidc_token)
+                except Exception as exc:
+                    return (
+                        401,
+                        {
+                            "error": "invalid_user_oidc_token",
+                            "detail": str(exc),
+                        },
+                        {},
+                    )
+                if resolved_sub and resolved_sub != verified_oidc.canonical_lct_sub:
+                    return (
+                        403,
+                        {
+                            "error": "oidc_sub_mismatch",
+                            "detail": f"Requested sub {resolved_sub!r} != verified OIDC identity {verified_oidc.canonical_lct_sub!r}",
+                        },
+                        {},
+                    )
+                resolved_sub = verified_oidc.canonical_lct_sub
+                hop0_oidc_detail = {
+                    "hop0_oidc_bridged": True,
+                    "oidc_issuer": verified_oidc.issuer,
+                    "oidc_username": verified_oidc.username,
+                    "oidc_jti": verified_oidc.jti,
+                }
+
             try:
+                if not resolved_sub:
+                    raise ValueError("Missing sub (provide sub or user_oidc_token)")
                 mint_ttl = require_finite_timestamp(
                     body.get("ttl_seconds", 900.0), "ttl_seconds"
                 )
@@ -385,7 +511,7 @@ class AutonomousDomainCAService:
                 tok = mint_root_token(
                     self.ca,
                     task_id=str(body["task_id"]),
-                    sub=str(body["sub"]),
+                    sub=resolved_sub,
                     sender_jkt=str(body["sender_jkt"]),
                     first_hop_spiffe_id=str(body["first_hop_spiffe_id"]),
                     first_hop_jkt=str(body["first_hop_jkt"]),
@@ -419,17 +545,19 @@ class AutonomousDomainCAService:
                     current_block_hash=tok.leaf_block_hash,
                     decision="ALLOW",
                     permissions_summary=perms.to_dict(),
+                    action_detail=hop0_oidc_detail,
                 )
-            return (
-                200,
-                {
-                    "compact_token": tok.encode_compact(),
-                    "task_id": tok.task_id,
-                    "lineage_path": tok.lineage_path,
-                    "root_block_hash": tok.root_block_hash,
-                },
-                {},
-            )
+            out_mint: Dict[str, Any] = {
+                "compact_token": tok.encode_compact(),
+                "task_id": tok.task_id,
+                "sub": tok.sub,
+                "lineage_path": tok.lineage_path,
+                "root_block_hash": tok.root_block_hash,
+                "hop0_oidc_bridged": bool(hop0_oidc_detail),
+            }
+            if hop0_oidc_detail:
+                out_mint["oidc_bridge"] = hop0_oidc_detail
+            return 200, out_mint, {}
 
         if req.method == "POST" and req.path == "/v1/ca/emit-revocation-audit":
             body = req.json()

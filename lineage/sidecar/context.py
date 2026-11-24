@@ -19,7 +19,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from lineage.identity.spiffe import WorkloadIdentity
 from lineage.protocol.token import LineageToken, MultiParentToken, TokenError
@@ -235,5 +235,134 @@ class MultiParentConvergenceInbox:
         ts = time.time() if now is None else float(now)
         with self._lock:
             self._evict_expired_locked(ts)
+            entry = self._buckets.get((task_id, sub))
+            return dict(entry[1]) if entry is not None else {}
+
+
+@dataclass(frozen=True)
+class OAuthRequestContext:
+    """Active request context for an inbound RFC 8693 OAuth 2.0 Bearer JWT request."""
+
+    request_id: str
+    delegation_mode: str  # 'oauth_centralized' | 'oauth_federated'
+    task_id: str
+    sub: str
+    access_token: str
+    issuer: str
+    scopes: Tuple[str, ...]
+    azp: str
+    act: Optional[Dict[str, Any]]
+    jti: str
+
+
+class OAuthActiveRequestStore:
+    """Thread-safe active request registry for OAuth 2.0 delegation mode."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: Dict[str, OAuthRequestContext] = {}
+
+    def register(
+        self,
+        *,
+        delegation_mode: str,
+        task_id: str,
+        sub: str,
+        access_token: str,
+        issuer: str,
+        scopes: Tuple[str, ...],
+        azp: str,
+        act: Optional[Dict[str, Any]],
+        jti: str,
+    ) -> OAuthRequestContext:
+        req_id = f"req-oauth-{uuid.uuid4().hex}"
+        ctx = OAuthRequestContext(
+            request_id=req_id,
+            delegation_mode=delegation_mode,
+            task_id=task_id,
+            sub=sub,
+            access_token=access_token,
+            issuer=issuer,
+            scopes=scopes,
+            azp=azp,
+            act=act,
+            jti=jti,
+        )
+        with self._lock:
+            self._active[req_id] = ctx
+        return ctx
+
+    def get(self, request_id: str) -> Optional[OAuthRequestContext]:
+        with self._lock:
+            return self._active.get(request_id)
+
+    def release(self, request_id: str) -> None:
+        with self._lock:
+            self._active.pop(request_id, None)
+
+
+class OAuthConvergenceInbox:
+    """Bounded N-to-1 collector for linear RFC 8693 OAuth branches (no DAG meet/Fagin pruning)."""
+
+    def __init__(self, ttl_seconds: float = 1800.0, max_tasks: int = 2000) -> None:
+        self.ttl_seconds = float(ttl_seconds)
+        self.max_tasks = int(max_tasks)
+        self._lock = threading.Lock()
+        # (task_id, sub) -> (list of (mode, access_token, branch_key), payloads_dict, expires_at)
+        self._buckets: "OrderedDict[Tuple[str, str], Tuple[List[Tuple[str, str, str]], Dict[str, dict], float]]" = (
+            OrderedDict()
+        )
+
+    def _evict_locked(self, now_ts: float) -> None:
+        while self._buckets:
+            _, (_, _, exp_at) = next(iter(self._buckets.items()))
+            if exp_at <= now_ts:
+                self._buckets.popitem(last=False)
+            else:
+                break
+
+    def add_branch(
+        self,
+        *,
+        task_id: str,
+        sub: str,
+        delegation_mode: str,
+        access_token: str,
+        branch_key: str,
+        branch_payload: Optional[dict] = None,
+    ) -> int:
+        now_ts = time.time()
+        key = (task_id, sub)
+        with self._lock:
+            self._evict_locked(now_ts)
+            if key in self._buckets:
+                tokens, payloads, _ = self._buckets.pop(key)
+            else:
+                if len(self._buckets) >= self.max_tasks:
+                    self._buckets.popitem(last=False)
+                tokens = []
+                payloads = {}
+            tokens.append((delegation_mode, access_token, branch_key))
+            if branch_payload is not None:
+                payloads[branch_key] = dict(branch_payload)
+            self._buckets[key] = (tokens, payloads, now_ts + self.ttl_seconds)
+            return len(tokens)
+
+    def get_latest_token_and_payloads(
+        self, task_id: str, sub: str
+    ) -> Optional[Tuple[str, str, Dict[str, dict]]]:
+        now_ts = time.time()
+        with self._lock:
+            self._evict_locked(now_ts)
+            entry = self._buckets.get((task_id, sub))
+            if entry is None or not entry[0]:
+                return None
+            mode, latest_tok, _ = entry[0][-1]
+            return mode, latest_tok, dict(entry[1])
+
+    def peek_branch_payloads(self, task_id: str, sub: str) -> Dict[str, dict]:
+        now_ts = time.time()
+        with self._lock:
+            self._evict_locked(now_ts)
             entry = self._buckets.get((task_id, sub))
             return dict(entry[1]) if entry is not None else {}

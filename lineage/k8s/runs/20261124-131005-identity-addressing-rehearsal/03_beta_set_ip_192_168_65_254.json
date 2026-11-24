@@ -1,0 +1,24 @@
+{
+  "roles": {
+    "beta": {
+      "epoch": 6,
+      "updated_locator": true,
+      "locators": [
+        {
+          "host": "192.168.65.254",
+          "priority": 10,
+          "source": "operator-override"
+        }
+      ],
+      "ports": {
+        "ca_federation": 31100,
+        "directory_federation": 31101,
+        "flight-specialist": 31103,
+        "hotel-specialist-backup": 31105,
+        "hotel-specialist-primary": 31104,
+        "revocation_federation": 31102
+      },
+      "persisted_descriptors": 4
+    }
+  }
+}

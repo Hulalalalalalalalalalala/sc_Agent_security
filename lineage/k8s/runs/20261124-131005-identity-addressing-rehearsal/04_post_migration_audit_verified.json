@@ -1,0 +1,119 @@
+{
+  "task_id": "task-mh-b45f5477ac",
+  "stream_integrity_ok": false,
+  "reconstruction": {
+    "sub": "user:alice@org-alpha.io",
+    "reconstructed_complete": false,
+    "lineage_paths_observed": [
+      "/task-mh-b45f5477ac/OrchestratorAlpha",
+      "/task-mh-b45f5477ac/OrchestratorAlpha/FlightB1",
+      "/task-mh-b45f5477ac/OrchestratorAlpha/FlightB1/SettlementC",
+      "/task-mh-b45f5477ac/OrchestratorAlpha/SettleTrigger",
+      "/task-mh-b45f5477ac/OrchestratorAlpha/hotel-specialist-primary",
+      "/task-mh-b45f5477ac/OrchestratorAlpha/hotel-specialist-primary/SettlementC"
+    ],
+    "verified_hops": 12,
+    "tool_invocations_verified": 6,
+    "resilience_classifications": [],
+    "anomalies": [
+      {
+        "code": "STREAM_SEQ_GAP_OR_DUPLICATE",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-alpha.io/authority/root",
+        "stream_seq": 2,
+        "detail": "Expected stream_seq=0, got 2 (deleted or duplicated log entry)"
+      },
+      {
+        "code": "PREV_HASH_CHAIN_BROKEN",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-alpha.io/authority/root",
+        "stream_seq": 2,
+        "detail": "prev_entry_hash='EYg1vF1C1mbJDB6R2pUYuy0qVPKYSQwVqCK_zwKO5VI' != previous entry_hash='GENESIS'"
+      },
+      {
+        "code": "STREAM_SEQ_GAP_OR_DUPLICATE",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha#orchestrator-alpha-5fbb5c97bb-tw8b6",
+        "stream_seq": 8,
+        "detail": "Expected stream_seq=0, got 8 (deleted or duplicated log entry)"
+      },
+      {
+        "code": "PREV_HASH_CHAIN_BROKEN",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha#orchestrator-alpha-5fbb5c97bb-tw8b6",
+        "stream_seq": 8,
+        "detail": "prev_entry_hash='TWuYLhcLttwiqN6UOh0QXzzRuebL-rLj5UuXuZUuxvo' != previous entry_hash='GENESIS'"
+      },
+      {
+        "code": "STREAM_SEQ_GAP_OR_DUPLICATE",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist#flight-specialist-84b98676b4-cvhj4",
+        "stream_seq": 8,
+        "detail": "Expected stream_seq=0, got 8 (deleted or duplicated log entry)"
+      },
+      {
+        "code": "PREV_HASH_CHAIN_BROKEN",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist#flight-specialist-84b98676b4-cvhj4",
+        "stream_seq": 8,
+        "detail": "prev_entry_hash='oAibWs8n_12JB5CRGyorkPHHO0Na2Ro_8xl_7oC2koQ' != previous entry_hash='GENESIS'"
+      },
+      {
+        "code": "STREAM_SEQ_GAP_OR_DUPLICATE",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary#hotel-specialist-primary-7bd8f8947c-n77j4",
+        "stream_seq": 8,
+        "detail": "Expected stream_seq=0, got 8 (deleted or duplicated log entry)"
+      },
+      {
+        "code": "PREV_HASH_CHAIN_BROKEN",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary#hotel-specialist-primary-7bd8f8947c-n77j4",
+        "stream_seq": 8,
+        "detail": "prev_entry_hash='UTYKBVWjmoRAgaH7soP0ZbUWfj-EpZ1-cPLIK5kulb4' != previous entry_hash='GENESIS'"
+      },
+      {
+        "code": "STREAM_SEQ_GAP_OR_DUPLICATE",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp#payment-vault-mcp-c976544b5-m6jrh",
+        "stream_seq": 8,
+        "detail": "Expected stream_seq=0, got 8 (deleted or duplicated log entry)"
+      },
+      {
+        "code": "PREV_HASH_CHAIN_BROKEN",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp#payment-vault-mcp-c976544b5-m6jrh",
+        "stream_seq": 8,
+        "detail": "prev_entry_hash='3qW7HWMxpXsFYCHGujMG8jEuqKoeh7Q-NRX_HQsAWS8' != previous entry_hash='GENESIS'"
+      },
+      {
+        "code": "STREAM_SEQ_GAP_OR_DUPLICATE",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger#settlement-converger-766f855d5b-5vcxl",
+        "stream_seq": 10,
+        "detail": "Expected stream_seq=0, got 10 (deleted or duplicated log entry)"
+      },
+      {
+        "code": "PREV_HASH_CHAIN_BROKEN",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger#settlement-converger-766f855d5b-5vcxl",
+        "stream_seq": 10,
+        "detail": "prev_entry_hash='jASbAj3b-ZP6TjfpYz-Olx35gXGDSiPIKNCQXx_Ibt8' != previous entry_hash='GENESIS'"
+      },
+      {
+        "code": "STREAM_SEQ_GAP_OR_DUPLICATE",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp#travel-ops-mcp-b78cb59bc-bbktb",
+        "stream_seq": 16,
+        "detail": "Expected stream_seq=0, got 16 (deleted or duplicated log entry)"
+      },
+      {
+        "code": "PREV_HASH_CHAIN_BROKEN",
+        "task_id": "task-mh-b45f5477ac",
+        "stream_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp#travel-ops-mcp-b78cb59bc-bbktb",
+        "stream_seq": 16,
+        "detail": "prev_entry_hash='tST9d3DHjzCpVDe-QXKNozDodCoH-SBAtNOqlUA1nTg' != previous entry_hash='GENESIS'"
+      }
+    ]
+  }
+}

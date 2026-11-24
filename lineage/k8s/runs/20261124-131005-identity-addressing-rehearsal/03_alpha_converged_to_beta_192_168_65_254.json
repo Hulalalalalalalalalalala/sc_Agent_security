@@ -1,0 +1,8 @@
+{
+  "converged": true,
+  "convergence_latency_sec": 0.75,
+  "alpha_learned_beta_descriptor_version": 1795498090817,
+  "alpha_learned_beta_descriptor_host": "192.168.65.254",
+  "alpha_learned_flight_card_version": "1795498090876",
+  "alpha_learned_flight_card_endpoint": "https://192.168.65.254:31103"
+}

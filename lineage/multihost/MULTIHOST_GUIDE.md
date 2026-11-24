@@ -1,254 +1,237 @@
-# LCT 三机物理互联部署与运维指南（Multi-Host Federation）
+# LCT 四机物理互联部署与运维指南（Identity-Addressed Multi-Host Federation）
 
-本文档说明如何在 3 台独立物理主机（或同一主机的多角色演练环境）上部署、配置、验证与排障 **Lineage Capability Tree (LCT)** 跨组织联邦系统。各角色（`alpha`、`beta`、`pay`、`audit`）支持按主机任意组合（例如 `Machine 1: alpha,audit`、`Machine 2: beta`、`Machine 3: pay`，或单机 `all`）。
+本文档说明如何在 **4 台独立物理主机 `1:1` 架构**（或任意角色组合 / 单机多集群演练环境）上部署、配置、验证、迁移与排障 **Lineage Capability Tree (LCT)** 跨组织联邦系统。
+
+自 Milestone 7 起，系统全面采用**身份与位置密码学分离（Identifier / Locator Separation）**：
+- **身份（SPIFFE ID + 固定的域根公钥 SHA-256 锚点）** 是唯一寻址目标；
+- **`IP:port` 位置指示器（Locator）** 由每台机器上的宿主守护进程 `locator-agent.py` 自动侦测本机物理局域网网卡 IPv4（RFC1918），并由各域 CA 与工作负载实时自签名发布，通过不可信引导种子（`--seed`）与传递式 Gossip 自动收敛；
+- **零静态对端配置**：部署命令、容器环境变量、Kubernetes 清单与 CoreDNS 中均**不再填写任何对端机器 IP、固定全局端口表或跨集群 `hosts` 映射**。DHCP 地址变化与角色跨机迁移均零重启自动收敛。
 
 ---
 
-## 1. 物理拓扑、网络地址段与端口分配
+## 1. 四机 `1:1` 物理拓扑、子网隔离与按机动态端口分配
 
-每台物理机仅运行本机所承担角色对应的独立 Kind 集群（集群名前缀统一为 `lctmh-`），通过 Kind `extraPortMappings`（`listenAddress: 0.0.0.0`，`containerPort == hostPort == NodePort`）在宿主网卡暴露跨组织通信端口：
+每台物理机运行自身承担角色对应的独立 Kind 集群（集群名前缀统一为 `lctmh-`），通过 Kind `extraPortMappings`（`listenAddress: 0.0.0.0`，`containerPort == hostPort == NodePort`）暴露本机跨组织通信端口：
 
-| 物理节点 | 部署角色（Kind 集群） | 信任域 | Pod CIDR / Service CIDR | 宿主机暴露 TCP 端口 | 端口用途与传输层安全要求 |
+| 物理节点 | 部署角色（Kind 集群） | 自治信任域 | 集群内隔离 Pod / Service CIDR | 本机动态分配的服务槽位（Slots） | 传输层安全要求 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Machine 1** | `alpha` (`lctmh-alpha`)<br>`audit` (`lctmh-audit`) | `org-alpha.io`<br>`org-audit.io` | `10.241.0.0/16` / `10.97.0.0/16`<br>`10.244.0.0/16` / `10.100.0.0/16` | `30094`<br>`30491`, `30492`<br>`30441`<br>`30990`<br>`30893` | `alpha-ca` 只读公钥束（HTTP + SHA-256 信任锚校验）<br>`alpha-directory` / `alpha-revocation` 跨机联邦同步（双向 mTLS 1.3）<br>`orchestrator-alpha` A2A v1.0 入口（双向 mTLS 1.3 + DPoP + LCT）<br>`e2e-user-gateway` 场景 3B 临时同步钩子（平时无 Service/监听，仅在 `e2e` 场景 3B 期间临时创建 `NodePort` 并校验随机 `X-LCT-Sync-Token`，场景结束后自动删除）<br>`audit-collector` 无签名密钥审计收集器（TLS 1.3 服务端认证） |
-| **Machine 2** | `beta` (`lctmh-beta`) | `org-beta.io` | `10.242.0.0/16` / `10.98.0.0/16` | `31094`<br>`31491`, `31492`<br>`31441`, `31442`, `31443` | `beta-ca` 只读公钥束（HTTP + SHA-256 信任锚校验）<br>`beta-directory` / `beta-revocation` 跨机联邦同步（双向 mTLS 1.3）<br>`flight-specialist` / `hotel-specialist-primary` / `hotel-specialist-backup`（双向 mTLS 1.3） |
-| **Machine 3** | `pay` (`lctmh-pay`) | `org-payment.io` | `10.243.0.0/16` / `10.99.0.0/16` | `32094`<br>`32491`, `32492`<br>`32441`, `32442`, `32443` | `payment-ca` 只读公钥束（HTTP + SHA-256 信任锚校验）<br>`payment-directory` / `payment-revocation` 跨机联邦同步（双向 mTLS 1.3）<br>`settlement-converger` / `travel-ops-mcp` / `payment-vault-mcp`（双向 mTLS 1.3） |
+| **Machine 1** | `alpha` (`lctmh-alpha`) | `org-alpha.io` | `10.241.0.0/16` / `10.97.0.0/16` | `ca_federation`、`directory_federation`、`revocation_federation`、`orchestrator-alpha`、`e2e_sync_hook` | `ca_federation`：只读 HTTP 公钥束与签名描述符广播（客户端强制校验 SHA-256 信任锚与域根 JWS）<br>其余联邦与 A2A 入口：双向 mTLS 1.3 + `expected_spiffe_id` 精确钉扎<br>`e2e_sync_hook`：平时无 Service/监听，仅在 `e2e` 场景 3B 期间临时创建 `Service/e2e-user-gateway-sync` 并校验随机 `X-LCT-Sync-Token`，结束后立即删除 |
+| **Machine 2** | `beta` (`lctmh-beta`) | `org-beta.io` | `10.242.0.0/16` / `10.98.0.0/16` | `ca_federation`、`directory_federation`、`revocation_federation`、`flight-specialist`、`hotel-specialist-primary`、`hotel-specialist-backup` | `ca_federation` 只读 HTTP + 双向 mTLS 1.3 控制面与 A2A 业务端口 |
+| **Machine 3** | `pay` (`lctmh-pay`) | `org-payment.io` | `10.243.0.0/16` / `10.99.0.0/16` | `ca_federation`、`directory_federation`、`revocation_federation`、`settlement-converger`、`travel-ops-mcp`、`payment-vault-mcp` | `ca_federation` 只读 HTTP + 双向 mTLS 1.3 控制面、A2A 汇聚器与签名 MCP 工具服务（通过 `skill://mcp.travel-ops`、`skill://mcp.payment-vault` 按身份发现） |
+| **Machine 4** | `audit` (`lctmh-audit`) | `org-audit.io` | `10.244.0.0/16` / `10.100.0.0/16` | `ca_federation`、`audit_collector` | `ca_federation`：只读 HTTP 发布 `audit-ca` X.509 根签名描述符<br>`audit_collector`：无签名密钥（Keyless）TLS 1.3 服务端认证（固定 `spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector`） |
 
-边界隔离约束：
-1. 集群内部身份签发端口（`:8090`）、本地目录注册与隔离端口（`:8091`）、本地撤销写入端口（`:8092`）、Sidecar 本地回环代理端口（`127.0.0.1:8081`）以及业务容器回环端口（`127.0.0.1:9001`）始终保持 `ClusterIP` 或 Pod 本地回环，绝不通过 `extraPortMappings` 暴露至宿主机网卡。
-2. 所有 X.509 证书与 `AgentCard` 均绑定公共组织 FQDN（如 `https://flight-specialist.org-beta.io:31441`），由各集群 CoreDNS 将组织域名解析为对应物理机 IPv4 地址，客户端全程启用 `check_hostname=True` 与信任域 `NameConstraints` 校验。
+**端口与平台边界说明**：
+1. **无全局固定端口约定**：端口号完全是每台机器的本地部署决策（`preflight.sh` 与 `deploy-role.sh` 会自动检测本机已被占用的 TCP 端口并在 `30000–32767` 范围内选择空闲端口，也可通过 `--base-port <N>` 或 `--port-override <slot=port>` 显式指定），最终端口通过签名描述符与签名 `AgentCard` 动态通告给对端。
+2. **Kind `extraPortMappings` 平台约束**：Docker / Kind 容器的宿主机端口映射在 `kind create cluster` 创建集群容器时一次性固定；若后续希望更改某角色的宿主机端口号，需对该角色执行 `teardown` 后以新端口重新 `deploy`（对端将通过新签名位置指示器自动收敛）。
+3. **内部管理接口零暴露**：集群内部身份签发（`:8090`）、本地目录注册（`:8091`）、本地撤销写入（`:8092`）、Sidecar 回环代理（`127.0.0.1:8081`）与业务容器回环（`127.0.0.1:9001`）始终保持 `ClusterIP` 或 Pod 本地回环，绝不映射至宿主机网卡。
 
 ---
 
-## 2. 各操作系统前置环境准备
+## 2. 各操作系统前置准备与实战注意事项
 
 ### 2.1 通用软件依赖
-在每台参与部署的机器上克隆本仓库并执行依赖自举脚本：
+在每台参与部署的机器上克隆仓库并执行依赖初始化脚本：
 
 ```bash
 bash lineage/scripts/setup_deps.sh --lang python --install-k8s-tools
 ```
 
-硬件与运行时要求：
-- Docker 运行时正常启动，单机建议分配至少 `4 CPU`、`6 GB RAM`；
-- Python `>= 3.11`（含 `cryptography`、`httpx`、`PyYAML`）；
-- `kind`、`kubectl` 在 `PATH` 中可执行。
+运行时要求：Docker 正常启动（建议单角色至少 `4 CPU`、`6 GB RAM`）、Python `>= 3.11`（含 `cryptography`、`httpx`、`PyYAML`）、`kind` 与 `kubectl` 在 `PATH` 中可执行。运行 `alpha`、`beta`、`pay` 的机器需启动本地 `ollama serve` 并完成 `ollama pull qwen2.5:3b`（仅运行 `audit` 的 Machine 4 无需安装或启动 Ollama）。
 
-### 2.2 macOS（Docker Desktop）
-- 启动 Docker Desktop，确认 `docker info` 正常返回；
-- 获取当前活动网卡局域网 IPv4 地址（例如 Wi-Fi `en0`）：
+### 2.2 Windows 10 / 11（Docker Desktop + WSL2）实战要点
+1. **防火墙规则必须指定 `-Profile Any`**：
+   校园网或公共无线网在 Windows 中通常被归类为 **`Public`（公用网络）**，若仅放行 `Private,Domain` 会导致入站包被静默丢弃。请在**管理员权限 PowerShell** 中放行 LCT NodePort 范围（或 `preflight` 输出的具体端口）：
+   ```powershell
+   New-NetFirewallRule -DisplayName "LCT-Federation-NodePorts" `
+     -Direction Inbound -Action Allow -Protocol TCP `
+     -LocalPort 30000-32767 -Profile Any
+   ```
+2. **多网卡环境（VMware / Hyper-V / VPN 虚拟网卡）**：
+   `locator-agent.py` 在 WSL2 内会自动调用 Windows 宿主侧 `powershell.exe` / `ipconfig.exe` 提取物理无线/有线网卡的局域网 IPv4（自动过滤 WSL2 内部 `172.x` NAT 网卡及 `VMware Network Adapter VMnet1/VMnet8` `192.168.x.1` 虚拟网卡）。若宿主机同时连接了多个物理网段，可通过 `--advertise-ip <校园网/局域网IPv4>` 显式指定通告地址：
+   ```bash
+   # 部署前可随时预览本机自动识别出的局域网 IP：
+   bash lineage/scripts/multihost.sh locator-agent --detect-only
+   ```
+3. **部署前关闭临时测口监听进程**：
+   若此前使用 `nc -l`、`python -m http.server` 或 PowerShell 测试过端口连通性，务必在执行 `deploy` 前关闭该临时监听进程，避免占用目标端口。
+4. **关闭代理 / 游戏加速器软件（如 QuickQ、全局 TUN 代理）**：
+   系统代理或虚拟网卡加速器可能劫持局域网直连路由（如 `10.29.0.0/16`、`192.168.0.0/16`）。请退出此类加速器，或确认局域网子网走物理网卡直连路由。
+5. **WSL2 后台 `locator-agent` 生命周期维护**：
+   `deploy` 会自动在 WSL2 后台启动 `locator-agent.py` 守护进程（支持英文与简体中文 Windows `powershell.exe` UTF-8 / `ipconfig.exe /all` GBK 双编码自动解析）。实验期间请保持至少一个 WSL2 终端或 Docker Desktop WSL 集成处于活跃状态（避免 Windows 因空闲自动休眠关闭整个 WSL2 虚拟机）；若曾手动执行 `wsl --shutdown` 或重启了 WSL2，只需重新拉起守护进程即可恢复实时网卡监听：
+   ```bash
+   # 检查守护进程是否存活，或在 WSL2 重启后一键恢复：
+   pgrep -fl locator_agent || bash lineage/scripts/multihost.sh locator-agent --daemon
+   ```
+
+### 2.3 macOS 与 Linux
+- **macOS（Docker Desktop）**：确认系统设置「网络 -> 防火墙」未阻断 Docker 入站连接；`locator-agent.py` 自动从默认路由物理接口（如 `en0`）读取局域网 IPv4。
+- **Linux（Docker Engine）**：若启用 `ufw` 或 `firewalld`，放行来自实验局域网子网的 NodePort 范围：
   ```bash
-  ipconfig getifaddr en0
-  ```
-- 在 macOS 系统设置「网络 -> 防火墙」中，允许 Docker 入站连接（或关闭系统应用层阻断规则）。
-
-### 2.3 Linux（Docker Engine）
-- 确保当前用户在 `docker` 组中且 `systemctl is-active docker` 为 `active`；
-- 获取主网卡 IPv4 地址：
-  ```bash
-  ip -4 route get 1.1.1.1 | awk '{print $7; exit}'
-  ```
-- 若启用了 `ufw` 或 `firewalld`，按本机角色放行对应 TCP 端口：
-  ```bash
-  # 示例：Machine 2 (beta) 使用 ufw 放行来自局域网网段 192.168.1.0/24 的端口
-  sudo ufw allow from 192.168.1.0/24 to any port 31094,31491,31492,31441,31442,31443 proto tcp
+  sudo ufw allow from 10.29.0.0/16 to any port 30000:32767 proto tcp
   ```
 
-### 2.4 Windows 10 / 11（Docker Desktop + WSL2 后端）
-- 安装 Docker Desktop 并启用 **Use the WSL 2 based engine**，在 WSL2 Ubuntu 发行版终端内执行本仓库脚本；
-- 获取 Windows 宿主机局域网网卡 IPv4（在 PowerShell 中执行 `Get-NetIPAddress -AddressFamily IPv4` 查看物理无线/有线网卡地址，切勿使用 `172.x.x.x` WSL 内部虚拟网卡地址）；
-- 在管理员权限 PowerShell 中按机器角色放行 Windows Defender 防火墙入站 TCP 规则：
-  ```powershell
-  # Machine 1 (alpha,audit)
-  New-NetFirewallRule -DisplayName "LCT-Alpha-Audit" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 30094,30491,30492,30441,30990,30893 -Profile Private,Domain
-
-  # Machine 2 (beta)
-  New-NetFirewallRule -DisplayName "LCT-Beta" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 31094,31491,31492,31441-31443 -Profile Private,Domain
-
-  # Machine 3 (pay)
-  New-NetFirewallRule -DisplayName "LCT-Pay" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 32094,32491,32492,32441-32443 -Profile Private,Domain
-  ```
-- 说明：Docker Desktop 默认将 `0.0.0.0` 发布的容器端口绑定至 Windows 宿主网卡；若旧版 WSL2 未自动转发宿主机物理网卡流量，可在管理员 PowerShell 中对上述端口配置 `netsh interface portproxy add v4tov4` 指向 `127.0.0.1`（或启用 WSL2 `networkingMode=mirrored`）。
-
-### 2.5 本地与跨机共享 LLM（Ollama `qwen2.5:3b`）说明
-- **默认推荐模式（每机独立本地回环 Ollama）**：在运行 `alpha`、`beta`、`pay` 的机器上启动默认监听 `127.0.0.1:11434` 的 `ollama serve`，并执行 `ollama pull qwen2.5:3b`。容器内默认通过 `http://host.docker.internal:11434/v1` 访问本机 Ollama（Linux 下 Kind 节点同样自动注入网关映射；仅运行 `audit` 角色的机器无需启动 Ollama）。
-- **跨机共享 Ollama 模式（可选 `--llm-url`）**：若算力受限需多机共用一台主机（例如 `192.168.1.6`）上的 Ollama，可在部署时传入 `--llm-url http://192.168.1.6:11434/v1`。
-- **安全注意事项**：Ollama 原生 HTTP 接口不包含客户端身份认证。若在共享主机上设置 `OLLAMA_HOST=0.0.0.0:11434`，必须通过宿主机防火墙将 `11434/tcp` 的源地址严格限制为其余两台实验主机的单播 IP，严禁在公共或不可信网段无限制暴露 `0.0.0.0:11434`；推荐默认保持回环监听。
+### 2.4 局域网互通与 NTP 时钟同步要求
+1. **局域网二层/三层互通（校园网 AP 隔离处理）**：
+   4 台机器需处于可互相直连 TCP 端口的 RFC1918 私网（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`）。若校园无线网开启了无线客户端隔离（AP Isolation，表现为同网段主机互相无法建立 TCP 连接），请将 4 台机器接入**同一台未开启客户端隔离的路由器 / 有线交换机**，或连接**同一部手机共享热点**。
+   > 注：无线局域网首次跨机通信触发 ARP 解析时，偶发首包短暂返回 `No route to host` 或 `ConnectTimeout` 属正常二层现象，等待 1–2 秒重试即可，LCT 后台同步器亦会自动重试。
+2. **系统时钟同步门禁（`<= 25s`）**：
+   RFC 9449 DPoP 证明与 CA PoP 强制执行约 `30s` 新鲜度窗口。`preflight` 会通过种子节点的 HTTP `Date` 响应头检测时钟偏差（`> 10s` 告警，`> 25s` 阻断）：
+   - **macOS**：`sudo sntp -sS time.apple.com`
+   - **Linux**：`sudo chronyc makestep`
+   - **Windows（管理员 PowerShell）**：`Start-Service w32time; w32tm /resync /force`
 
 ---
 
-## 3. 网络互联要求与系统时钟同步（NTP）
-
-### 3.1 支持的网络环境
-1. **无客户端隔离的同一局域网（有线交换机或家用/实验路由器）**：确认路由器已关闭「AP 隔离 / 客户端隔离（Client Isolation）」，三台主机互相可连通对应角色 TCP 端口；
-2. **手机热点局域网**：三台主机连接同一手机热点（注意部分系统热点默认开启客户端隔离，部署前用 `preflight.sh` 验证端口连通性）；
-3. **Tailscale / WireGuard 组建的虚拟局域网**：校园网或企业 Wi-Fi 开启客户端隔离时，可在三台机器安装 Tailscale 登录同一账号，直接使用分配的 `100.x.y.z` IPv4 地址作为 `--alpha-ip`、`--beta-ip`、`--pay-ip` 参数。
-
-### 3.2 系统时钟同步门禁
-LCT 的 RFC 9449 DPoP 证明、CA Proof-of-Possession（PoP）与跨组织撤销指令均强制执行约 `30s` 的时间戳新鲜度窗口。`preflight.sh` 会自动读取对端节点 HTTP `Date` 响应头计算时钟偏差：
-- 偏差 `<= 10s`：正常通过（`OK`）；
-- `10s < 偏差 <= 25s`：输出告警（`WARN`），提示尽快校时；
-- `偏差 > 25s`：直接阻断退出（`FAIL`）。
-
-各系统校时命令：
-- **macOS**：`sudo sntp -sS time.apple.com`
-- **Linux**：`sudo chronyc makestep` 或 `sudo timedatectl set-ntp true`
-- **Windows（管理员 PowerShell）**：`Start-Service w32time; w32tm /resync /force`
-
----
-
-## 4. 密钥托管模型与跨机信任锚（Trust Anchor）安全机制
+## 3. 密钥托管边界与描述符信任链
 
 1. **部署期内持久化的单域根 CA 密钥**：
-   `deploy-role.sh` 在宿主机内存中为本机所属信任域生成独立的 ES256 JWK 根密钥与带 `NameConstraints` 的 X.509 v3 根证书，通过标准输入管道直接写入对应集群的 Kubernetes `Secret`（`<domain>-ca-keys`），宿主机文件系统与日志文件零私钥写入。该 `Secret` 仅以 `defaultMode: 0440` 配合 `fsGroup: 2000`（`readOnly: true`）挂载至本域唯一所属的 CA Pod，集群内配置零 RBAC `secrets` 读取权限，任何业务 Pod、目录服务、撤销服务或网关 Pod 均无权访问。CA Pod 重启后保持相同根公钥与信任锚，不会中断已建立的跨机联邦关系。
-2. **工作负载短期身份与 50% 生命周期自动续期**：
-   每个业务 Sidecar 与控制面工作负载仍在各自容器内存（RAM）中独立生成私钥，并通过 Kubernetes 投射 ServiceAccount 令牌与 PoP 向本域 CA 申请 `JWT-SVID` 与 `X.509-SVID`（默认有效期 `1800s`）。后台 `WorkloadIdentityRenewer` 在剩余有效期降至 `50%` 时自动重读 Kubelet 轮换后的投射令牌、完成重新签发、原子热替换客户端与服务端 TLS 1.3 `SSLContext`，并在到期前以单调递增版本号重新注册签名 `AgentCard`。
-3. **无签名密钥（Keyless）TLS 1.3 审计收集器**：
-   `lctmh-audit` 集群内的最小化 `audit-ca`（仅持有 `org-audit.io` X.509 根证书，不含任何 ES256 JWK 签名密钥）为 `audit-collector` 签发服务端 TLS 证书。`audit-collector` 自身容器内存生成 TLS 私钥，持有零域 CA 私钥且挂载零 Kubernetes ServiceAccount 令牌；所有 Sidecar 与域 CA 通过经信任锚校验的 TLS 1.3 连接推送逐条带 ES256 签名的审计记录。
-4. **SSH 风格信任锚固定与热加载**：
-   每台主机部署完成后输出单行信任锚：
-   `<trust_domain> sha256:<64位X509根SPKI哈希>:<64位JWKS公钥集哈希|keyless>`。
-   运维人员通过带外渠道（如即时通讯软件或终端核对）确认指纹一致后，执行 `trust add` 写入本机命名空间的 `ConfigMap` (`lct-trust-anchors`)。`FederationBundleSyncer` 在导入任何远端公钥前强制比对固定指纹；若未配置指纹或指纹不匹配则立即拒绝导入（Fail-Closed），更新 `ConfigMap` 后所有工作负载在无需重启容器的情况下自动完成客户端与服务端双向 TLS 信任库热加载。
+   `deploy` 在内存中生成本域 ES256 JWK 根密钥与带 `NameConstraints(critical=True)` 的 X.509 v3 根证书，通过标准输入流直接写入本集群 Kubernetes `Secret`（宿主机磁盘与日志零私钥落盘）。该 `Secret` 仅以 `defaultMode: 0440` 配合 `fsGroup: 2000`（`readOnly: true`）挂载至本域唯一所属的 CA Pod，命名空间内零 `secrets` 读取 RBAC。
+2. **SSH 风格信任锚校验 → 域根签名描述符 → SPIFFE 钉扎 TLS 1.3**：
+   种子地址 `--seed <ip:port>` 仅被视为**不可信传输提示**。节点从种子或对端拉取 `SignedDomainDescriptor` 后，必须先通过本地 `ConfigMap/lct-trust-anchors` 中固定的 `sha256:<x509-spki-hex>:<jwks-set-hex|keyless>` 常量时间比对，再用该已钉扎公钥束中的域根公钥验证描述符 JWS 签名与单调版本号，随后才接纳其中的动态 `ip:port` 位置；发起实际 TLS 1.3 连接时，全程强制校验证书链与精确 `expected_spiffe_id` URI SAN（绝不发送 IP 字面量 SNI）。
 
 ---
 
-## 5. 三机标准部署与交互操作流程
+## 4. 四机 `1:1` 标准部署与交互流程（零静态对端 IP）
 
-假设三台机器在局域网内的 IPv4 地址分别为：
-- Machine 1 (`alpha,audit`)：`192.168.1.11`
-- Machine 2 (`beta`)：`192.168.1.12`
-- Machine 3 (`pay`)：`192.168.1.13`
+4 台机器**无启动先后顺序限制**。以下以四机 `1:1` 角色布局为例（例如处于 `10.29.0.0/16` DHCP 校园网段）：
+- **Machine 1**：`alpha`（`org-alpha.io`）
+- **Machine 2**：`beta`（`org-beta.io`）
+- **Machine 3**：`pay`（`org-payment.io`）
+- **Machine 4**：`audit`（`org-audit.io`）
 
-三台机器**无启动先后顺序限制**（任意机器先启动时，工作负载保持存活 `Running` 且零重启，待对端上线并完成信任锚固定后自动转为 `Ready`）。
-
-### 步骤 1：在三台机器分别执行前置检查（Preflight）
+### 步骤 1：在四台机器分别执行前置检查（Preflight）
 
 ```bash
-# Machine 1
-bash lineage/scripts/multihost.sh preflight \
-  --roles alpha,audit \
-  --alpha-ip 192.168.1.11 --beta-ip 192.168.1.12 --pay-ip 192.168.1.13
+# Machine 1 (alpha)
+bash lineage/scripts/multihost.sh preflight --roles alpha
 
-# Machine 2
-bash lineage/scripts/multihost.sh preflight \
-  --roles beta \
-  --alpha-ip 192.168.1.11 --beta-ip 192.168.1.12 --pay-ip 192.168.1.13
+# Machine 2 (beta) — 多网卡 Windows 主机可加 --advertise-ip <本机局域网IP>
+bash lineage/scripts/multihost.sh preflight --roles beta
 
-# Machine 3
-bash lineage/scripts/multihost.sh preflight \
-  --roles pay \
-  --alpha-ip 192.168.1.11 --beta-ip 192.168.1.12 --pay-ip 192.168.1.13
+# Machine 3 (pay)
+bash lineage/scripts/multihost.sh preflight --roles pay
+
+# Machine 4 (audit) — 无需本地 Ollama
+bash lineage/scripts/multihost.sh preflight --roles audit
 ```
 
-### 步骤 2：在三台机器分别部署本机角色并记录输出的信任锚
+### 步骤 2：部署各机角色（仅需传入任意一个对端 `--seed`）
+
+先启动任意一台机器（例如 Machine 1），终端末尾会打印本机自动识别出的**可共享种子地址**（如 `--seed 10.29.77.23:30100`）以及本域**信任锚指纹行**。其余三台机器部署时仅需附带该 `--seed`（甚至链式指向任意已启动对端，Gossip 会自动传递全网描述符）：
 
 ```bash
-# Machine 1（输出 org-alpha.io 与 org-audit.io 两行信任锚）
-bash lineage/scripts/multihost.sh deploy \
-  --roles alpha,audit \
-  --alpha-ip 192.168.1.11 --beta-ip 192.168.1.12 --pay-ip 192.168.1.13
+# 1. Machine 1 (alpha)：首个节点无需 --seed（自动启动后台 locator-agent）
+bash lineage/scripts/multihost.sh deploy --roles alpha
 
-# Machine 2（输出 org-beta.io 信任锚）
-bash lineage/scripts/multihost.sh deploy \
-  --roles beta \
-  --alpha-ip 192.168.1.11 --beta-ip 192.168.1.12 --pay-ip 192.168.1.13
+# 假设 Machine 1 输出了种子：--seed 10.29.77.23:30100
+# 2. Machine 2 (beta)：仅需提供 1 个种子（多网卡机器可加 --advertise-ip 10.29.101.203）
+bash lineage/scripts/multihost.sh deploy --roles beta --seed 10.29.77.23:30100
 
-# Machine 3（输出 org-payment.io 信任锚）
-bash lineage/scripts/multihost.sh deploy \
-  --roles pay \
-  --alpha-ip 192.168.1.11 --beta-ip 192.168.1.12 --pay-ip 192.168.1.13
+# 3. Machine 3 (pay)：仅需提供 1 个种子（指向 Machine 1 或 Machine 2 均可）
+bash lineage/scripts/multihost.sh deploy --roles pay --seed 10.29.77.23:30100
+
+# 4. Machine 4 (audit)：仅需提供 1 个种子
+bash lineage/scripts/multihost.sh deploy --roles audit --seed 10.29.77.23:30100
 ```
 
-> 若所在网络访问 Docker Hub 受限，可在执行 `deploy` 前通过环境变量指定本地缓存或国内镜像源：
-> `KIND_NODE_IMAGE=docker.m.daocloud.io/kindest/node:v1.32.2 BASE_IMAGE=python:3.12-slim bash lineage/scripts/multihost.sh deploy ...`
+> - `beta`、`pay`、`audit` 在完成信任锚钉扎后，会自动通过有界 `POST /v1/federation/descriptors` 向 Machine 1 (`alpha`) 宣告自身签名描述符，并由 Machine 1 的 Gossip 视图自动向全网分发，因此 Machine 1 无需添加反向 `--seed` 即可完成四机全互通收敛。
+> - 若四台机器均以无种子方式独立启动，也可随时在任意节点执行 `bash lineage/scripts/multihost.sh seeds add <任一对端IP:ca_port>`；在未开启组播隔离的同一二层交换机局域网内，还可在 `deploy` 时附加可选参数 `--discover mdns`（启用 `_lct._tcp.local.` 自动发现不可信候选种子）。
 
-### 步骤 3：跨机交换并固定信任锚（Trust Pinning）
+### 步骤 3：汇总四行信任锚并通过 `trust import` 批量确认钉扎
 
-推荐方式 A（严格带外复制粘贴 `trust add`）：将各机器步骤 2 终端打印的 `sha256:...` 字符串在对端机器执行固定：
+将四台机器 `deploy` 输出的 4 行信任锚汇总保存为文本文件 `anchors.txt`（每行格式 `<domain> sha256:...`）：
 
-```bash
-# 在 Machine 1 上固定 Machine 2 与 Machine 3 的信任锚（本机 alpha 与 audit 已自动互信）
-bash lineage/scripts/multihost.sh trust add org-beta.io    sha256:<BETA_SPKI_HEX>:<BETA_JWKS_HEX>
-bash lineage/scripts/multihost.sh trust add org-payment.io sha256:<PAY_SPKI_HEX>:<PAY_JWKS_HEX>
-
-# 在 Machine 2 上固定 alpha、pay、audit 的信任锚
-bash lineage/scripts/multihost.sh trust add org-alpha.io   sha256:<ALPHA_SPKI_HEX>:<ALPHA_JWKS_HEX>
-bash lineage/scripts/multihost.sh trust add org-payment.io sha256:<PAY_SPKI_HEX>:<PAY_JWKS_HEX>
-bash lineage/scripts/multihost.sh trust add org-audit.io   sha256:<AUDIT_SPKI_HEX>:keyless
-
-# 在 Machine 3 上固定 alpha、beta、audit 的信任锚
-bash lineage/scripts/multihost.sh trust add org-alpha.io   sha256:<ALPHA_SPKI_HEX>:<ALPHA_JWKS_HEX>
-bash lineage/scripts/multihost.sh trust add org-beta.io    sha256:<BETA_SPKI_HEX>:<BETA_JWKS_HEX>
-bash lineage/scripts/multihost.sh trust add org-audit.io   sha256:<AUDIT_SPKI_HEX>:keyless
+```text
+org-alpha.io sha256:<ALPHA_SPKI_HEX>:<ALPHA_JWKS_HEX>
+org-beta.io sha256:<BETA_SPKI_HEX>:<BETA_JWKS_HEX>
+org-payment.io sha256:<PAY_SPKI_HEX>:<PAY_JWKS_HEX>
+org-audit.io sha256:<AUDIT_SPKI_HEX>:keyless
 ```
 
-可选方式 B（使用对端运维人员提供的预期摘要执行带校验拉取 `trust fetch --expect`）：
+在**全部 4 台机器**上执行同一条导入命令（CLI 会逐行展示全部指纹、自动核对本机所属域指纹一致性、并在交互确认后将其他 3 个域的锚点热写入本集群 `ConfigMap/lct-trust-anchors`）：
 
 ```bash
-bash lineage/scripts/multihost.sh trust fetch \
-  --domain org-beta.io \
-  --ip 192.168.1.12 \
-  --expect sha256:<BETA_SPKI_HEX>:<BETA_JWKS_HEX>
+bash lineage/scripts/multihost.sh trust import anchors.txt
 ```
 
-> 安全说明：`trust fetch --expect sha256:...` 会通过常量时间摘要比对（`hmac.compare_digest`）核验远端返回的候选公钥束，摘要不一致时立即非零退出且绝不写入 `ConfigMap`。请勿在不可信局域网中使用不带 `--expect` 的 `--yes`（会触发 `[SECURITY WARNING: UNVERIFIED TOFU]` 告警）。
+（也可使用单条命令逐个钉扎：`bash lineage/scripts/multihost.sh trust add <domain> sha256:...`。）
 
-固定完成后数秒内，三台机器上的全部 Deployment 自动热加载并通过就绪探针（`1/1` 或 `2/2 Running`）。可通过 `trust show` 查看当前已固定的锚点表。
+钉扎完成后约 2–5 秒内，4 台机器通过种子与 Gossip 自动验证全网描述符与签名 `AgentCard`（含 MCP 工具卡片），所有 Pod 自动变为 `Ready`（`1/1` 或 `2/2 Running`），并将已验证描述符持久化至 `ConfigMap/lct-learned-descriptors`（后续即使重启也无需再次输入种子）。
 
-### 步骤 4：在 Machine 1 上使用跨机交互 CLI 验证业务链路
+### 步骤 4：查看动态寻址状态并发起跨四机业务调用
 
 ```bash
-# 1. 查看全域健康状态、CoreDNS 解析出的物理机 IP 及已同步的跨机签名 AgentCard
+# 1. 在任意机器查看本机通告 IP/端口、已学习的签名域描述符版本/剩余 TTL 与工作负载卡片位置
+bash lineage/scripts/multihost.sh locator show
+
+# 2. 在 Machine 1 查看逐跳「SPIFFE 身份 -> 动态 IP:port」解析表与实时 TLS 1.3 握手遥测
 bash lineage/scripts/multihost.sh status
 
-# 2. 发起真实跨三机 A2A v1.0 流式调用（Alpha -> Beta -> Pay），打印逐跳 SPIFFE ID、证书签发域、解析 IP、TLS 1.3 密码套件与授权决策
+# 3. 发起跨机 A2A v1.0 实时 SSE 流式委托调用（Alpha -> Beta -> Pay -> Audit），输出逐跳身份->位置解析轨迹
 bash lineage/scripts/multihost.sh send \
   --text "Book business travel to Tokyo for Alice with flight budget up to 650 USD and hotel budget up to 420 USD." \
   --stream
 
-# 3. 验证 A2A v1.0 CancelTask 跨三机级联前缀撤销与对端同步状态
+# 4. 验证 A2A v1.0 CancelTask 跨机级联撤销同步
 bash lineage/scripts/multihost.sh cancel task-demo-cancel-01 --stage-first
 
-# 4. 从 TLS 1.3 审计中心拉取签名日志并执行 CausalChainAuditor 完整因果树重建
-bash lineage/scripts/multihost.sh audit <task_id>
+# 5. 从 Machine 4 (audit) 拉取签名审计链并执行 CausalChainAuditor 100% 因果树重建
+bash lineage/scripts/multihost.sh audit
 
-# 5. 运行全套跨机端到端验收套件（场景 1, 2A, 2B, 3A, 3B, 4, 5, 6）
-#    当 beta 位于远端 Machine 2 时，脚本会在场景 2B / 3B / 6 自动暂停并打印需在 Machine 2 执行的精确 fault 命令，检测到网络状态变化后自动继续
+# 6. 运行完整 8 场景跨机验收套件（1, 2A, 2B, 3A, 3B, 4, 5, 6）
 bash lineage/scripts/multihost.sh e2e
 ```
 
 ---
 
-## 6. 故障注入演示、DHCP IP 变更更新与安全清理
+## 5. DHCP 地址自动切换、角色在线迁移与安全清理
 
-### 6.1 跨机故障注入与恢复（在目标角色所在物理机执行）
+### 5.1 局域网 DHCP 地址变化（全自动、零人工干预、零 Pod 重启）
+当某台物理机（例如 Machine 2 `beta`）因 DHCP 租约更新变更了局域网 IP 时：
+1. 该机器后台运行的 `locator-agent.py` 在 2 秒内自动侦测到新物理网卡 IPv4 并更新 `ConfigMap/lct-node-locator`；
+2. 该集群内的 `beta-ca` 与全部 Sidecar 监听到文件更新后，在内存中以单调递增 `version + 1` 重新签发 `SignedDomainDescriptor` 与 `AgentCard`（**容器零重启**）；
+3. 其余三台机器通过后台联邦同步自动验证新版本签名并切换路由至新 `IP:port`，**对端机器无需执行任何命令**（旧版 `update-peer-ips` 已废弃）。
+4. 若在多网卡机器上使用了 `--advertise-ip` 手动覆盖地址，也可随时在线热切换：
+   ```bash
+   bash lineage/scripts/multihost.sh locator-agent --set-role-ip --role beta --advertise-ip <新局域网IPv4>
+   ```
 
-```bash
-# 在 Machine 2 (beta) 终止主酒店 Agent Pod（触发向下原子剪枝与替补重派 / 向上越级安全汇报）
-bash lineage/scripts/multihost fault --kill hotel-primary
+### 5.2 角色跨物理机在线迁移（Role Migration）
+若需将某个角色（例如将 `audit` 从旧主机迁移至一台全新的第 4 台主机，或迁移 `beta` 至新主机）：
+1. **在新主机部署该角色**：
+   ```bash
+   bash lineage/scripts/multihost.sh deploy --roles audit --seed <任一存活节点IP:ca_port>
+   ```
+   在新主机导入其余三个域的锚点（`bash lineage/scripts/multihost.sh trust import anchors.txt`）。
+2. **在其余存活主机更新该角色的信任锚（零 `seeds add` 自动收敛）**：
+   将新主机 `deploy` 打印的新 `org-audit.io sha256:...` 指纹在其余主机执行覆盖固定（或更新 `anchors.txt` 后重新执行 `trust import`）：
+   ```bash
+   bash lineage/scripts/multihost.sh trust add org-audit.io sha256:<NEW_AUDIT_SPKI_HEX>:keyless
+   ```
+   其余主机检测到信任锚更新后立即自动驱逐旧主机公钥；新主机通过其启动时的 `--seed` 主动宣告新签名描述符并通过 Gossip 传播至全网，所有存活节点无需手动修改种子即可自动收敛至新主机签发的位置指示器（零容器重启）。
+3. **下线旧主机上的该角色**：
+   ```bash
+   bash lineage/scripts/multihost.sh teardown --roles audit
+   ```
 
-# 在 Machine 2 (beta) 恢复主酒店 Agent Pod
-bash lineage/scripts/multihost fault --restore hotel-primary
+### 5.3 OAuth 2.0 Token Exchange（Keycloak 26.5.2）与 LCT 同机/跨机实证对比（`compare`）
+默认部署（`--sts-engine auto --delegation-mode dual`）会在 Machine 1 (`alpha`) 自动拉起真实 **`quay.io/keycloak/keycloak:26.5.2`** Pod（若低内存机器需跳过 JVM，可在 `deploy` 时传 `--sts-engine lightweight`），并在 `beta`、`pay` 启动轻量级联邦 RFC 8693 STS（自动通过 `SignedDomainDescriptor.locators["oauth_sts"]` 签名广播）：
 
-# 在 Machine 2 (beta) 阻断整机跨集群流量（演示场景 6 高风险操作 503 Fail-Closed 与其余主机自治存活）
-bash lineage/scripts/multihost fault --partition --role beta
+1. **四机独立物理部署时同步 `oauth_centralized` 客户端凭据（仅 `oauth_centralized` 需要；`oauth_federated` 与 `lct` 基于已固定 SPIFFE SVID 零密钥拷贝即可运行）**：
+   ```bash
+   # 在 Machine 1 (alpha) 导出 0600 凭据文件：
+   bash lineage/scripts/multihost.sh oauth export-creds --output oauth-creds.json
+   # 将 oauth-creds.json 传至 Machine 2 (beta) 与 Machine 3 (pay) 导入：
+   bash lineage/scripts/multihost.sh oauth import-creds oauth-creds.json
+   ```
+2. **在 Machine 1 一键执行六维实证对比（`oauth_centralized` vs. `oauth_federated` vs. `lct` + Hop-0 Keycloak 桥接）**：
+   ```bash
+   bash lineage/scripts/multihost.sh compare --output-dir ./compare-results
+   ```
+   命令会自动输出 Markdown 对比表与脱敏 JSON 指标文件（`m8_protocol_comparison.md` / `.json`）；若 `alpha` 部署在远端机器且无需在对比中途缩放 `alpha-sts` 副本数，可附加 `--skip-sts-partition`。
 
-# 在 Machine 2 (beta) 恢复跨集群网络通信
-bash lineage/scripts/multihost fault --heal --role beta
-```
-
-### 6.2 局域网 DHCP 地址变化后的免重装热更新（`update-peer-ips`）
-若某台机器因路由器租约刷新改变了局域网 IP（例如 Machine 2 变为 `192.168.1.88`），无需重建集群或重新签发证书，只需在每台机器上执行：
-
-```bash
-bash lineage/scripts/multihost.sh update-peer-ips \
-  --alpha-ip 192.168.1.11 --beta-ip 192.168.1.88 --pay-ip 192.168.1.13
-```
-
-该命令仅原地更新各集群 CoreDNS `hosts` 映射并滚动重启 CoreDNS，所有 LCT CA 与业务工作负载保持零重启继续运行。
-
-### 6.3 安全清理（`teardown.sh`）
-在每台参与实验的机器上执行以下命令，仅删除本机 `lctmh-*` 集群，不会触碰任何其他 Docker 容器或既有实验集群：
+### 5.4 安全清理（`teardown.sh`）
+在每台参与实验的机器上执行以下命令，仅删除本机 `lctmh-*` 集群并干净停止后台 `locator-agent.py` 守护进程，绝不触碰任何其他 Docker 容器或既有实验环境：
 
 ```bash
 bash lineage/scripts/multihost.sh teardown
@@ -256,12 +239,13 @@ bash lineage/scripts/multihost.sh teardown
 
 ---
 
-## 7. 常见故障排查对照表
+## 6. 常见故障排查对照表
 
 | 故障现象 | 根因定位方法 | 标准解决措施 |
 | :--- | :--- | :--- |
-| 对端端口连接超时（`ConnectTimeout` / `preflight` 提示对端不可达） | 在源机器执行 `nc -vz <对端IP> 31094`，同时在目标机器确认 `docker ps` 显示 `0.0.0.0:31094->31094/tcp` | 检查目标机器操作系统防火墙（Windows Defender `New-NetFirewallRule`、Linux `ufw`/`firewalld`、macOS 防火墙）是否放行对应角色 TCP 端口段 |
-| 同一 Wi-Fi 下宿主机之间 `ping` 与 TCP 端口全部超时，但各自本机 `curl` 正常 | 无线路由器或校园网/热点启用了 **AP 客户端隔离（Client Isolation）** | 关闭路由器「AP 隔离」选项，或在三台机器安装 Tailscale 改用 `100.x.y.z` 虚拟网段 IP 执行 `update-peer-ips` |
-| `preflight` 报错 `Clock skew EXCEEDS 25s` 或运行中报 `DPoP proof expired / stale_pop_jws` | 两台物理机系统 UTC 时钟偏差超过 `25s`–`30s` | 在偏差主机执行 NTP 强制同步（macOS: `sudo sntp -sS time.apple.com`；Linux: `sudo chronyc makestep`；Windows: `w32tm /resync /force`） |
-| Pod 保持 `Running` 但未进入 `Ready`（`0/1` 或 `1/2`），`/readyz` 返回 `503` 且含 `TRUST ANCHOR PIN MISMATCH` 或 `Missing required trust anchor` | 本机 `lct-trust-anchors` 未录入对端锚点，或远端集群曾使用 `--regenerate-ca` 重新生成了根密钥 | 带外核对远端 `deploy` 输出的真实指纹后，在本机重新执行 `bash lineage/scripts/multihost.sh trust add <domain> sha256:...`（约 2 秒内自动热加载恢复 `Ready`） |
-| `deploy` 阶段拉取 `kindest/node` 或 `python:3.12-slim` 超时 | 当前网络环境访问 Docker Hub / GHCR 受限 | 通过环境变量覆盖为可用镜像源或离线导入镜像：`KIND_NODE_IMAGE=<镜像源>/kindest/node:v1.32.2 BASE_IMAGE=<镜像源>/python:3.12-slim bash lineage/scripts/multihost.sh deploy ...` |
+| 对端种子端口连接超时（`ConnectTimeout`） | 在源机器执行 `nc -vz <对端IP> <对端ca_port>`，在目标机器执行 `bash lineage/scripts/multihost.sh locator show` 核对 `shareable_seed_endpoints` | 1. Windows 主机确认防火墙规则使用了 `-Profile Any`；<br>2. 关闭目标机加速软件/全局 TUN 代理（如 QuickQ）；<br>3. 若首次通信报 `No route to host`，等待 1–2 秒待 ARP 解析完成重试 |
+| 同一校园 Wi-Fi 下宿主机之间所有 TCP 端口均超时，但本机访问正常 | 校园无线网启用了 **AP 客户端隔离（Client Isolation）** | 将 4 台机器连接至**同一台未开启客户端隔离的路由器 / 有线交换机**，或连接**同一部手机共享热点** |
+| Windows 主机 `locator show` 显示通告了 `192.168.x.1`（VMware）而非校园网 `10.29.x.x` | 宿主机存在多张活动网卡且虚拟网卡排在了前面 | 执行 `bash lineage/scripts/multihost.sh locator-agent --set-role-ip --role <role> --advertise-ip <真实局域网IP>` 在线热修正（无需重建集群） |
+| `locator show` 中对端域缺失，或 Pod `/readyz` 返回 `503` | 尚未导入对端信任锚，或本机缺少至少一个可达的 `--seed` | 1. 执行 `bash lineage/scripts/multihost.sh trust show` 核对 `pinned_peer_anchors` 是否已包含其余 3 个域；<br>2. 执行 `bash lineage/scripts/multihost.sh seeds list`，若为空则执行 `seeds add <任一对端IP:ca_port>` |
+| `preflight` 报错 `Clock skew EXCEEDS 25s` 或运行期报 `DPoP proof expired` | 物理机之间系统 UTC 时钟偏差超过 `25s`–`30s` | 在偏差机器执行 NTP 同步（macOS: `sudo sntp -sS time.apple.com`；Linux: `sudo chronyc makestep`；Windows: `w32tm /resync /force`） |
+| 希望修改已创建 `lctmh-*` 集群的宿主机 `NodePort` 端口号 | Kind 容器的 `extraPortMappings` 在创建容器时静态绑定 | 对该角色执行 `teardown --roles <role>` 后使用 `--base-port` 或 `--port-override` 重新 `deploy`（对端将自动学习新端口） |

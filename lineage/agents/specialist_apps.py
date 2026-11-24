@@ -89,18 +89,17 @@ def _validate_sync_hook_url(raw_url: Any) -> str:
         or "@" in sp.netloc
         or sp.username is not None
         or sp.password is not None
-        or sp.port not in (19090, 30990)
+        or sp.port != 19090
         or sp.path != "/sync"
         or sp.query != ""
         or sp.fragment != ""
     ):
         raise ValueError(
-            "invalid_sync_hook_url: must match http://<gateway-host>:19090|30990/sync"
+            "invalid_sync_hook_url: must match http://<gateway-host>:19090/sync"
         )
     host_l = sp.hostname.lower()
     allowed_host = (
-        (host_l == "e2e-user-gateway.lineage-alpha.svc.cluster.local" and sp.port == 19090)
-        or (host_l == "e2e-user-gateway.org-alpha.io" and sp.port in (19090, 30990))
+        host_l == "e2e-user-gateway.lineage-alpha.svc.cluster.local" and sp.port == 19090
     )
     if not allowed_host and sp.port == 19090:
         try:
@@ -178,59 +177,85 @@ class SidecarLoopbackClient:
             json=payload,
             headers={"X-LCT-Loopback-Auth": self.loopback_secret},
             timeout=http_timeout or self.default_timeout,
+            trust_env=False,
         )
         return resp.status_code, resp.json()
+
+    def resolve_card(
+        self,
+        spiffe_id: Optional[str] = None,
+        required_skill: Optional[str] = None,
+        trust_domain: Optional[str] = None,
+    ) -> Tuple[int, Dict[str, Any]]:
+        body: Dict[str, Any] = {"action": "resolve_card"}
+        if spiffe_id:
+            body["spiffe_id"] = spiffe_id
+        if required_skill:
+            body["required_skill"] = required_skill
+        if trust_domain:
+            body["trust_domain"] = trust_domain
+        return self._post(body, http_timeout=10.0)
 
     def call_mcp_tool(
         self,
         request_id: str,
-        mcp_url: str,
+        mcp_url: Optional[str],
         tool_name: str,
         arguments: Mapping[str, Any],
         timeout: float = 15.0,
+        required_skill: Optional[str] = None,
     ) -> Tuple[int, Dict[str, Any]]:
-        return self._post(
-            {
-                "action": "call_tool",
-                "request_id": request_id,
-                "target_url": mcp_url,
-                "timeout": timeout,
-                "payload": {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": tool_name, "arguments": dict(arguments)},
-                },
+        req_body: Dict[str, Any] = {
+            "action": "call_tool",
+            "request_id": request_id,
+            "timeout": timeout,
+            "payload": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": dict(arguments)},
             },
-            http_timeout=timeout + 5.0,
-        )
+        }
+        clean_url = (mcp_url or "").strip()
+        if clean_url.startswith("skill://"):
+            req_body["required_skill"] = clean_url[len("skill://") :]
+        elif clean_url:
+            req_body["target_url"] = clean_url
+        elif required_skill:
+            req_body["required_skill"] = required_skill
+        return self._post(req_body, http_timeout=timeout + 5.0)
 
     def call_mcp_tool_converged(
         self,
         task_id: str,
         sub: str,
-        mcp_url: str,
+        mcp_url: Optional[str],
         tool_name: str,
         arguments: Mapping[str, Any],
         timeout: float = 15.0,
+        required_skill: Optional[str] = None,
     ) -> Tuple[int, Dict[str, Any]]:
-        return self._post(
-            {
-                "action": "call_tool",
-                "use_converged_multiparent": True,
-                "task_id": task_id,
-                "sub": sub,
-                "target_url": mcp_url,
-                "timeout": timeout,
-                "payload": {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": tool_name, "arguments": dict(arguments)},
-                },
+        req_body: Dict[str, Any] = {
+            "action": "call_tool",
+            "use_converged_multiparent": True,
+            "task_id": task_id,
+            "sub": sub,
+            "timeout": timeout,
+            "payload": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": dict(arguments)},
             },
-            http_timeout=timeout + 5.0,
-        )
+        }
+        clean_url = (mcp_url or "").strip()
+        if clean_url.startswith("skill://"):
+            req_body["required_skill"] = clean_url[len("skill://") :]
+        elif clean_url:
+            req_body["target_url"] = clean_url
+        elif required_skill:
+            req_body["required_skill"] = required_skill
+        return self._post(req_body, http_timeout=timeout + 5.0)
 
     def delegate_agent(
         self,
@@ -417,13 +442,13 @@ class FlightSpecialistApp:
         self,
         loopback_secret: str,
         sidecar_outbound_url: str,
-        travel_mcp_url: str,
+        travel_mcp_url: Optional[str] = None,
         ollama: Optional[OllamaClient] = None,
         port: int = 9001,
     ) -> None:
         self.loopback_secret = loopback_secret
         self.sidecar = SidecarLoopbackClient(sidecar_outbound_url, loopback_secret)
-        self.travel_mcp_url = travel_mcp_url
+        self.travel_mcp_url = (travel_mcp_url or "").strip() or "skill://mcp.travel-ops"
         self.ollama = ollama or OllamaClient()
         self.a2a_engine = A2AServerEngine(
             agent_name="flight-specialist",
@@ -451,6 +476,25 @@ class FlightSpecialistApp:
         emit_artifact: ArtifactCallback = None,
     ) -> Tuple[int, Dict[str, Any]]:
         city = canonicalize_city(body.get("city", "Tokyo"))
+        raw_ovr_amt = body.get("override_book_amount")
+        raw_ovr_city = body.get("override_book_city")
+        if raw_ovr_amt is not None or raw_ovr_city is not None:
+            if not _is_fault_injection_enabled():
+                return (
+                    403,
+                    {
+                        "error": "fault_injection_disabled",
+                        "detail": "Flight booking parameter overrides require LCT_ENABLE_FAULT_INJECTION=true",
+                    },
+                )
+        ovr_amt = (
+            _require_bounded_float(raw_ovr_amt, "override_book_amount", 0.01, 1_000_000.0)
+            if raw_ovr_amt is not None
+            else None
+        )
+        ovr_city = (
+            canonicalize_city(raw_ovr_city) if raw_ovr_city is not None else None
+        )
         try:
             _, args1, meta1 = self.ollama.chat_tool_call(
                 system_prompt="You are FlightSpecialist B1. Always invoke search_flight for the requested city.",
@@ -474,14 +518,16 @@ class FlightSpecialistApp:
                 ),
                 tools_schema=_BOOK_FLIGHT_TOOL_SCHEMA,
             )
+            eff_book_city = ovr_city if ovr_city is not None else flight_info["city"]
+            eff_book_amt = ovr_amt if ovr_amt is not None else float(flight_info["price_usd"])
             st_b, res_b = self.sidecar.call_mcp_tool(
                 req_id,
                 self.travel_mcp_url,
                 "book_flight",
                 {
-                    "city": flight_info["city"],
+                    "city": eff_book_city,
                     "flight_no": str(args2.get("flight_no") or flight_info["flight_no"]),
-                    "amount": float(flight_info["price_usd"]),
+                    "amount": eff_book_amt,
                 },
             )
             if st_b != 200:
@@ -497,11 +543,28 @@ class FlightSpecialistApp:
                     )
                 )
 
+            if body.get("skip_convergence"):
+                out_single: Dict[str, Any] = {
+                    "agent": "flight-specialist",
+                    "lineage_path": lineage_path,
+                    "flight_search": flight_info,
+                    "flight_booking": booked,
+                    "llm_traces": [meta1, meta2],
+                }
+                hop_tel_s = [
+                    r["oauth_telemetry"]
+                    for r in (res_s, res_b)
+                    if isinstance(r, Mapping) and "oauth_telemetry" in r
+                ]
+                if hop_tel_s:
+                    out_single["oauth_hop_telemetry"] = hop_tel_s
+                return 200, out_single
+
             converge_perms = PermissionLattice.create(
                 tools=["execute_settlement", "record_itinerary_audit"],
                 max_amount=float(booked["charged_usd"]),
                 allowed_targets=["airline-escrow", "audit-ledger"],
-                param_whitelist={"city": [flight_info["city"]]},
+                param_whitelist={"city": [eff_book_city]},
                 max_calls=2,
             )
             st_c, res_c = self.sidecar.delegate_agent(
@@ -515,17 +578,22 @@ class FlightSpecialistApp:
             if st_c != 200:
                 return st_c, {"error": "flight_convergence_failed", "detail": res_c}
 
-            return (
-                200,
-                {
-                    "agent": "flight-specialist",
-                    "lineage_path": lineage_path,
-                    "flight_search": flight_info,
-                    "flight_booking": booked,
-                    "convergence": res_c["upstream_body"],
-                    "llm_traces": [meta1, meta2],
-                },
-            )
+            out_flight: Dict[str, Any] = {
+                "agent": "flight-specialist",
+                "lineage_path": lineage_path,
+                "flight_search": flight_info,
+                "flight_booking": booked,
+                "convergence": res_c["upstream_body"],
+                "llm_traces": [meta1, meta2],
+            }
+            hop_tel_f = [
+                r["oauth_telemetry"]
+                for r in (res_s, res_b, res_c)
+                if isinstance(r, Mapping) and "oauth_telemetry" in r
+            ]
+            if hop_tel_f:
+                out_flight["oauth_hop_telemetry"] = hop_tel_f
+            return 200, out_flight
         except OllamaError as exc:
             return 502, {"error": "ollama_inference_error", "detail": str(exc)}
 
@@ -620,14 +688,14 @@ class HotelSpecialistApp:
         self,
         loopback_secret: str,
         sidecar_outbound_url: str,
-        travel_mcp_url: str,
+        travel_mcp_url: Optional[str] = None,
         instance_label: Optional[str] = None,
         ollama: Optional[OllamaClient] = None,
         port: int = 9001,
     ) -> None:
         self.loopback_secret = loopback_secret
         self.sidecar = SidecarLoopbackClient(sidecar_outbound_url, loopback_secret)
-        self.travel_mcp_url = travel_mcp_url
+        self.travel_mcp_url = (travel_mcp_url or "").strip() or "skill://mcp.travel-ops"
         self.instance_label = instance_label or os.environ.get("SPECIALIST_INSTANCE", "primary")
         self.ollama = ollama or OllamaClient()
         self._lock = threading.Lock()
@@ -832,18 +900,23 @@ class HotelSpecialistApp:
             if st_c != 200:
                 return st_c, {"error": "hotel_convergence_failed", "detail": res_c}
 
-            return (
-                200,
-                {
-                    "agent": f"hotel-specialist-{self.instance_label}",
-                    "instance_label": self.instance_label,
-                    "lineage_path": lineage_path,
-                    "hotel_search": hotel_info,
-                    "hotel_reservation": reserved,
-                    "convergence": res_c["upstream_body"],
-                    "llm_traces": [meta1, meta2],
-                },
-            )
+            out_hotel: Dict[str, Any] = {
+                "agent": f"hotel-specialist-{self.instance_label}",
+                "instance_label": self.instance_label,
+                "lineage_path": lineage_path,
+                "hotel_search": hotel_info,
+                "hotel_reservation": reserved,
+                "convergence": res_c["upstream_body"],
+                "llm_traces": [meta1, meta2],
+            }
+            hop_tel_h = [
+                r["oauth_telemetry"]
+                for r in (res_s, res_r, res_c)
+                if isinstance(r, Mapping) and "oauth_telemetry" in r
+            ]
+            if hop_tel_h:
+                out_hotel["oauth_hop_telemetry"] = hop_tel_h
+            return 200, out_hotel
         except OllamaError as exc:
             return 502, {"error": "ollama_inference_error", "detail": str(exc)}
 
@@ -913,13 +986,13 @@ class SettlementConvergerApp:
         self,
         loopback_secret: str,
         sidecar_outbound_url: str,
-        payment_mcp_url: str,
+        payment_mcp_url: Optional[str] = None,
         ollama: Optional[OllamaClient] = None,
         port: int = 9001,
     ) -> None:
         self.loopback_secret = loopback_secret
         self.sidecar = SidecarLoopbackClient(sidecar_outbound_url, loopback_secret)
-        self.payment_mcp_url = payment_mcp_url
+        self.payment_mcp_url = (payment_mcp_url or "").strip() or "skill://mcp.payment-vault"
         self.ollama = ollama or OllamaClient()
         self.a2a_engine = A2AServerEngine(
             agent_name="settlement-converger",
@@ -969,7 +1042,8 @@ class SettlementConvergerApp:
         if op == "leaf_audit_and_upward_return":
             sim_unreach = bool(body.get("simulate_direct_parent_unreachable", False))
             raw_hook_url = body.get("sync_hook_url")
-            if sim_unreach or raw_hook_url:
+            raw_hook_spiffe = str(body.get("sync_hook_spiffe_id") or "").strip()
+            if sim_unreach or raw_hook_url or raw_hook_spiffe:
                 if not _is_fault_injection_enabled():
                     return (
                         403,
@@ -978,6 +1052,13 @@ class SettlementConvergerApp:
                             "detail": "Upward fault simulation hooks require LCT_ENABLE_FAULT_INJECTION=true",
                         },
                     )
+            if (
+                raw_hook_spiffe
+                and raw_hook_spiffe != "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway"
+            ):
+                raise ValueError(
+                    f"invalid_sync_hook_spiffe_id: {raw_hook_spiffe!r} is not an authorized E2E sync gateway"
+                )
             clean_hook_url = (
                 _validate_sync_hook_url(raw_hook_url) if raw_hook_url else None
             )
@@ -1009,19 +1090,36 @@ class SettlementConvergerApp:
                 return st_m, {"error": "audit_tool_denied", "detail": res_m}
             audit_data = res_m["upstream_body"]["result"]["data"]
 
+            hook_targets: List[str] = []
+            if raw_hook_spiffe:
+                deadline_rc = time.time() + 6.0
+                while time.time() < deadline_rc:
+                    st_rc, rc_out = self.sidecar.resolve_card(spiffe_id=raw_hook_spiffe)
+                    if st_rc == 200 and (rc_out.get("candidate_origins") or []):
+                        for orig in rc_out.get("candidate_origins") or []:
+                            hook_targets.append(f"{str(orig).rstrip('/')}/sync")
+                        break
+                    time.sleep(0.3)
             if clean_hook_url:
+                hook_targets.append(clean_hook_url)
+
+            if hook_targets:
                 hook_tok = str(body.get("sync_hook_token") or "")
                 hook_hdrs = {"X-LCT-Sync-Token": hook_tok} if hook_tok else {}
-                try:
-                    httpx.post(
-                        clean_hook_url,
-                        json={"task_id": task_id, "ready": True},
-                        headers=hook_hdrs,
-                        timeout=20.0,
-                        follow_redirects=False,
-                    )
-                except Exception:
-                    pass
+                for h_url in hook_targets:
+                    try:
+                        r_hk = httpx.post(
+                            h_url,
+                            json={"task_id": task_id, "ready": True},
+                            headers=hook_hdrs,
+                            timeout=20.0,
+                            follow_redirects=False,
+                            trust_env=False,
+                        )
+                        if r_hk.status_code == 200:
+                            break
+                    except Exception:
+                        continue
 
             st_ret, out_ret = self.sidecar.return_result(
                 request_id=req_id,
@@ -1128,10 +1226,13 @@ class SettlementConvergerApp:
                     "city": city,
                 },
             )
-            settlement_outcomes[target] = {
+            outcome_entry: Dict[str, Any] = {
                 "http_status": st_pay,
                 "response": res_pay.get("upstream_body", res_pay),
             }
+            if isinstance(res_pay, Mapping) and "oauth_telemetry" in res_pay:
+                outcome_entry["oauth_telemetry"] = res_pay["oauth_telemetry"]
+            settlement_outcomes[target] = outcome_entry
 
         succeeded_settlements = {
             k: v["response"]["result"]["data"]
@@ -1356,7 +1457,8 @@ class OrchestratorAlphaApp:
         if op == "delegate_upward_return_chain":
             sim_unreach = bool(body.get("simulate_direct_parent_unreachable", False))
             raw_hook_url = body.get("sync_hook_url")
-            if sim_unreach or raw_hook_url:
+            raw_hook_spiffe = str(body.get("sync_hook_spiffe_id") or "").strip()
+            if sim_unreach or raw_hook_url or raw_hook_spiffe:
                 if not _is_fault_injection_enabled():
                     return (
                         403,
@@ -1365,6 +1467,13 @@ class OrchestratorAlphaApp:
                             "detail": "Upward fault simulation hooks require LCT_ENABLE_FAULT_INJECTION=true",
                         },
                     )
+            if (
+                raw_hook_spiffe
+                and raw_hook_spiffe != "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway"
+            ):
+                raise ValueError(
+                    f"invalid_sync_hook_spiffe_id: {raw_hook_spiffe!r} is not an authorized E2E sync gateway"
+                )
             clean_hook_url = (
                 _validate_sync_hook_url(raw_hook_url) if raw_hook_url else None
             )
@@ -1394,6 +1503,7 @@ class OrchestratorAlphaApp:
                     "op": "leaf_audit_and_upward_return",
                     "city": city,
                     "sync_hook_url": clean_hook_url,
+                    "sync_hook_spiffe_id": raw_hook_spiffe,
                     "sync_hook_token": str(body.get("sync_hook_token") or ""),
                     "simulate_direct_parent_unreachable": sim_unreach,
                     "return_timeout_sec": ret_timeout,
@@ -1421,6 +1531,47 @@ class OrchestratorAlphaApp:
                     timeout=chain_timeout,
                 )
             return 200, {"downstream_http": st_d, "downstream": out_d}
+
+        if op == "probe_flight_overprivilege":
+            if not _is_fault_injection_enabled():
+                return (
+                    403,
+                    {
+                        "error": "fault_injection_disabled",
+                        "detail": "probe_flight_overprivilege requires LCT_ENABLE_FAULT_INJECTION=true",
+                    },
+                )
+            allowed_city = canonicalize_city(body.get("allowed_city", "Tokyo"))
+            budget_cap = _require_bounded_float(
+                body.get("budget_cap_usd"), "budget_cap_usd", 1.0, 1_000_000.0, default_val=650.0
+            )
+            attempt_amt = _require_bounded_float(
+                body.get("attempt_amount_usd"), "attempt_amount_usd", 1.0, 1_000_000.0, default_val=950.0
+            )
+            attempt_city = canonicalize_city(body.get("attempt_city", "Paris"))
+            probe_perms = PermissionLattice.create(
+                tools=["search_flight", "book_flight"],
+                max_amount=budget_cap,
+                allowed_targets=["airline-escrow"],
+                param_whitelist={"city": [allowed_city]},
+                max_calls=4,
+            )
+            probe_payload = {
+                "city": allowed_city,
+                "override_book_amount": attempt_amt,
+                "override_book_city": attempt_city,
+                "skip_convergence": True,
+            }
+            st_p, out_p = self.sidecar.delegate_agent(
+                request_id=req_id,
+                permissions=probe_perms,
+                payload=probe_payload,
+                required_skill="travel.flight",
+                hop_segment="FlightOverprivProbe",
+                use_prune_and_graft=False,
+                timeout=35.0,
+            )
+            return st_p, out_p
 
         if op == "trigger_converged_settlement":
             city = canonicalize_city(body.get("city", "Tokyo"))

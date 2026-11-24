@@ -94,6 +94,21 @@ class SSEResponse:
 RouteHandler = Callable[["HTTPRequestContext"], Tuple[int, Any, Dict[str, str]]]
 
 
+def _normalize_clean_origin(origin: str) -> str:
+    sp_pub = urlsplit(origin.strip())
+    if (
+        sp_pub.scheme not in ("http", "https")
+        or not sp_pub.netloc
+        or not sp_pub.hostname
+        or "@" in sp_pub.netloc
+        or sp_pub.path not in ("", "/")
+        or sp_pub.query
+        or sp_pub.fragment
+    ):
+        raise ValueError(f"Invalid clean HTTP origin: {origin!r}")
+    return f"{sp_pub.scheme.lower()}://{sp_pub.netloc.lower()}"
+
+
 class HTTPRequestContext:
     """Structured incoming HTTP/HTTPS request passed to service route handlers."""
 
@@ -113,6 +128,7 @@ class HTTPRequestContext:
         tls_version: Optional[str] = None,
         tls_cipher: Optional[str] = None,
         client_ip: Optional[str] = None,
+        allowed_origins: Tuple[str, ...] = (),
     ) -> None:
         self.method = method.upper()
         valid_path, valid_query = validate_origin_form_target(raw_path)
@@ -129,7 +145,15 @@ class HTTPRequestContext:
         self.server_host = server_host
         self.server_port = server_port
         self.scheme = scheme.lower()
-        self.public_origin = public_origin.rstrip("/") if public_origin else None
+        self.public_origin = _normalize_clean_origin(public_origin) if public_origin else None
+        self.allowed_origins = tuple(
+            _normalize_clean_origin(o) for o in allowed_origins if o
+        )
+        self._origin_by_authority: Dict[str, str] = {}
+        for orig in (*( (self.public_origin,) if self.public_origin else () ), *self.allowed_origins):
+            sp_o = urlsplit(orig)
+            if sp_o.netloc:
+                self._origin_by_authority.setdefault(sp_o.netloc.lower(), orig)
         self.allowed_hosts = tuple(h.lower() for h in allowed_hosts if h)
         self.peer_spiffe_id = peer_spiffe_id
         self.peer_jkt = peer_jkt
@@ -153,14 +177,21 @@ class HTTPRequestContext:
 
     @property
     def authoritative_url(self) -> str:
-        """Construct canonical HTTP/HTTPS target URL strictly from bound/configured server origin + path."""
+        """Construct canonical HTTP/HTTPS target URL strictly from signed/configured server origins + path."""
+        host_hdr = self.header("host")
+        if (
+            isinstance(host_hdr, str)
+            and _HOST_HEADER_RE.match(host_hdr)
+            and host_hdr.lower() in self._origin_by_authority
+        ):
+            return f"{self._origin_by_authority[host_hdr.lower()]}{self.path}"
         if self.public_origin:
             return f"{self.public_origin}{self.path}"
         return f"{self.scheme}://{self.authoritative_authority}{self.path}"
 
     @property
     def full_url(self) -> str:
-        """Authoritative canonical URL (`htu` safe; never trusts client `Host` header)."""
+        """Authoritative canonical URL (`htu` safe; never trusts unverified client `Host` header)."""
         return self.authoritative_url
 
     def validate_host_syntax_only(self) -> Tuple[bool, str]:
@@ -183,8 +214,12 @@ class HTTPRequestContext:
         norm_host = host_hdr.lower()
         if allowed_authorities:
             permitted = tuple(a.lower() for a in allowed_authorities)
-        elif self.public_origin:
-            permitted = (self.authoritative_authority, *self.allowed_hosts)
+        elif self.public_origin or self._origin_by_authority:
+            permitted = (
+                self.authoritative_authority,
+                *self._origin_by_authority.keys(),
+                *self.allowed_hosts,
+            )
         else:
             permitted = (
                 self.authoritative_authority,
@@ -224,6 +259,7 @@ class ManagedHTTPService:
         port: int = 0,
         public_origin: Optional[str] = None,
         allowed_hosts: Iterable[str] = (),
+        allowed_origins: Iterable[str] = (),
         ssl_context: Optional[ssl.SSLContext] = None,
         ssl_context_provider: Optional[Callable[[], ssl.SSLContext]] = None,
         peer_cert_verifier: Optional[Callable[[bytes], Tuple[str, str]]] = None,
@@ -240,24 +276,30 @@ class ManagedHTTPService:
             if (ssl_context is not None or ssl_context_provider is not None)
             else "http"
         )
-        self._public_origin: Optional[str] = None
-        if public_origin is not None:
-            sp_pub = urlsplit(public_origin.strip())
-            if (
-                sp_pub.scheme not in ("http", "https")
-                or not sp_pub.netloc
-                or not sp_pub.hostname
-                or "@" in sp_pub.netloc
-                or sp_pub.path not in ("", "/")
-                or sp_pub.query
-                or sp_pub.fragment
-            ):
-                raise ValueError(f"Invalid ManagedHTTPService public_origin: {public_origin!r}")
-            self._public_origin = f"{sp_pub.scheme.lower()}://{sp_pub.netloc}"
+        self._public_origin: Optional[str] = (
+            _normalize_clean_origin(public_origin) if public_origin is not None else None
+        )
+        self._allowed_origins: Tuple[str, ...] = tuple(
+            _normalize_clean_origin(o) for o in allowed_origins if o
+        )
         self._allowed_hosts = tuple(str(h).lower() for h in allowed_hosts if h)
         self._server: Optional[DualReuseThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+
+    def set_public_origins(
+        self,
+        primary_origin: Optional[str],
+        extra_origins: Iterable[str] = (),
+    ) -> None:
+        """Atomically update signed public origin(s) on live host IP change without pod restart."""
+        norm_primary = (
+            _normalize_clean_origin(primary_origin) if primary_origin is not None else None
+        )
+        norm_extras = tuple(_normalize_clean_origin(o) for o in extra_origins if o)
+        with self._lock:
+            self._public_origin = norm_primary
+            self._allowed_origins = norm_extras
 
     @property
     def port(self) -> int:
@@ -340,6 +382,10 @@ class ManagedHTTPService:
                             )
                             return
                         body = self.rfile.read(content_len) if content_len > 0 else b""
+                        with outer._lock:
+                            snap_pub_origin = outer._public_origin
+                            snap_allowed_origins = outer._allowed_origins
+                            snap_allowed_hosts = outer._allowed_hosts
                         ctx = HTTPRequestContext(
                             method=self.command,
                             raw_path=self.path,
@@ -347,8 +393,9 @@ class ManagedHTTPService:
                             body=body,
                             server_host=outer._host,
                             server_port=outer.port,
-                            public_origin=outer._public_origin,
-                            allowed_hosts=outer._allowed_hosts,
+                            public_origin=snap_pub_origin,
+                            allowed_hosts=snap_allowed_hosts,
+                            allowed_origins=snap_allowed_origins,
                             scheme=outer._scheme,
                             peer_spiffe_id=peer_spiffe,
                             peer_jkt=peer_jkt,

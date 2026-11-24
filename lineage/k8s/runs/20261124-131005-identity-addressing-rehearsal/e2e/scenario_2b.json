@@ -1,0 +1,10 @@
+{
+  "scenario": "2b_a2a_v1_k8s_replicas_zero_crash_prune_and_graft",
+  "status": "PASS",
+  "task_id": "task-k8s-s2b-20261124-133906",
+  "a2a_task_state": "TASK_STATE_COMPLETED",
+  "grafted_epoch": 1,
+  "grafted_lineage_path": "/task-k8s-s2b-20261124-133906/OrchestratorAlpha/hotel-specialist-backup-e1",
+  "failover_fault_type": "CRASH",
+  "final_answer": "The flight booking for flight_no SQ-031 with booking_ref FLT-186A4D39 has been successfully settled for 620.0 USD. The hotel reservation for hotel_id HTL-SIN-02 with reservation_ref HTL-C9AC91CF has been settled for 380.0 USD. Both escrow settlements have been completed successfully."
+}

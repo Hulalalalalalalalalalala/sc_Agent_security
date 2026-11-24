@@ -1,0 +1,11 @@
+{
+  "migrated_audit_converged": true,
+  "new_audit_trust_anchor": "sha256:78424aee1b4522763a75925e9d03b2a9c13249f5c7efd9f6f11405f0a08bda8a:keyless",
+  "new_audit_collector_locator": {
+    "transport": "tls-tcp",
+    "host": "10.29.77.23",
+    "port": 30851,
+    "priority": 10,
+    "spiffe_id": "spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector"
+  }
+}

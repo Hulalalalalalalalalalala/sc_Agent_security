@@ -1,0 +1,161 @@
+{
+  "status": "PASS",
+  "run_id": "m8cmp-1795514645",
+  "alpha_sts_engine": "keycloak-26.5.2",
+  "hop0_oidc_login": {
+    "sts_endpoint": "http://10.29.77.23:30105/realms/lct/protocol/openid-connect/token",
+    "login_rtt_ms": 382.23,
+    "bridged_lct_sub": "user:alice@org-alpha.io"
+  },
+  "dimensions": {
+    "1_latency_and_sts_rpcs": {
+      "oauth_centralized": {
+        "http_status": 200,
+        "e2e_wall_ms": 11360.59,
+        "online_sts_exchange_rpcs": 12,
+        "cumulative_sts_rtt_ms": 3165.33,
+        "sts_endpoints_contacted": [
+          "http://10.29.77.23:30105/realms/lct/protocol/openid-connect/token"
+        ]
+      },
+      "oauth_federated": {
+        "http_status": 200,
+        "e2e_wall_ms": 7616.97,
+        "online_sts_exchange_rpcs": 12,
+        "cumulative_sts_rtt_ms": 2954.64,
+        "sts_endpoints_contacted": [
+          "http://10.29.77.23:30105/realms/lct/protocol/openid-connect/token",
+          "http://10.29.77.23:31106/realms/lct/protocol/openid-connect/token",
+          "http://10.29.77.23:32106/realms/lct/protocol/openid-connect/token"
+        ]
+      },
+      "lct": {
+        "http_status": 200,
+        "hop0_oidc_bridged": true,
+        "hop0_ca_bridge_ms": 65.68,
+        "e2e_wall_ms": 5752.19,
+        "online_sts_exchange_rpcs": 0,
+        "cumulative_sts_rtt_ms": 0.0
+      }
+    },
+    "2_fine_grained_overprivilege": {
+      "oauth_centralized": {
+        "http_status": 200,
+        "overprivileged_call_outcome": "ALLOWED_BY_FLAT_SCOPE",
+        "charged_usd": 950.0,
+        "booked_city": "Paris"
+      },
+      "oauth_federated": {
+        "http_status": 200,
+        "overprivileged_call_outcome": "ALLOWED_BY_FLAT_SCOPE",
+        "charged_usd": 950.0,
+        "booked_city": "Paris"
+      },
+      "lct": {
+        "http_status": 403,
+        "overprivileged_call_outcome": "BLOCKED_BY_PERMISSION_LATTICE",
+        "reason": {
+          "upstream_status": 403,
+          "upstream_body": {
+            "error": "flight_booking_denied",
+            "mcp_response": {
+              "upstream_status": 403,
+              "upstream_body": {
+                "error": "LATTICE_PERMISSION_DENIED",
+                "detail": "parameter 'amount'=950.0 violates [0, 650.0]",
+                "decision": "DENY",
+                "pruned_revoked_paths": []
+              },
+              "converged_branch_payloads": {},
+              "target_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+              "resolved_locator": "https://10.29.77.23:32104/mcp"
+            }
+          },
+          "delegate_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+          "resolved_locator": "https://10.29.77.23:31103/a2a/task"
+        }
+      }
+    },
+    "3_multiparent_convergence_and_branch_cancel": {
+      "oauth_centralized": {
+        "supports_multiparent_dag_envelope": false,
+        "airline_escrow_status_after_flight_cancel": 200,
+        "hotel_escrow_status": 200,
+        "outcome": "LINEAR_ACT_NO_BRANCH_SCOPED_DEGRADATION"
+      },
+      "oauth_federated": {
+        "supports_multiparent_dag_envelope": false,
+        "airline_escrow_status_after_flight_cancel": 200,
+        "hotel_escrow_status": 200,
+        "outcome": "LINEAR_ACT_NO_BRANCH_SCOPED_DEGRADATION"
+      },
+      "lct": {
+        "supports_multiparent_dag_envelope": true,
+        "revoked_prefix": "/task-m8-d3-lct-m8cmp-1795514645/OrchestratorAlpha/FlightB1",
+        "airline_escrow_status_after_flight_cancel": 403,
+        "hotel_escrow_status": 200,
+        "hotel_lineage_decision": "ALLOW_DEGRADED_DAG",
+        "outcome": "FAGIN_SMOOTH_DAG_DEGRADATION"
+      }
+    },
+    "4_zombie_primary_failover_double_spend": {
+      "oauth_centralized": {
+        "failover_backup_succeeded": true,
+        "zombie_wakeup_mcp_status": 200,
+        "double_spend_prevented": false
+      },
+      "oauth_federated": {
+        "failover_backup_succeeded": true,
+        "zombie_wakeup_mcp_status": 200,
+        "double_spend_prevented": false
+      },
+      "lct": {
+        "failover_backup_succeeded": true,
+        "zombie_wakeup_mcp_status": 403,
+        "double_spend_prevented": true
+      }
+    },
+    "5_central_sts_partition_impact": {
+      "oauth_centralized": {
+        "http_status_during_alpha_sts_outage": 502,
+        "survives_central_sts_outage": false,
+        "detail": "oauth_sts_exchange_failed"
+      },
+      "oauth_federated": {
+        "beta_to_pay_http_status_during_alpha_sts_outage": 200,
+        "downstream_orgs_survive_alpha_sts_outage": true,
+        "new_alpha_hop0_blocked": true
+      },
+      "lct": {
+        "alpha_to_beta_to_pay_http_status_during_alpha_sts_outage": 200,
+        "survives_central_sts_outage": true,
+        "online_sts_calls_needed": 0
+      }
+    },
+    "6_causal_audit_reconstruction": {
+      "oauth_centralized": {
+        "task_correlated_dag_events": 0,
+        "hash_linked_causal_coverage_pct": 0.0,
+        "note": "Stateless STS token issuance has zero task_id or parent_block_hash linkage"
+      },
+      "oauth_federated": {
+        "per_org_sts_exchange_records": {
+          "org-beta.io": 81,
+          "org-payment.io": 265
+        },
+        "task_correlated_dag_events": 0,
+        "hash_linked_causal_coverage_pct": 0.0,
+        "note": "Fragmented per-domain STS logs lack cross-domain parent hashes and tool parameters"
+      },
+      "lct": {
+        "verified_causal_events_for_d1_trip": 30,
+        "verified_hops": 12,
+        "tool_invocations_verified": 6,
+        "tampered_or_unverified_events": 0,
+        "multiparent_dag_merges_verified": 6,
+        "hash_linked_causal_coverage_pct": 100.0
+      }
+    }
+  },
+  "converger_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger"
+}

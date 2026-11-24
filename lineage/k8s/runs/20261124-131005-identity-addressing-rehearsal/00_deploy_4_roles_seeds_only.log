@@ -1,0 +1,563 @@
+=== [1/4] Deploy audit (192.168.65.254, custom --base-port 31900) ===
+============================================================================
+ LCT Identity-Addressed Multi-Host Preflight Check
+============================================================================
+  Local Roles     : audit
+  Self-Locator IP : 192.168.65.254 (operator-override, prio=10)
+  Local NodePorts : {"audit": {"audit_collector": 31901, "ca_federation": 31900}}
+  Bootstrap Seeds : (none — initial seed node or mDNS)
+  LLM Endpoint    : http://host.docker.internal:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling    : docker, kind, kubectl present
+  [OK] Docker     : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Ports      : local NodePorts verified conflict-free on 0.0.0.0
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): audit
+============================================================================
+[deploy] Building image 'lineage-lct:m7-r2' (BASE_IMAGE=ghcr.io/rossoctl/examples/weather_tool:pinned)...
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.84kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for ghcr.io/rossoctl/examples/weather_tool:pinned
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 transferring context: 61.73kB 0.0s done
+#4 DONE 0.0s
+
+#5 [ 1/21] FROM ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700
+#5 resolve ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700
+#5 resolve ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700 0.0s done
+#5 DONE 0.0s
+
+#6 [ 2/21] WORKDIR /opt/lct
+#6 CACHED
+
+#7 [ 3/21] COPY lineage/requirements.txt /opt/lct/lineage/requirements.txt
+#7 CACHED
+
+#8 [ 4/21] RUN if [ ! -x /app/.venv/bin/python3 ]; then       python3 -m venv /app/.venv &&       /app/.venv/bin/pip install --no-cache-dir -r /opt/lct/lineage/requirements.txt;     fi
+#8 CACHED
+
+#9 [ 5/21] COPY lineage/__init__.py /opt/lct/lineage/__init__.py
+#9 CACHED
+
+#10 [ 6/21] COPY lineage/common /opt/lct/lineage/common
+#10 DONE 0.0s
+
+#11 [ 7/21] COPY lineage/a2a /opt/lct/lineage/a2a
+#11 DONE 0.0s
+
+#12 [ 8/21] COPY lineage/federation /opt/lct/lineage/federation
+#12 DONE 0.0s
+
+#13 [ 9/21] COPY lineage/identity /opt/lct/lineage/identity
+#13 DONE 0.0s
+
+#14 [10/21] COPY lineage/registry /opt/lct/lineage/registry
+#14 DONE 0.0s
+
+#15 [11/21] COPY lineage/protocol /opt/lct/lineage/protocol
+#15 DONE 0.0s
+
+#16 [12/21] COPY lineage/revocation /opt/lct/lineage/revocation
+#16 DONE 0.0s
+
+#17 [13/21] COPY lineage/verifier /opt/lct/lineage/verifier
+#17 DONE 0.0s
+
+#18 [14/21] COPY lineage/audit /opt/lct/lineage/audit
+#18 DONE 0.0s
+
+#19 [15/21] COPY lineage/resilience /opt/lct/lineage/resilience
+#19 DONE 0.0s
+
+#20 [16/21] COPY lineage/sidecar /opt/lct/lineage/sidecar
+#20 DONE 0.0s
+
+#21 [17/21] COPY lineage/agents /opt/lct/lineage/agents
+#21 DONE 0.0s
+
+#22 [18/21] COPY lineage/k8s/__init__.py /opt/lct/lineage/k8s/__init__.py
+#22 DONE 0.0s
+
+#23 [19/21] COPY lineage/k8s/bootstrap_services.py /opt/lct/lineage/k8s/bootstrap_services.py
+#23 DONE 0.0s
+
+#24 [20/21] COPY lineage/k8s/e2e_driver.py /opt/lct/lineage/k8s/e2e_driver.py
+#24 DONE 0.0s
+
+#25 [21/21] COPY lineage/multihost /opt/lct/lineage/multihost
+#25 DONE 0.0s
+
+#26 exporting to image
+#26 exporting layers
+#26 exporting layers 0.4s done
+#26 exporting manifest sha256:8e57157f491ff12315acd8ade46d57cd6c08b7287429567d4b4aa6363840dc1f done
+#26 exporting config sha256:7eae61521ac7a9ef4768755e766b59afb719f3633a341ca66da843409676db20 done
+#26 exporting attestation manifest sha256:ba85c33d1204642d8a702fe67962daf2fa43e9e15dc0beabce7d233e778d1ecb done
+#26 exporting manifest list sha256:bcfdf8ad2bfdb83577f519cff6cc86dcb6c1fe564e5aae49dd190d147f84a7d0 done
+#26 naming to docker.io/library/lineage-lct:m7-r2 done
+#26 unpacking to docker.io/library/lineage-lct:m7-r2
+#26 unpacking to docker.io/library/lineage-lct:m7-r2 0.2s done
+#26 DONE 0.7s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/mg0mu854jerrh84mdwjk0edfc
+[deploy] Kind cluster 'lctmh-audit' already exists; reusing.
+[deploy] Loading image 'lineage-lct:m7-r2' into 'lctmh-audit'...
+Image: "lineage-lct:m7-r2" with ID "sha256:bcfdf8ad2bfdb83577f519cff6cc86dcb6c1fe564e5aae49dd190d147f84a7d0" not yet present on node "lctmh-audit-control-plane", loading...
+[deploy] Applying identity-addressed manifests for role 'audit' (ns=lineage-audit, svid_ttl=1800s)...
+[deploy] Host self-locator agent active: {"daemon_pid": 83139, "state_dir": "/var/folders/wt/1f_5dmrj15xf4hzwyc4f1g240000gn/T/lct-locator-agent"}
+[deploy] Waiting for audit-ca (kind-lctmh-audit) to become Ready...
+[deploy] Wrote local trust anchor line(s) to /Users/hulalala/Desktop/A/lineage/k8s/runs/20261124-131005-identity-addressing-rehearsal/anchors.txt
+
+============================================================================
+ LCT Identity-Addressed Deployment Summary (Roles: audit)
+============================================================================
+--- Cluster: lctmh-audit (namespace: lineage-audit) ---
+NAME                               READY   STATUS             RESTARTS      AGE   IP           NODE                        NOMINATED NODE   READINESS GATES
+audit-ca-58d795cbdc-h2nfs          0/1     Terminating        6             10m   10.244.0.2   lctmh-audit-control-plane   <none>           <none>
+audit-ca-96fb5ddd-d6cnn            1/1     Running            0             2s    10.244.0.7   lctmh-audit-control-plane   <none>           <none>
+audit-collector-6df5fdc48c-5pk97   0/1     CrashLoopBackOff   6 (41s ago)   10m   10.244.0.6   lctmh-audit-control-plane   <none>           <none>
+audit-collector-cc79685d4-ck2h5    0/1     Running            0             2s    10.244.0.8   lctmh-audit-control-plane   <none>           <none>
+
+============================================================================
+ Shareable Seed Endpoint(s) & Domain Trust Anchor(s) for Peer Machines:
+============================================================================
+  [seed:audit] --seed 192.168.65.254:31900
+  org-audit.io sha256:335ed817a6db7520e8d17cc173b7dfd784924da34ba1ac4614e8a8ba2141b536:keyless
+    -> Peer pin command: bash lineage/scripts/multihost.sh trust add org-audit.io sha256:335ed817a6db7520e8d17cc173b7dfd784924da34ba1ac4614e8a8ba2141b536:keyless
+============================================================================
+=== [2/4] Deploy alpha (auto-detect LAN IP, --seed 192.168.65.254:31900 ONLY) ===
+============================================================================
+ LCT Identity-Addressed Multi-Host Preflight Check
+============================================================================
+  Local Roles     : alpha
+  Self-Locator IP : 10.29.77.23 (macos:en0, prio=10)
+  Local NodePorts : {"alpha": {"ca_federation": 30100, "directory_federation": 30101, "e2e_sync_hook": 30104, "orchestrator-alpha": 30103, "revocation_federation": 30102}}
+  Bootstrap Seeds : 192.168.65.254:31900
+  LLM Endpoint    : http://host.docker.internal:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling    : docker, kind, kubectl present
+  [OK] Docker     : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Ports      : local NodePorts verified conflict-free on 0.0.0.0
+  [OK] LLM        : http://127.0.0.1:11434/v1/models reachable with model 'qwen2.5:3b'
+  [INFO] Seed (192.168.65.254:31900): not online yet (order-independent boot supported)
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): alpha
+============================================================================
+[deploy] Building image 'lineage-lct:m7-r2' (BASE_IMAGE=ghcr.io/rossoctl/examples/weather_tool:pinned)...
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.84kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for ghcr.io/rossoctl/examples/weather_tool:pinned
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 transferring context: 7.49kB done
+#4 DONE 0.0s
+
+#5 [ 1/21] FROM ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700
+#5 resolve ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700 0.0s done
+#5 DONE 0.0s
+
+#6 [13/21] COPY lineage/verifier /opt/lct/lineage/verifier
+#6 CACHED
+
+#7 [10/21] COPY lineage/registry /opt/lct/lineage/registry
+#7 CACHED
+
+#8 [18/21] COPY lineage/k8s/__init__.py /opt/lct/lineage/k8s/__init__.py
+#8 CACHED
+
+#9 [ 2/21] WORKDIR /opt/lct
+#9 CACHED
+
+#10 [16/21] COPY lineage/sidecar /opt/lct/lineage/sidecar
+#10 CACHED
+
+#11 [ 8/21] COPY lineage/federation /opt/lct/lineage/federation
+#11 CACHED
+
+#12 [20/21] COPY lineage/k8s/e2e_driver.py /opt/lct/lineage/k8s/e2e_driver.py
+#12 CACHED
+
+#13 [12/21] COPY lineage/revocation /opt/lct/lineage/revocation
+#13 CACHED
+
+#14 [ 4/21] RUN if [ ! -x /app/.venv/bin/python3 ]; then       python3 -m venv /app/.venv &&       /app/.venv/bin/pip install --no-cache-dir -r /opt/lct/lineage/requirements.txt;     fi
+#14 CACHED
+
+#15 [15/21] COPY lineage/resilience /opt/lct/lineage/resilience
+#15 CACHED
+
+#16 [17/21] COPY lineage/agents /opt/lct/lineage/agents
+#16 CACHED
+
+#17 [ 6/21] COPY lineage/common /opt/lct/lineage/common
+#17 CACHED
+
+#18 [11/21] COPY lineage/protocol /opt/lct/lineage/protocol
+#18 CACHED
+
+#19 [14/21] COPY lineage/audit /opt/lct/lineage/audit
+#19 CACHED
+
+#20 [ 3/21] COPY lineage/requirements.txt /opt/lct/lineage/requirements.txt
+#20 CACHED
+
+#21 [ 7/21] COPY lineage/a2a /opt/lct/lineage/a2a
+#21 CACHED
+
+#22 [19/21] COPY lineage/k8s/bootstrap_services.py /opt/lct/lineage/k8s/bootstrap_services.py
+#22 CACHED
+
+#23 [ 9/21] COPY lineage/identity /opt/lct/lineage/identity
+#23 CACHED
+
+#24 [ 5/21] COPY lineage/__init__.py /opt/lct/lineage/__init__.py
+#24 CACHED
+
+#25 [21/21] COPY lineage/multihost /opt/lct/lineage/multihost
+#25 CACHED
+
+#26 exporting to image
+#26 exporting layers 0.0s done
+#26 exporting manifest sha256:8e57157f491ff12315acd8ade46d57cd6c08b7287429567d4b4aa6363840dc1f done
+#26 exporting config sha256:7eae61521ac7a9ef4768755e766b59afb719f3633a341ca66da843409676db20 done
+#26 exporting attestation manifest sha256:534a434302c5b1260c365850df36be788259613e228af980f193b5a7c9f2d1de 0.0s done
+#26 exporting manifest list sha256:9ea358ce66c7920c5aea84caad5ba584dd9b15ce5afdb5bc2ef5df958951787b done
+#26 naming to docker.io/library/lineage-lct:m7-r2 done
+#26 unpacking to docker.io/library/lineage-lct:m7-r2 0.0s done
+#26 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/oxksmurw3rtpqsly4itxp40qk
+[deploy] Kind cluster 'lctmh-alpha' already exists; reusing.
+[deploy] Loading image 'lineage-lct:m7-r2' into 'lctmh-alpha'...
+Image: "lineage-lct:m7-r2" with ID "sha256:9ea358ce66c7920c5aea84caad5ba584dd9b15ce5afdb5bc2ef5df958951787b" not yet present on node "lctmh-alpha-control-plane", loading...
+[deploy] Applying identity-addressed manifests for role 'alpha' (ns=lineage-alpha, svid_ttl=1800s)...
+[deploy] Host self-locator agent active: {"daemon_pid": 83139, "state_dir": "/var/folders/wt/1f_5dmrj15xf4hzwyc4f1g240000gn/T/lct-locator-agent"}
+[deploy] Waiting for alpha-ca (kind-lctmh-alpha) to become Ready...
+[deploy] Wrote local trust anchor line(s) to /Users/hulalala/Desktop/A/lineage/k8s/runs/20261124-131005-identity-addressing-rehearsal/anchors.txt
+
+============================================================================
+ LCT Identity-Addressed Deployment Summary (Roles: alpha)
+============================================================================
+--- Cluster: lctmh-alpha (namespace: lineage-alpha) ---
+NAME                                  READY   STATUS             RESTARTS        AGE     IP            NODE                        NOMINATED NODE   READINESS GATES
+alpha-ca-9fb958455-btktf              1/1     Running            0               4s      10.241.0.10   lctmh-alpha-control-plane   <none>           <none>
+alpha-directory-5c97cd45d5-c87zs      0/1     CrashLoopBackOff   6 (3m19s ago)   9m16s   10.241.0.2    lctmh-alpha-control-plane   <none>           <none>
+alpha-directory-5f7549457b-42q2x      0/1     Running            0               4s      10.241.0.12   lctmh-alpha-control-plane   <none>           <none>
+alpha-revocation-74465b9f58-qt5t6     0/1     CrashLoopBackOff   6 (3m12s ago)   9m16s   10.241.0.6    lctmh-alpha-control-plane   <none>           <none>
+alpha-revocation-854b695449-gcvtf     0/1     Running            0               4s      10.241.0.11   lctmh-alpha-control-plane   <none>           <none>
+e2e-user-gateway-75c44d4dc4-xqgf9     1/1     Running            0               3s      10.241.0.14   lctmh-alpha-control-plane   <none>           <none>
+e2e-user-gateway-9644cdb79-bdfhv      1/1     Terminating        0               9m16s   10.241.0.4    lctmh-alpha-control-plane   <none>           <none>
+orchestrator-alpha-5fbb5c97bb-tw8b6   1/2     Running            0               3s      10.241.0.13   lctmh-alpha-control-plane   <none>           <none>
+orchestrator-alpha-5fd68f9744-6h9jk   1/2     CrashLoopBackOff   6 (3m29s ago)   9m16s   10.241.0.9    lctmh-alpha-control-plane   <none>           <none>
+
+============================================================================
+ Shareable Seed Endpoint(s) & Domain Trust Anchor(s) for Peer Machines:
+============================================================================
+  [seed:alpha] --seed 10.29.77.23:30100
+  org-alpha.io sha256:4b15b43da385dc9f7c1cd3ebb471c665a36dcea61dc5daab1e5bd8d01411678d:a38465cc6ddec793986b6d6448e7af1889902b1153f4ace9f92280006630a361
+    -> Peer pin command: bash lineage/scripts/multihost.sh trust add org-alpha.io sha256:4b15b43da385dc9f7c1cd3ebb471c665a36dcea61dc5daab1e5bd8d01411678d:a38465cc6ddec793986b6d6448e7af1889902b1153f4ace9f92280006630a361
+============================================================================
+=== [3/4] Deploy beta (auto-detect LAN IP, --seed 10.29.77.23:30100 ONLY) ===
+============================================================================
+ LCT Identity-Addressed Multi-Host Preflight Check
+============================================================================
+  Local Roles     : beta
+  Self-Locator IP : 10.29.77.23 (macos:en0, prio=10)
+  Local NodePorts : {"beta": {"ca_federation": 31100, "directory_federation": 31101, "flight-specialist": 31103, "hotel-specialist-backup": 31105, "hotel-specialist-primary": 31104, "revocation_federation": 31102}}
+  Bootstrap Seeds : 10.29.77.23:30100
+  LLM Endpoint    : http://host.docker.internal:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling    : docker, kind, kubectl present
+  [OK] Docker     : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Ports      : local NodePorts verified conflict-free on 0.0.0.0
+  [OK] LLM        : http://127.0.0.1:11434/v1/models reachable with model 'qwen2.5:3b'
+  [OK] Seed (http://10.29.77.23:30100): reachable, clock skew=-0.31s (<= 10s)
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): beta
+============================================================================
+[deploy] Building image 'lineage-lct:m7-r2' (BASE_IMAGE=ghcr.io/rossoctl/examples/weather_tool:pinned)...
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.84kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for ghcr.io/rossoctl/examples/weather_tool:pinned
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 transferring context: 7.49kB done
+#4 DONE 0.0s
+
+#5 [ 1/21] FROM ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700
+#5 resolve ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700 0.0s done
+#5 DONE 0.0s
+
+#6 [10/21] COPY lineage/registry /opt/lct/lineage/registry
+#6 CACHED
+
+#7 [ 2/21] WORKDIR /opt/lct
+#7 CACHED
+
+#8 [16/21] COPY lineage/sidecar /opt/lct/lineage/sidecar
+#8 CACHED
+
+#9 [18/21] COPY lineage/k8s/__init__.py /opt/lct/lineage/k8s/__init__.py
+#9 CACHED
+
+#10 [ 9/21] COPY lineage/identity /opt/lct/lineage/identity
+#10 CACHED
+
+#11 [ 8/21] COPY lineage/federation /opt/lct/lineage/federation
+#11 CACHED
+
+#12 [ 5/21] COPY lineage/__init__.py /opt/lct/lineage/__init__.py
+#12 CACHED
+
+#13 [12/21] COPY lineage/revocation /opt/lct/lineage/revocation
+#13 CACHED
+
+#14 [13/21] COPY lineage/verifier /opt/lct/lineage/verifier
+#14 CACHED
+
+#15 [15/21] COPY lineage/resilience /opt/lct/lineage/resilience
+#15 CACHED
+
+#16 [ 4/21] RUN if [ ! -x /app/.venv/bin/python3 ]; then       python3 -m venv /app/.venv &&       /app/.venv/bin/pip install --no-cache-dir -r /opt/lct/lineage/requirements.txt;     fi
+#16 CACHED
+
+#17 [19/21] COPY lineage/k8s/bootstrap_services.py /opt/lct/lineage/k8s/bootstrap_services.py
+#17 CACHED
+
+#18 [ 3/21] COPY lineage/requirements.txt /opt/lct/lineage/requirements.txt
+#18 CACHED
+
+#19 [20/21] COPY lineage/k8s/e2e_driver.py /opt/lct/lineage/k8s/e2e_driver.py
+#19 CACHED
+
+#20 [ 6/21] COPY lineage/common /opt/lct/lineage/common
+#20 CACHED
+
+#21 [17/21] COPY lineage/agents /opt/lct/lineage/agents
+#21 CACHED
+
+#22 [14/21] COPY lineage/audit /opt/lct/lineage/audit
+#22 CACHED
+
+#23 [ 7/21] COPY lineage/a2a /opt/lct/lineage/a2a
+#23 CACHED
+
+#24 [11/21] COPY lineage/protocol /opt/lct/lineage/protocol
+#24 CACHED
+
+#25 [21/21] COPY lineage/multihost /opt/lct/lineage/multihost
+#25 CACHED
+
+#26 exporting to image
+#26 exporting layers 0.0s done
+#26 exporting manifest sha256:8e57157f491ff12315acd8ade46d57cd6c08b7287429567d4b4aa6363840dc1f done
+#26 exporting config sha256:7eae61521ac7a9ef4768755e766b59afb719f3633a341ca66da843409676db20 done
+#26 exporting attestation manifest sha256:d350107f8851b85c6b6de7f37cc4e1b3160ed1a9796266452f45433efdc06ea6 done
+#26 exporting manifest list sha256:4c8e2dc411f9a7c7d33ebdb1155909a87221043de6d52290e4c3361b807b3048 done
+#26 naming to docker.io/library/lineage-lct:m7-r2 done
+#26 unpacking to docker.io/library/lineage-lct:m7-r2 0.0s done
+#26 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/sq2tkvubt992qwdt1cbrgyfug
+[deploy] Kind cluster 'lctmh-beta' already exists; reusing.
+[deploy] Loading image 'lineage-lct:m7-r2' into 'lctmh-beta'...
+Image: "lineage-lct:m7-r2" with ID "sha256:4c8e2dc411f9a7c7d33ebdb1155909a87221043de6d52290e4c3361b807b3048" not yet present on node "lctmh-beta-control-plane", loading...
+[deploy] Applying identity-addressed manifests for role 'beta' (ns=lineage-beta, svid_ttl=1800s)...
+[deploy] Host self-locator agent active: {"daemon_pid": 83139, "state_dir": "/var/folders/wt/1f_5dmrj15xf4hzwyc4f1g240000gn/T/lct-locator-agent"}
+[deploy] Waiting for beta-ca (kind-lctmh-beta) to become Ready...
+[deploy] Wrote local trust anchor line(s) to /Users/hulalala/Desktop/A/lineage/k8s/runs/20261124-131005-identity-addressing-rehearsal/anchors.txt
+
+============================================================================
+ LCT Identity-Addressed Deployment Summary (Roles: beta)
+============================================================================
+--- Cluster: lctmh-beta (namespace: lineage-beta) ---
+NAME                                        READY   STATUS             RESTARTS       AGE     IP            NODE                       NOMINATED NODE   READINESS GATES
+beta-ca-859989b946-79lxh                    1/1     Running            0              3s      10.242.0.11   lctmh-beta-control-plane   <none>           <none>
+beta-directory-6866766544-hf8k4             0/1     Running            0              2s      10.242.0.13   lctmh-beta-control-plane   <none>           <none>
+beta-directory-859d54bf89-zmcvz             0/1     CrashLoopBackOff   6 (100s ago)   7m32s   10.242.0.10   lctmh-beta-control-plane   <none>           <none>
+beta-revocation-69c97f8bcc-kkzxd            0/1     Running            0              2s      10.242.0.12   lctmh-beta-control-plane   <none>           <none>
+beta-revocation-6d9796c89d-2j5vp            0/1     CrashLoopBackOff   6 (104s ago)   7m32s   10.242.0.5    lctmh-beta-control-plane   <none>           <none>
+flight-specialist-698546f6c4-52mhn          1/2     CrashLoopBackOff   6 (98s ago)    7m32s   10.242.0.4    lctmh-beta-control-plane   <none>           <none>
+flight-specialist-84b98676b4-cvhj4          1/2     Running            0              2s      10.242.0.14   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-backup-6b5d5f6575-x847w    1/2     CrashLoopBackOff   6 (113s ago)   7m32s   10.242.0.9    lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-backup-f8db6c8f9-dzdhf     1/2     Running            0              2s      10.242.0.16   lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-primary-679f547c5-c47j9    1/2     CrashLoopBackOff   6 (95s ago)    7m32s   10.242.0.8    lctmh-beta-control-plane   <none>           <none>
+hotel-specialist-primary-7bd8f8947c-n77j4   1/2     Running            0              2s      10.242.0.15   lctmh-beta-control-plane   <none>           <none>
+
+============================================================================
+ Shareable Seed Endpoint(s) & Domain Trust Anchor(s) for Peer Machines:
+============================================================================
+  [seed:beta] --seed 10.29.77.23:31100
+  org-beta.io sha256:04c50aec6c94094e8d3a4dcec52281bfa3a4ba7f5aa3268d6b738a1f55b3640b:e872c649e0b570f6ec909ef99d81d651293d310aec4c15d42aa8794a9166bce7
+    -> Peer pin command: bash lineage/scripts/multihost.sh trust add org-beta.io sha256:04c50aec6c94094e8d3a4dcec52281bfa3a4ba7f5aa3268d6b738a1f55b3640b:e872c649e0b570f6ec909ef99d81d651293d310aec4c15d42aa8794a9166bce7
+============================================================================
+=== [4/4] Deploy pay (auto-detect LAN IP, custom --base-port 32200, --seed 10.29.77.23:31100 ONLY) ===
+============================================================================
+ LCT Identity-Addressed Multi-Host Preflight Check
+============================================================================
+  Local Roles     : pay
+  Self-Locator IP : 10.29.77.23 (macos:en0, prio=10)
+  Local NodePorts : {"pay": {"ca_federation": 32200, "directory_federation": 32201, "payment-vault-mcp": 32205, "revocation_federation": 32202, "settlement-converger": 32203, "travel-ops-mcp": 32204}}
+  Bootstrap Seeds : 10.29.77.23:31100
+  LLM Endpoint    : http://host.docker.internal:11434/v1 (model=qwen2.5:3b)
+  [OK] Tooling    : docker, kind, kubectl present
+  [OK] Docker     : daemon reachable (CPUs=18 MemBytes=16743587840)
+  [OK] Ports      : local NodePorts verified conflict-free on 0.0.0.0
+  [OK] LLM        : http://127.0.0.1:11434/v1/models reachable with model 'qwen2.5:3b'
+  [OK] Seed (http://10.29.77.23:31100): reachable, clock skew=-0.731s (<= 10s)
+============================================================================
+[PREFLIGHT PASS] Ready to deploy role(s): pay
+============================================================================
+[deploy] Building image 'lineage-lct:m7-r2' (BASE_IMAGE=ghcr.io/rossoctl/examples/weather_tool:pinned)...
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.84kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for ghcr.io/rossoctl/examples/weather_tool:pinned
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 transferring context: 7.49kB done
+#4 DONE 0.0s
+
+#5 [ 1/21] FROM ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700
+#5 resolve ghcr.io/rossoctl/examples/weather_tool:pinned@sha256:9ebbc02f679622fa7ddb612beaf0735add81f3ba85506eeed9dbf3b0d3a90700 0.0s done
+#5 DONE 0.0s
+
+#6 [ 8/21] COPY lineage/federation /opt/lct/lineage/federation
+#6 CACHED
+
+#7 [12/21] COPY lineage/revocation /opt/lct/lineage/revocation
+#7 CACHED
+
+#8 [13/21] COPY lineage/verifier /opt/lct/lineage/verifier
+#8 CACHED
+
+#9 [ 4/21] RUN if [ ! -x /app/.venv/bin/python3 ]; then       python3 -m venv /app/.venv &&       /app/.venv/bin/pip install --no-cache-dir -r /opt/lct/lineage/requirements.txt;     fi
+#9 CACHED
+
+#10 [ 3/21] COPY lineage/requirements.txt /opt/lct/lineage/requirements.txt
+#10 CACHED
+
+#11 [16/21] COPY lineage/sidecar /opt/lct/lineage/sidecar
+#11 CACHED
+
+#12 [20/21] COPY lineage/k8s/e2e_driver.py /opt/lct/lineage/k8s/e2e_driver.py
+#12 CACHED
+
+#13 [ 9/21] COPY lineage/identity /opt/lct/lineage/identity
+#13 CACHED
+
+#14 [ 6/21] COPY lineage/common /opt/lct/lineage/common
+#14 CACHED
+
+#15 [ 5/21] COPY lineage/__init__.py /opt/lct/lineage/__init__.py
+#15 CACHED
+
+#16 [19/21] COPY lineage/k8s/bootstrap_services.py /opt/lct/lineage/k8s/bootstrap_services.py
+#16 CACHED
+
+#17 [17/21] COPY lineage/agents /opt/lct/lineage/agents
+#17 CACHED
+
+#18 [ 2/21] WORKDIR /opt/lct
+#18 CACHED
+
+#19 [10/21] COPY lineage/registry /opt/lct/lineage/registry
+#19 CACHED
+
+#20 [11/21] COPY lineage/protocol /opt/lct/lineage/protocol
+#20 CACHED
+
+#21 [ 7/21] COPY lineage/a2a /opt/lct/lineage/a2a
+#21 CACHED
+
+#22 [18/21] COPY lineage/k8s/__init__.py /opt/lct/lineage/k8s/__init__.py
+#22 CACHED
+
+#23 [14/21] COPY lineage/audit /opt/lct/lineage/audit
+#23 CACHED
+
+#24 [15/21] COPY lineage/resilience /opt/lct/lineage/resilience
+#24 CACHED
+
+#25 [21/21] COPY lineage/multihost /opt/lct/lineage/multihost
+#25 CACHED
+
+#26 exporting to image
+#26 exporting layers 0.0s done
+#26 exporting manifest sha256:8e57157f491ff12315acd8ade46d57cd6c08b7287429567d4b4aa6363840dc1f done
+#26 exporting config sha256:7eae61521ac7a9ef4768755e766b59afb719f3633a341ca66da843409676db20 done
+#26 exporting attestation manifest sha256:e26e15d16db30e98cc6bb3c3493792f6abcfc869d241bd06d7046f830a11999b done
+#26 exporting manifest list sha256:4c2f03af10393cb66c7d066fc033810dffa931d4afa587553fb79b31697cd716 done
+#26 naming to docker.io/library/lineage-lct:m7-r2 done
+#26 unpacking to docker.io/library/lineage-lct:m7-r2 0.0s done
+#26 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/xesb2ugac1vppewog8dky3n9j
+[deploy] Kind cluster 'lctmh-pay' already exists; reusing.
+[deploy] Loading image 'lineage-lct:m7-r2' into 'lctmh-pay'...
+Image: "lineage-lct:m7-r2" with ID "sha256:4c2f03af10393cb66c7d066fc033810dffa931d4afa587553fb79b31697cd716" not yet present on node "lctmh-pay-control-plane", loading...
+[deploy] Applying identity-addressed manifests for role 'pay' (ns=lineage-pay, svid_ttl=1800s)...
+[deploy] Host self-locator agent active: {"daemon_pid": 83139, "state_dir": "/var/folders/wt/1f_5dmrj15xf4hzwyc4f1g240000gn/T/lct-locator-agent"}
+[deploy] Waiting for payment-ca (kind-lctmh-pay) to become Ready...
+[deploy] Wrote local trust anchor line(s) to /Users/hulalala/Desktop/A/lineage/k8s/runs/20261124-131005-identity-addressing-rehearsal/anchors.txt
+
+============================================================================
+ LCT Identity-Addressed Deployment Summary (Roles: pay)
+============================================================================
+--- Cluster: lctmh-pay (namespace: lineage-pay) ---
+NAME                                    READY   STATUS             RESTARTS        AGE     IP            NODE                      NOMINATED NODE   READINESS GATES
+payment-ca-54d756fcfc-tfp6f             0/1     Terminating        6 (4s ago)      5m47s   10.243.0.10   lctmh-pay-control-plane   <none>           <none>
+payment-ca-bdc57d9d4-xg96s              1/1     Running            0               4s      10.243.0.11   lctmh-pay-control-plane   <none>           <none>
+payment-directory-5849c5dfb6-5cx9w      0/1     Running            0               3s      10.243.0.13   lctmh-pay-control-plane   <none>           <none>
+payment-directory-747647f8c9-c5lgm      0/1     Running            6 (2m42s ago)   5m47s   10.243.0.2    lctmh-pay-control-plane   <none>           <none>
+payment-revocation-67c799947f-8wlcl     0/1     Running            0               3s      10.243.0.12   lctmh-pay-control-plane   <none>           <none>
+payment-revocation-7dfcb449b4-mqslb     0/1     CrashLoopBackOff   5 (2m39s ago)   5m47s   10.243.0.3    lctmh-pay-control-plane   <none>           <none>
+payment-vault-mcp-7f748798c-fspfm       1/2     Error              6 (2m43s ago)   5m47s   10.243.0.7    lctmh-pay-control-plane   <none>           <none>
+payment-vault-mcp-c976544b5-m6jrh       1/2     Running            0               3s      10.243.0.16   lctmh-pay-control-plane   <none>           <none>
+settlement-converger-65dc6c7dd6-5ztl5   1/2     Error              6 (2m54s ago)   5m47s   10.243.0.9    lctmh-pay-control-plane   <none>           <none>
+settlement-converger-766f855d5b-5vcxl   1/2     Running            0               3s      10.243.0.14   lctmh-pay-control-plane   <none>           <none>
+travel-ops-mcp-744bf6899-l5gnj          1/2     CrashLoopBackOff   6 (13s ago)     5m47s   10.243.0.8    lctmh-pay-control-plane   <none>           <none>
+travel-ops-mcp-b78cb59bc-bbktb          1/2     Running            0               3s      10.243.0.15   lctmh-pay-control-plane   <none>           <none>
+
+============================================================================
+ Shareable Seed Endpoint(s) & Domain Trust Anchor(s) for Peer Machines:
+============================================================================
+  [seed:pay] --seed 10.29.77.23:32200
+  org-payment.io sha256:8e171e7ebe46cc9f5d4634cf7cd4145ac7c1b7951b9b2632290e48dfffc0d2eb:fad97a36c369c475703865a19466662a2319123a9fdcb42dc9840db8ca549337
+    -> Peer pin command: bash lineage/scripts/multihost.sh trust add org-payment.io sha256:8e171e7ebe46cc9f5d4634cf7cd4145ac7c1b7951b9b2632290e48dfffc0d2eb:fad97a36c369c475703865a19466662a2319123a9fdcb42dc9840db8ca549337
+============================================================================
+=== Add 1 reverse seed on audit -> pay (10.29.77.23:32200) for bidirectional 3-hop gossip ===
+[seeds] Updated lctmh-audit/lineage-audit: seeds=['10.29.77.23:32200'] (hot-reload triggered)

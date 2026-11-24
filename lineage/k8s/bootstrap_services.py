@@ -680,6 +680,61 @@ def _build_env_anchor_store() -> Tuple[Optional[Any], bool]:
     return None, False
 
 
+def _is_identity_addressing_enabled() -> bool:
+    return (
+        os.environ.get("LCT_IDENTITY_ADDRESSING", "false").strip().lower() == "true"
+        or bool(os.environ.get("LCT_NODE_LOCATOR_FILE", "").strip())
+    )
+
+
+def _build_env_seed_store() -> Optional[Any]:
+    from lineage.common.locators import SeedEndpointStore
+
+    seeds_dir = os.environ.get("LCT_SEEDS_DIR", "").strip() or None
+    raw_seeds = os.environ.get("LCT_BOOTSTRAP_SEEDS", "").strip()
+    if _is_identity_addressing_enabled() or seeds_dir or raw_seeds:
+        return SeedEndpointStore(seeds_dir=seeds_dir)
+    return None
+
+
+def _build_env_descriptor_store(
+    anchor_store: Optional[Any],
+    require_pins: bool,
+    local_trust_domain: Optional[str] = None,
+    local_trust_anchor: Optional[str] = None,
+) -> Optional[Any]:
+    from lineage.common.locators import allowed_cidrs_from_env
+    from lineage.federation.locators import DomainDescriptorStore
+
+    if not _is_identity_addressing_enabled() and not os.environ.get(
+        "LCT_PERSISTED_DESCRIPTORS_FILE", ""
+    ).strip():
+        return None
+    return DomainDescriptorStore(
+        anchor_store=anchor_store,
+        require_pinned_anchors=require_pins,
+        allowed_cidrs=allowed_cidrs_from_env(),
+        local_trust_domain=local_trust_domain,
+        local_trust_anchor=local_trust_anchor,
+    )
+
+
+def _build_env_node_locator_watcher(
+    on_change: Optional[Any] = None,
+) -> Optional[Any]:
+    from lineage.common.locators import NodeLocatorWatcher, allowed_cidrs_from_env
+
+    loc_file = os.environ.get("LCT_NODE_LOCATOR_FILE", "").strip()
+    if not loc_file:
+        return None
+    return NodeLocatorWatcher(
+        locator_file=loc_file,
+        poll_interval_sec=1.0,
+        allowed_cidrs=allowed_cidrs_from_env(),
+        on_change=on_change,
+    )
+
+
 class MinimalAuditTLSCAService:
     """Minimal X.509-only CA (`org-audit.io`) issuing leaf TLS certs to `audit-collector`.
 
@@ -694,12 +749,19 @@ class MinimalAuditTLSCAService:
         x509_root_cert_pem: Optional[str] = None,
         host: str = "0.0.0.0",
         port: int = 8090,
+        federation_port: Optional[int] = None,
+        descriptor_store: Optional[Any] = None,
+        on_descriptor_learned: Optional[Any] = None,
     ) -> None:
         from lineage.common.mtls import X509DomainAuthority
         from lineage.federation.anchors import compute_bundle_trust_anchor
 
         self.trust_domain = "org-audit.io"
         self.csr_token_file = csr_token_file
+        self.descriptor_store = descriptor_store
+        self.on_descriptor_learned = on_descriptor_learned
+        self._desc_lock = threading.Lock()
+        self._own_desc_version = 0
         self.x509_ca = X509DomainAuthority(
             self.trust_domain,
             allowed_dns_suffixes=(
@@ -714,12 +776,35 @@ class MinimalAuditTLSCAService:
         )
         self._compute_anchor = compute_bundle_trust_anchor
         self._pop_replay = JTIReplayCache(ttl_seconds=300.0)
+        if self.descriptor_store is not None:
+            b = self.export_public_bundle()
+            self.descriptor_store.set_local_trust_domain(
+                self.trust_domain, str(b["trust_anchor"])
+            )
         self.http = ManagedHTTPService(
             service_name="audit-tls-ca",
             dispatcher=self._dispatch,
             host=host,
             port=port,
         )
+        self.federation_http: Optional[ManagedHTTPService] = None
+        if federation_port is not None:
+            self.federation_http = ManagedHTTPService(
+                service_name="audit-tls-ca-federation",
+                dispatcher=self._dispatch_federation_ro,
+                host=host,
+                port=int(federation_port),
+            )
+
+    def start(self) -> None:
+        self.http.start()
+        if self.federation_http is not None:
+            self.federation_http.start()
+
+    def stop(self) -> None:
+        if self.federation_http is not None:
+            self.federation_http.stop()
+        self.http.stop()
 
     def export_public_bundle(self) -> Dict[str, Any]:
         root_pem = self.x509_ca.export_root_pem()
@@ -731,12 +816,80 @@ class MinimalAuditTLSCAService:
         bundle["trust_anchor"] = self._compute_anchor(bundle, allow_keyless_jwks=True)
         return bundle
 
+    def publish_audit_locators(
+        self, snapshot: Any, ttl_seconds: float = 3600.0
+    ) -> Optional[Any]:
+        from lineage.federation.locators import SignedDomainDescriptor
+
+        if self.descriptor_store is None or snapshot is None:
+            return None
+        ca_locs = snapshot.build_service_locators("ca_federation", transport="http-ro")
+        collector_locs = snapshot.build_service_locators(
+            "audit_collector",
+            transport="tls-tcp",
+            spiffe_id="spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector",
+        )
+        if not ca_locs and not collector_locs:
+            return None
+        loc_map: Dict[str, Any] = {}
+        if ca_locs:
+            loc_map["ca_bundle"] = ca_locs
+        if collector_locs:
+            loc_map["audit_collector"] = collector_locs
+        with self._desc_lock:
+            next_ver = max(self._own_desc_version + 1, int(time.time() * 1000))
+            desc = SignedDomainDescriptor.sign_with_x509_root(
+                x509_ca=self.x509_ca,
+                bundle=self.export_public_bundle(),
+                locators=loc_map,
+                version=next_ver,
+                ttl_seconds=ttl_seconds,
+            )
+            self._own_desc_version = next_ver
+            self.descriptor_store.set_own_descriptor(desc)
+            return desc
+
+    def _export_descriptors_payload(self) -> Dict[str, Any]:
+        if self.descriptor_store is None:
+            return {"trust_domain": self.trust_domain, "descriptors": []}
+        payload = dict(self.descriptor_store.export_gossip_payload())
+        payload.setdefault("trust_domain", self.trust_domain)
+        return payload
+
     def _read_csr_secret(self) -> str:
         with open(self.csr_token_file, "r", encoding="utf-8") as fh:
             val = fh.read().strip()
         if len(val) < 24:
             raise PermissionError("Invalid CSR bootstrap secret length")
         return val
+
+    def _dispatch_federation_ro(
+        self, req: HTTPRequestContext
+    ) -> Tuple[int, Any, Dict[str, str]]:
+        if req.method == "GET" and req.path == "/healthz":
+            b = self.export_public_bundle()
+            return (
+                200,
+                {
+                    "status": "ok",
+                    "trust_domain": self.trust_domain,
+                    "trust_anchor": b["trust_anchor"],
+                },
+                {},
+            )
+        if req.method == "GET" and req.path == "/v1/federation/bundle":
+            return 200, self.export_public_bundle(), {}
+        if req.method == "GET" and req.path == "/v1/federation/descriptors":
+            return 200, self._export_descriptors_payload(), {}
+        if req.method == "POST" and req.path == "/v1/federation/descriptors":
+            from lineage.federation.locators import ingest_descriptor_http_request
+
+            return ingest_descriptor_http_request(
+                req,
+                self.descriptor_store,
+                on_descriptor_learned=self.on_descriptor_learned,
+            )
+        return 404, {"error": "route_not_found"}, {}
 
     def _dispatch(self, req: HTTPRequestContext) -> Tuple[int, Any, Dict[str, str]]:
         if req.method == "GET" and req.path == "/healthz":
@@ -752,6 +905,26 @@ class MinimalAuditTLSCAService:
             )
         if req.method == "GET" and req.path == "/v1/federation/bundle":
             return 200, self.export_public_bundle(), {}
+        if req.method == "GET" and req.path == "/v1/federation/descriptors":
+            return 200, self._export_descriptors_payload(), {}
+        if req.method == "POST" and req.path == "/v1/ca/learn-descriptors":
+            try:
+                bearer = _extract_bearer(req.header("Authorization"))
+                expected_sec = self._read_csr_secret()
+            except Exception as exc:
+                return 401, {"error": "unauthorized_caller", "detail": str(exc)}, {}
+            if not bearer or not hmac.compare_digest(
+                bearer.encode("utf-8"), expected_sec.encode("utf-8")
+            ):
+                return 401, {"error": "unauthorized_caller"}, {}
+            from lineage.federation.locators import ingest_descriptor_http_request
+
+            status_code, out_body, hdrs = ingest_descriptor_http_request(
+                req,
+                self.descriptor_store,
+                on_descriptor_learned=self.on_descriptor_learned,
+            )
+            return status_code, out_body, hdrs
         if req.method == "POST" and req.path == "/v1/ca/issue-audit-tls":
             bearer = _extract_bearer(req.header("Authorization"))
             try:
@@ -810,11 +983,12 @@ class MinimalAuditTLSCAService:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="LCT Milestone 4 Kubernetes Role Runner")
+    parser = argparse.ArgumentParser(description="LCT Kubernetes Role Runner")
     parser.add_argument("--role", required=True)
     args = parser.parse_args()
 
     role = args.role
+    identity_addressing = _is_identity_addressing_enabled()
     ca_url = os.environ.get(
         "FEDERATION_CA_URL", "http://federation-ca.lineage-ctrl.svc.cluster.local:8090"
     )
@@ -824,14 +998,20 @@ def main() -> None:
     rev_url = os.environ.get(
         "REVOCATION_URL", "http://revocation-svc.lineage-ctrl.svc.cluster.local:8092"
     )
-    audit_url = os.environ.get(
-        "AUDIT_COLLECTOR_URL", "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
+    raw_audit_env = os.environ.get("AUDIT_COLLECTOR_URL", "").strip()
+    audit_url = raw_audit_env or (
+        "" if identity_addressing else "http://audit-collector.lineage-ctrl.svc.cluster.local:8093"
     )
-    travel_mcp_url = os.environ.get(
-        "TRAVEL_MCP_URL", "https://travel-ops-mcp.lineage-pay.svc.cluster.local:8443/mcp"
+    raw_travel_mcp = os.environ.get("TRAVEL_MCP_URL", "").strip()
+    travel_mcp_url = raw_travel_mcp or (
+        "" if identity_addressing else "https://travel-ops-mcp.lineage-pay.svc.cluster.local:8443/mcp"
     )
-    payment_mcp_url = os.environ.get(
-        "PAYMENT_MCP_URL", "https://payment-vault-mcp.lineage-pay.svc.cluster.local:8443/mcp"
+    raw_payment_mcp = os.environ.get("PAYMENT_MCP_URL", "").strip()
+    payment_mcp_url = raw_payment_mcp or (
+        "" if identity_addressing else "https://payment-vault-mcp.lineage-pay.svc.cluster.local:8443/mcp"
+    )
+    persisted_desc_file = (
+        os.environ.get("LCT_PERSISTED_DESCRIPTORS_FILE", "").strip() or None
     )
 
     stop_event = threading.Event()
@@ -846,23 +1026,173 @@ def main() -> None:
     )
     anchor_store, require_pins = _build_env_anchor_store()
 
+    if role == "oauth-sts":
+        import json as _json
+
+        from lineage.federation import FederationBundleSyncer
+        from lineage.oauth_sts import DEFAULT_REALM_NAME, OAuthSTSService
+
+        trust_domain = os.environ.get("TRUST_DOMAIN", "org-alpha.io").strip()
+        oauth_realm = os.environ.get("OAUTH_REALM", DEFAULT_REALM_NAME).strip() or DEFAULT_REALM_NAME
+        sts_port = int(os.environ.get("STS_PORT", "8095"))
+        local_ca_url_sts = os.environ.get("LOCAL_CA_URL", "").strip()
+        creds_path = os.environ.get("OAUTH_CREDENTIALS_FILE", "").strip()
+
+        user_pws: Dict[str, str] = {}
+        client_secs: Dict[str, str] = {}
+        if creds_path and os.path.isfile(creds_path):
+            try:
+                with open(creds_path, "r", encoding="utf-8") as fh:
+                    creds_doc = _json.load(fh)
+                user_pws = dict(creds_doc.get("users") or {})
+                client_secs = dict(creds_doc.get("clients") or {})
+            except Exception as exc:
+                print(
+                    f"[oauth-sts:{trust_domain}] Warning reading OAuth credentials metadata: {type(exc).__name__}",
+                    flush=True,
+                )
+
+        seed_store_sts = _build_env_seed_store() if identity_addressing else None
+        desc_store_sts = (
+            _build_env_descriptor_store(
+                anchor_store, require_pins, local_trust_domain=trust_domain
+            )
+            if identity_addressing
+            else None
+        )
+        sts_syncer: Optional[FederationBundleSyncer] = None
+        if local_ca_url_sts and identity_addressing:
+            _wait_for_http_ok(f"{local_ca_url_sts}/healthz")
+            sts_syncer = FederationBundleSyncer(
+                peer_ca_urls={},
+                local_ca_url=local_ca_url_sts,
+                anchor_store=anchor_store,
+                require_pinned_anchors=require_pins,
+                local_trust_domain=trust_domain,
+                seed_store=seed_store_sts,
+                descriptor_store=desc_store_sts,
+                persisted_descriptors_file=persisted_desc_file,
+            )
+            try:
+                loc_b = httpx.get(
+                    f"{local_ca_url_sts}/v1/federation/bundle",
+                    timeout=3.0,
+                    trust_env=False,
+                ).json()
+                sts_syncer.trust_resolver.register_bundle(loc_b)
+                if desc_store_sts is not None and loc_b.get("trust_anchor"):
+                    desc_store_sts.set_local_trust_domain(
+                        trust_domain, str(loc_b["trust_anchor"])
+                    )
+            except Exception:
+                pass
+            sts_syncer.start_background_refresh(interval_sec=2.0)
+
+        def _peer_sts_jwks_urls() -> List[str]:
+            if desc_store_sts is None:
+                return []
+            urls: List[str] = []
+            for td_name, desc_obj in desc_store_sts.all_descriptors().items():
+                if td_name == trust_domain:
+                    continue
+                for loc in desc_obj.locators.get("oauth_sts", ()):
+                    u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm}/protocol/openid-connect/certs"
+                    if u not in urls:
+                        urls.append(u)
+            return urls
+
+        oauth_issuer_origin = os.environ.get("OAUTH_ISSUER_ORIGIN", "").strip().rstrip("/") or None
+        sts_svc = OAuthSTSService(
+            trust_domain=trust_domain,
+            realm=oauth_realm,
+            user_passwords=user_pws,
+            client_secrets=client_secs,
+            spiffe_trust_resolver=(
+                sts_syncer.trust_resolver if sts_syncer is not None else None
+            ),
+            peer_sts_jwks_Urls_provider=_peer_sts_jwks_urls,
+            issuer_override=oauth_issuer_origin,
+            host="0.0.0.0",
+            port=sts_port,
+        )
+        sts_svc.start()
+        print(
+            f"[oauth-sts:{trust_domain}] RFC 8693 / OIDC STS active on 0.0.0.0:{sts_port} realm={oauth_realm}",
+            flush=True,
+        )
+        try:
+            stop_event.wait()
+        finally:
+            if sts_syncer is not None:
+                sts_syncer.stop_background_refresh()
+            sts_svc.stop()
+        return
+
     if role == "audit-tls-ca":
+        from lineage.federation import FederationBundleSyncer
+
         key_dir = os.environ.get("CA_KEY_MATERIAL_DIR", "").strip()
         csr_tok_file = os.environ["AUDIT_CSR_TOKEN_FILE"]
+        fed_port_raw = os.environ.get("CA_FEDERATION_PORT", "").strip()
+        fed_port = int(fed_port_raw) if fed_port_raw else None
+        seed_store = _build_env_seed_store() if identity_addressing else None
+        desc_store = _build_env_descriptor_store(
+            anchor_store, require_pins, local_trust_domain="org-audit.io"
+        )
+        audit_ca_syncer: Optional[FederationBundleSyncer] = (
+            FederationBundleSyncer(
+                peer_ca_urls={},
+                anchor_store=anchor_store,
+                require_pinned_anchors=require_pins,
+                local_trust_domain="org-audit.io",
+                seed_store=seed_store,
+                descriptor_store=desc_store,
+                persisted_descriptors_file=persisted_desc_file,
+            )
+            if identity_addressing
+            else None
+        )
         svc_audit_ca = MinimalAuditTLSCAService(
             csr_token_file=csr_tok_file,
             x509_private_key_pem=_read_optional_pem(key_dir, "x509_private_key.pem"),
             x509_root_cert_pem=_read_optional_pem(key_dir, "x509_root_cert.pem"),
             host="0.0.0.0",
             port=8090,
+            federation_port=fed_port,
+            descriptor_store=desc_store,
+            on_descriptor_learned=(
+                audit_ca_syncer.apply_verified_descriptor
+                if audit_ca_syncer is not None
+                else None
+            ),
         )
-        svc_audit_ca.http.start()
+        svc_audit_ca.start()
+        loc_watcher = _build_env_node_locator_watcher(
+            on_change=lambda snap: svc_audit_ca.publish_audit_locators(snap)
+        )
+        if loc_watcher is not None:
+            init_snap = loc_watcher.wait_for_locators(max_wait_sec=12.0)
+            if init_snap is not None:
+                svc_audit_ca.publish_audit_locators(init_snap)
+            loc_watcher.start()
+        if audit_ca_syncer is not None:
+            audit_ca_syncer.start_background_refresh(interval_sec=2.0)
         print(
-            f"[audit-tls-ca:org-audit.io] Minimal X.509-only CA ready on 0.0.0.0:8090 anchor={svc_audit_ca.export_public_bundle()['trust_anchor']}",
+            f"[audit-tls-ca:org-audit.io] Minimal X.509-only CA ready on 0.0.0.0:8090 (fed_port={fed_port}) anchor={svc_audit_ca.export_public_bundle()['trust_anchor']}",
             flush=True,
         )
-        stop_event.wait()
-        svc_audit_ca.http.stop()
+        try:
+            while not stop_event.wait(timeout=600.0):
+                if loc_watcher is not None:
+                    cur_s = loc_watcher.current_snapshot()
+                    if cur_s is not None:
+                        svc_audit_ca.publish_audit_locators(cur_s)
+        finally:
+            if loc_watcher is not None:
+                loc_watcher.stop()
+            if audit_ca_syncer is not None:
+                audit_ca_syncer.stop_background_refresh()
+            svc_audit_ca.stop()
         return
 
     if role == "domain-ca":
@@ -874,15 +1204,73 @@ def main() -> None:
         fed_port_raw = os.environ.get("CA_FEDERATION_PORT", "").strip()
         fed_port = int(fed_port_raw) if fed_port_raw else None
         key_dir = os.environ.get("CA_KEY_MATERIAL_DIR", "").strip()
+        seed_store = _build_env_seed_store() if identity_addressing else None
+        desc_store = (
+            _build_env_descriptor_store(
+                anchor_store, require_pins, local_trust_domain=trust_domain
+            )
+            if identity_addressing
+            else None
+        )
         ca_audit_syncer: Optional[FederationBundleSyncer] = None
-        if audit_url and audit_url.startswith("https://"):
+        if identity_addressing:
+            ca_audit_syncer = FederationBundleSyncer(
+                peer_ca_urls={},
+                anchor_store=anchor_store,
+                require_pinned_anchors=require_pins,
+                local_trust_domain=trust_domain,
+                seed_store=seed_store,
+                descriptor_store=desc_store,
+                persisted_descriptors_file=persisted_desc_file,
+            )
+        elif audit_url and audit_url.startswith("https://"):
             ca_audit_syncer = FederationBundleSyncer(
                 peer_ca_urls={},
                 anchor_store=anchor_store,
                 require_pinned_anchors=require_pins,
                 audit_ca_url=audit_url,
             )
-            ca_audit_syncer.start_background_refresh(interval_sec=2.0)
+
+        oidc_jwks_url = os.environ.get("OIDC_JWKS_URL", "").strip()
+        local_sts_url_ca = os.environ.get("LOCAL_STS_URL", "").strip().rstrip("/")
+        oauth_realm_ca = os.environ.get("OAUTH_REALM", "lct").strip() or "lct"
+        ca_oidc_verifier: Optional[Any] = None
+        if oidc_jwks_url:
+            from lineage.oauth_sts import OIDCTokenVerifier
+
+            def _ca_oidc_jwks_urls() -> List[str]:
+                out = [oidc_jwks_url]
+                if desc_store is not None:
+                    own_d = desc_store.get_descriptor(trust_domain)
+                    if own_d is not None:
+                        for loc in own_d.locators.get("oauth_sts", ()):
+                            u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}/protocol/openid-connect/certs"
+                            if u not in out:
+                                out.append(u)
+                return out
+
+            def _ca_allowed_issuers() -> List[str]:
+                dom_short = trust_domain.strip().lower().removeprefix("org-").split(".", 1)[0]
+                iss_list: List[str] = [
+                    f"http://{dom_short}-oidc.lct.local/realms/{oauth_realm_ca}",
+                ]
+                if local_sts_url_ca:
+                    iss_list.append(f"{local_sts_url_ca}/realms/{oauth_realm_ca}")
+                if desc_store is not None:
+                    own_d = desc_store.get_descriptor(trust_domain)
+                    if own_d is not None:
+                        for loc in own_d.locators.get("oauth_sts", ()):
+                            iss_list.append(
+                                f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}"
+                            )
+                return iss_list
+
+            ca_oidc_verifier = OIDCTokenVerifier(
+                jwks_urls=[oidc_jwks_url],
+                jwks_urls_provider=_ca_oidc_jwks_urls,
+                allowed_issuers_provider=_ca_allowed_issuers,
+                default_user_domain=trust_domain,
+            )
 
         svc = AutonomousDomainCAService(
             trust_domain=trust_domain,
@@ -896,34 +1284,102 @@ def main() -> None:
             x509_private_key_pem=_read_optional_pem(key_dir, "x509_private_key.pem"),
             x509_root_cert_pem=_read_optional_pem(key_dir, "x509_root_cert.pem"),
             audit_ssl_context_provider=(
-                ca_audit_syncer.audit_ssl_context if ca_audit_syncer is not None else None
+                ca_audit_syncer.audit_ssl_context
+                if (ca_audit_syncer is not None and not identity_addressing)
+                else None
             ),
-            best_effort_audit=(not wait_for_peers_on_boot) or audit_url.startswith("https://"),
+            audit_locator_provider=(
+                ca_audit_syncer.audit_locators
+                if (ca_audit_syncer is not None and identity_addressing)
+                else None
+            ),
+            audit_ssl_for_locator=(
+                ca_audit_syncer.audit_ssl_context_for_locator
+                if (ca_audit_syncer is not None and identity_addressing)
+                else None
+            ),
+            best_effort_audit=(
+                (not wait_for_peers_on_boot)
+                or identity_addressing
+                or audit_url.startswith("https://")
+            ),
+            descriptor_store=desc_store,
+            on_descriptor_learned=(
+                ca_audit_syncer.apply_verified_descriptor
+                if ca_audit_syncer is not None
+                else None
+            ),
+            oidc_verifier=ca_oidc_verifier,
         )
+        if desc_store is not None:
+            desc_store.set_local_trust_domain(trust_domain, svc.trust_anchor)
+
+        def _publish_ca_snapshot(snap: Any) -> None:
+            if snap is None:
+                return
+            ca_locs = snap.build_service_locators("ca_federation", transport="http-ro")
+            dir_locs = snap.build_service_locators(
+                "directory_federation",
+                transport="mtls-tcp",
+                spiffe_id=f"spiffe://{trust_domain}/ns/sys/sa/directory",
+            )
+            rev_locs = snap.build_service_locators(
+                "revocation_federation",
+                transport="mtls-tcp",
+                spiffe_id=f"spiffe://{trust_domain}/ns/sys/sa/revocation",
+            )
+            sts_locs = snap.build_service_locators("oauth_sts", transport="http-ro")
+            loc_map: Dict[str, Any] = {}
+            if ca_locs:
+                loc_map["ca_bundle"] = ca_locs
+            if dir_locs:
+                loc_map["directory_federation"] = dir_locs
+            if rev_locs:
+                loc_map["revocation_federation"] = rev_locs
+            if sts_locs:
+                loc_map["oauth_sts"] = sts_locs
+            if loc_map:
+                desc = svc.publish_domain_locators(loc_map)
+                print(
+                    f"[domain-ca:{trust_domain}] Signed domain descriptor v{desc.version} locators={ {k: [l.origin_url for l in v] for k, v in desc.locators.items()} }",
+                    flush=True,
+                )
+
         svc.start()
+        loc_watcher = _build_env_node_locator_watcher(on_change=_publish_ca_snapshot)
+        if loc_watcher is not None:
+            init_snap = loc_watcher.wait_for_locators(max_wait_sec=12.0)
+            if init_snap is not None:
+                _publish_ca_snapshot(init_snap)
+            loc_watcher.start()
+
+        if ca_audit_syncer is not None:
+            ca_audit_syncer.start_background_refresh(interval_sec=2.0)
         print(
             f"[domain-ca:{trust_domain}] Autonomous CA ready on 0.0.0.0:8090 (fed_port={fed_port}, allowed_ns={allowed_ns}, anchor={svc.trust_anchor})",
             flush=True,
         )
-        stop_event.wait()
-        if ca_audit_syncer is not None:
-            ca_audit_syncer.stop_background_refresh()
-        svc.stop()
+        try:
+            while not stop_event.wait(timeout=600.0):
+                if loc_watcher is not None:
+                    cur_s = loc_watcher.current_snapshot()
+                    if cur_s is not None:
+                        _publish_ca_snapshot(cur_s)
+        finally:
+            if loc_watcher is not None:
+                loc_watcher.stop()
+            if ca_audit_syncer is not None:
+                ca_audit_syncer.stop_background_refresh()
+            svc.stop()
         return
 
     if role == "federated-audit-collector":
         from lineage.common.mtls import WorkloadMTLSBundle, X509FederationTrustStore
         from lineage.federation import FederationBundleSyncer, parse_domain_url_map
 
-        peer_ca_map = parse_domain_url_map(os.environ["PEER_CA_URLS"])
-        syncer = FederationBundleSyncer(
-            peer_ca_urls=peer_ca_map,
-            anchor_store=anchor_store,
-            require_pinned_anchors=require_pins,
-        )
-        if wait_for_peers_on_boot:
-            syncer.sync_all(require_all=True, max_wait_sec=60.0)
-        syncer.start_background_refresh(interval_sec=2.0)
+        peer_ca_raw = os.environ.get("PEER_CA_URLS", "").strip()
+        peer_ca_map = parse_domain_url_map(peer_ca_raw) if peer_ca_raw else {}
+        use_id_addr = identity_addressing or not peer_ca_map
 
         audit_tls_ca_url = os.environ.get("AUDIT_TLS_CA_URL", "").strip()
         audit_csr_token_file = os.environ.get("AUDIT_CSR_TOKEN_FILE", "").strip()
@@ -1012,6 +1468,37 @@ def main() -> None:
             )
             tls_renew_thread.start()
 
+        own_audit_anchor = (
+            str(audit_public_bundle_box.get("trust_anchor") or "") or None
+        )
+        seed_store = _build_env_seed_store() if use_id_addr else None
+        desc_store = (
+            _build_env_descriptor_store(
+                anchor_store,
+                require_pins,
+                local_trust_domain="org-audit.io",
+                local_trust_anchor=own_audit_anchor,
+            )
+            if use_id_addr
+            else None
+        )
+        syncer = FederationBundleSyncer(
+            peer_ca_urls=peer_ca_map,
+            anchor_store=anchor_store,
+            require_pinned_anchors=require_pins,
+            local_trust_domain=("org-audit.io" if use_id_addr else None),
+            seed_store=seed_store,
+            descriptor_store=desc_store,
+            local_ca_url=(audit_tls_ca_url if use_id_addr and audit_tls_ca_url else None),
+            sa_token_path=(audit_csr_token_file if use_id_addr and audit_csr_token_file else None),
+            persisted_descriptors_file=(persisted_desc_file if use_id_addr else None),
+        )
+        if wait_for_peers_on_boot and peer_ca_map:
+            syncer.sync_all(require_all=True, max_wait_sec=60.0)
+        elif use_id_addr:
+            syncer.sync_all(require_all=False)
+        syncer.start_background_refresh(interval_sec=2.0)
+
         svc = AuditCollectorService(
             trust_resolver=syncer.trust_resolver,
             host="0.0.0.0",
@@ -1026,13 +1513,16 @@ def main() -> None:
                 if audit_mtls_bundle is not None
                 else None
             ),
+            descriptors_provider=(
+                desc_store.export_gossip_payload if desc_store is not None else None
+            ),
             readiness_check=syncer.is_ready,
         )
         try:
             svc.start()
             mode_lbl = "TLS-1.3" if audit_mtls_bundle is not None else "HTTP"
             print(
-                f"[federated-audit-collector:{mode_lbl}] Keyless verifier listening on 0.0.0.0:8093 (domains={sorted(peer_ca_map.keys())})",
+                f"[federated-audit-collector:{mode_lbl}] Keyless verifier listening on 0.0.0.0:8093 (id_addressing={use_id_addr})",
                 flush=True,
             )
             stop_event.wait()
@@ -1050,18 +1540,29 @@ def main() -> None:
         from lineage.federation import bootstrap_autonomous_workload, parse_domain_url_map
 
         local_ca_url = os.environ["LOCAL_CA_URL"]
-        peer_ca_map = parse_domain_url_map(os.environ["PEER_CA_URLS"])
+        peer_ca_raw = os.environ.get("PEER_CA_URLS", "").strip()
+        peer_ca_map = parse_domain_url_map(peer_ca_raw) if peer_ca_raw else {}
         peer_rev_map = parse_domain_url_map(os.environ.get("PEER_REVOCATION_URLS", ""))
+        use_id_addr = identity_addressing or not peer_ca_map
         rev_fed_raw = os.environ.get("REVOCATION_FEDERATION_PORT", "").strip()
         rev_fed_port = int(rev_fed_raw) if rev_fed_raw else None
+        seed_store = _build_env_seed_store() if use_id_addr else None
+        desc_store = (
+            _build_env_descriptor_store(anchor_store, require_pins)
+            if use_id_addr
+            else None
+        )
         identity, resolver, mtls_bundle, syncer = bootstrap_autonomous_workload(
             local_ca_url,
             peer_ca_map,
-            require_all_peers=wait_for_peers_on_boot,
+            require_all_peers=wait_for_peers_on_boot and bool(peer_ca_map),
             svid_ttl_seconds=svid_ttl,
             anchor_store=anchor_store,
             require_pinned_anchors=require_pins,
             enable_auto_renewal=True,
+            seed_store=seed_store,
+            descriptor_store=desc_store,
+            persisted_descriptors_file=(persisted_desc_file if use_id_addr else None),
         )
         svc = RevocationService(
             identity,
@@ -1073,11 +1574,12 @@ def main() -> None:
             federation_port=rev_fed_port,
             mtls_bundle=mtls_bundle,
             readiness_check=syncer.is_ready,
+            descriptor_store=desc_store,
         )
         try:
             svc.start()
             print(
-                f"[domain-revocation:{identity.trust_domain}] Listening as {identity.spiffe_id} on :8092 (mTLS fed_port={rev_fed_port})",
+                f"[domain-revocation:{identity.trust_domain}] Listening as {identity.spiffe_id} on :8092 (mTLS fed_port={rev_fed_port}, id_addressing={use_id_addr})",
                 flush=True,
             )
             stop_event.wait()
@@ -1092,18 +1594,29 @@ def main() -> None:
         from lineage.federation import bootstrap_autonomous_workload, parse_domain_url_map
 
         local_ca_url = os.environ["LOCAL_CA_URL"]
-        peer_ca_map = parse_domain_url_map(os.environ["PEER_CA_URLS"])
+        peer_ca_raw = os.environ.get("PEER_CA_URLS", "").strip()
+        peer_ca_map = parse_domain_url_map(peer_ca_raw) if peer_ca_raw else {}
         peer_dir_map = parse_domain_url_map(os.environ.get("PEER_DIRECTORY_URLS", ""))
+        use_id_addr = identity_addressing or not peer_ca_map
         dir_fed_raw = os.environ.get("DIRECTORY_FEDERATION_PORT", "").strip()
         dir_fed_port = int(dir_fed_raw) if dir_fed_raw else None
+        seed_store = _build_env_seed_store() if use_id_addr else None
+        desc_store = (
+            _build_env_descriptor_store(anchor_store, require_pins)
+            if use_id_addr
+            else None
+        )
         identity, resolver, mtls_bundle, syncer = bootstrap_autonomous_workload(
             local_ca_url,
             peer_ca_map,
-            require_all_peers=wait_for_peers_on_boot,
+            require_all_peers=wait_for_peers_on_boot and bool(peer_ca_map),
             svid_ttl_seconds=svid_ttl,
             anchor_store=anchor_store,
             require_pinned_anchors=require_pins,
             enable_auto_renewal=True,
+            seed_store=seed_store,
+            descriptor_store=desc_store,
+            persisted_descriptors_file=(persisted_desc_file if use_id_addr else None),
         )
         _wait_for_http_ok(f"{rev_url}/healthz")
         rev_replica = RevocationReplicaClient(rev_url, resolver)
@@ -1118,11 +1631,13 @@ def main() -> None:
             federation_port=dir_fed_port,
             mtls_bundle=mtls_bundle,
             readiness_check=syncer.is_ready,
+            descriptor_store=desc_store,
+            on_descriptor_learned=syncer.apply_verified_descriptor,
         )
         try:
             svc.start()
             print(
-                f"[domain-directory:{identity.trust_domain}] Listening as {identity.spiffe_id} on :8091 (mTLS fed_port={dir_fed_port})",
+                f"[domain-directory:{identity.trust_domain}] Listening as {identity.spiffe_id} on :8091 (mTLS fed_port={dir_fed_port}, id_addressing={use_id_addr})",
                 flush=True,
             )
             stop_event.wait()
@@ -1179,23 +1694,39 @@ def main() -> None:
         loopback_secret = _write_shared_loopback_secret()
         local_ca_url = os.environ.get("LOCAL_CA_URL", "").strip()
         peer_ca_spec = os.environ.get("PEER_CA_URLS", "").strip()
+        use_id_addr = bool(local_ca_url) and (identity_addressing or not peer_ca_spec)
         mtls_bundle = None
         syncer = None
-        if local_ca_url and peer_ca_spec:
+        desc_store = None
+        if local_ca_url and (peer_ca_spec or use_id_addr):
             from lineage.federation import (
                 bootstrap_autonomous_workload,
                 parse_domain_url_map,
             )
 
+            seed_store = _build_env_seed_store() if use_id_addr else None
+            desc_store = (
+                _build_env_descriptor_store(anchor_store, require_pins)
+                if use_id_addr
+                else None
+            )
+            peer_ca_map = parse_domain_url_map(peer_ca_spec) if peer_ca_spec else {}
             identity, resolver, mtls_bundle, syncer = bootstrap_autonomous_workload(
                 local_ca_url,
-                parse_domain_url_map(peer_ca_spec),
-                require_all_peers=wait_for_peers_on_boot,
+                peer_ca_map,
+                require_all_peers=wait_for_peers_on_boot and bool(peer_ca_map),
                 svid_ttl_seconds=svid_ttl,
                 anchor_store=anchor_store,
                 require_pinned_anchors=require_pins,
-                audit_ca_url=(audit_url if audit_url.startswith("https://") else None),
+                audit_ca_url=(
+                    audit_url
+                    if (not use_id_addr and audit_url.startswith("https://"))
+                    else None
+                ),
                 enable_auto_renewal=True,
+                seed_store=seed_store,
+                descriptor_store=desc_store,
+                persisted_descriptors_file=(persisted_desc_file if use_id_addr else None),
             )
             default_in_port = "8443"
         else:
@@ -1203,16 +1734,22 @@ def main() -> None:
             default_in_port = "8080"
 
         _wait_for_http_ok(f"{rev_url}/healthz")
-        if wait_for_peers_on_boot and not audit_url.startswith("https://"):
+        if (
+            wait_for_peers_on_boot
+            and audit_url
+            and not audit_url.startswith("https://")
+        ):
             _wait_for_http_ok(f"{audit_url}/healthz")
         app_port = int(os.environ.get("APP_PORT", "9001"))
         inbound_port = int(os.environ.get("SIDECAR_INBOUND_PORT", default_in_port))
         outbound_port = int(os.environ.get("SIDECAR_OUTBOUND_PORT", "8081"))
-        public_origin = os.environ["PUBLIC_ORIGIN"]
         is_tool = os.environ.get("IS_TOOL_SERVER", "false").lower() == "true"
         v_mode = VerificationMode(
             os.environ.get("VERIFICATION_MODE", VerificationMode.ADAPTIVE_RISK_ANCHORED.value)
         )
+        loc_slot = os.environ.get("LCT_LOCATOR_SLOT", "").strip()
+        explicit_public_origin = os.environ.get("PUBLIC_ORIGIN", "").strip()
+        loc_transport = "mtls-tcp" if mtls_bundle is not None else "http-ro"
 
         _wait_for_http_ok(f"http://127.0.0.1:{app_port}/healthz")
 
@@ -1226,23 +1763,69 @@ def main() -> None:
                 audit_url,
                 ssl_context_provider=(
                     syncer.audit_ssl_context
-                    if (syncer is not None and audit_url.startswith("https://"))
+                    if (syncer is not None and not use_id_addr and audit_url.startswith("https://"))
+                    else None
+                ),
+                locator_provider=(
+                    syncer.audit_locators
+                    if (syncer is not None and use_id_addr and not audit_url)
+                    else None
+                ),
+                ssl_context_for_locator=(
+                    syncer.audit_ssl_context_for_locator
+                    if (syncer is not None and use_id_addr and not audit_url)
                     else None
                 ),
             ),
             stream_id=pod_stream_id,
-            best_effort_remote=(not wait_for_peers_on_boot) or audit_url.startswith("https://"),
+            best_effort_remote=(
+                (not wait_for_peers_on_boot)
+                or use_id_addr
+                or audit_url.startswith("https://")
+            ),
         )
 
         card_lock = threading.Lock()
-        card_state: Dict[str, Any] = {"card": None, "version": int(time.time() * 1000)}
+        card_state: Dict[str, Any] = {
+            "card": None,
+            "version": int(time.time() * 1000),
+            "locators": (),
+        }
+        raw_skills_env = os.environ.get("AGENT_SKILLS", "").strip()
         skills = [
             s.strip()
-            for s in os.environ.get("AGENT_SKILLS", "agent.generic").split(",")
+            for s in (raw_skills_env or "agent.generic").split(",")
             if s.strip()
         ]
+        supported_tools = [
+            t.strip()
+            for t in os.environ.get("SUPPORTED_TOOLS", "").split(",")
+            if t.strip()
+        ]
+        should_register_card = (not is_tool) or bool(raw_skills_env)
         priority = int(os.environ.get("AGENT_PRIORITY", "50"))
         agent_name = os.environ.get("AGENT_DISPLAY_NAME", identity.spiffe_id)
+
+        loc_watcher = _build_env_node_locator_watcher() if loc_slot else None
+        if loc_watcher is not None:
+            init_snap = loc_watcher.wait_for_locators(max_wait_sec=12.0)
+            if init_snap is not None:
+                card_state["locators"] = init_snap.build_service_locators(
+                    loc_slot,
+                    transport=loc_transport,
+                    spiffe_id=identity.spiffe_id,
+                )
+
+        def _current_primary_and_extras() -> Tuple[str, List[str]]:
+            locs = card_state["locators"]
+            if locs:
+                return locs[0].origin_url, [loc.origin_url for loc in locs[1:]]
+            if explicit_public_origin:
+                return explicit_public_origin, []
+            scheme = "https" if mtls_bundle is not None else "http"
+            return f"{scheme}://127.0.0.1:{inbound_port}", []
+
+        init_primary_origin, init_extra_origins = _current_primary_and_extras()
 
         def _mint_and_register_card(sidecar_ref: Optional[LineageSidecar] = None) -> Optional[AgentCard]:
             if stop_event.is_set():
@@ -1250,6 +1833,8 @@ def main() -> None:
             with card_lock:
                 if stop_event.is_set():
                     return None
+                cur_locs = tuple(card_state["locators"])
+                prim_origin, extra_origins = _current_primary_and_extras()
                 next_ver = max(int(card_state["version"]) + 1, int(time.time() * 1000))
                 rem_svid_ttl = max(
                     5.0, min(float(svid_ttl), float(identity.expires_at - time.time()))
@@ -1257,22 +1842,26 @@ def main() -> None:
                 card_obj = AgentCard.sign_and_create(
                     identity=identity,
                     name=agent_name,
-                    endpoint=public_origin,
-                    return_endpoint=public_origin,
+                    endpoint=(None if cur_locs else prim_origin),
+                    return_endpoint=(None if cur_locs else prim_origin),
                     skills=skills,
+                    supported_tools=supported_tools,
                     priority=priority,
+                    streaming_supported=(not is_tool),
                     ttl_seconds=rem_svid_ttl,
                     version=next_ver,
+                    locators=(cur_locs if cur_locs else None),
                 )
                 card_state["version"] = next_ver
                 if sidecar_ref is not None:
+                    sidecar_ref.set_public_origins(prim_origin, extra_origins)
                     sidecar_ref.set_agent_card(card_obj)
                 dir_client.register(card_obj)
                 card_state["card"] = card_obj
                 return card_obj
 
         registered_card: Optional[AgentCard] = None
-        if not is_tool:
+        if should_register_card:
             _wait_for_http_ok(f"{dir_url}/healthz")
             for attempt in range(8):
                 try:
@@ -1287,9 +1876,109 @@ def main() -> None:
             if syncer is None:
                 return True, {}
             peers_ok, diag = syncer.is_ready()
-            card_ok = is_tool or (card_state["card"] is not None)
+            card_ok = (not should_register_card) or (card_state["card"] is not None)
             diag["agent_card_registered"] = card_ok
             return (peers_ok and card_ok), diag
+
+        delegation_mode_env = os.environ.get("DELEGATION_MODE", "lct").strip().lower() or "lct"
+        local_sts_url_sc = os.environ.get("LOCAL_STS_URL", "").strip().rstrip("/")
+        oauth_realm_sc = os.environ.get("OAUTH_REALM", "lct").strip() or "lct"
+        oauth_creds_file = os.environ.get("OAUTH_CREDENTIALS_FILE", "").strip()
+
+        oauth_central_ver: Optional[Any] = None
+        oauth_local_ver: Optional[Any] = None
+        oauth_ex_cli: Optional[Any] = None
+        central_origins_fn = None
+        domain_origins_fn = None
+        if delegation_mode_env in ("dual", "oauth_centralized", "oauth_federated"):
+            import json as _json_sc
+
+            from lineage.oauth_sts import OAuthTokenExchangeClient, OIDCTokenVerifier
+
+            sc_client_secrets: Dict[str, str] = {}
+            if oauth_creds_file and os.path.isfile(oauth_creds_file):
+                try:
+                    with open(oauth_creds_file, "r", encoding="utf-8") as fh:
+                        sc_client_secrets = dict((_json_sc.load(fh) or {}).get("clients") or {})
+                except Exception:
+                    sc_client_secrets = {}
+
+            def _central_sts_origins() -> List[str]:
+                ext_locs = (
+                    [
+                        loc
+                        for loc in (desc_store.get_descriptor("org-alpha.io").locators.get("oauth_sts", ()) if (desc_store is not None and desc_store.get_descriptor("org-alpha.io") is not None) else ())
+                    ]
+                )
+                origins: List[str] = []
+                if identity.trust_domain == "org-alpha.io" and local_sts_url_sc:
+                    if ext_locs:
+                        origins.append(f"{local_sts_url_sc}#host={ext_locs[0].host}:{ext_locs[0].port}")
+                    else:
+                        origins.append(local_sts_url_sc)
+                for loc in ext_locs:
+                    u = loc.origin_url.rstrip("/")
+                    if u not in origins:
+                        origins.append(u)
+                return origins
+
+            def _domain_sts_origins(target_td: str) -> List[str]:
+                td_clean = (target_td or identity.trust_domain).strip().lower()
+                d_obj = desc_store.get_descriptor(td_clean) if desc_store is not None else None
+                ext_locs = list(d_obj.locators.get("oauth_sts", ())) if d_obj is not None else []
+                origins: List[str] = []
+                if td_clean == identity.trust_domain and local_sts_url_sc:
+                    if ext_locs:
+                        origins.append(f"{local_sts_url_sc}#host={ext_locs[0].host}:{ext_locs[0].port}")
+                    else:
+                        origins.append(local_sts_url_sc)
+                for loc in ext_locs:
+                    u = loc.origin_url.rstrip("/")
+                    if u not in origins:
+                        origins.append(u)
+                return origins
+
+            central_origins_fn = _central_sts_origins
+            domain_origins_fn = _domain_sts_origins
+            own_short = identity.trust_domain.strip().lower().removeprefix("org-").split(".", 1)[0]
+
+            oauth_central_ver = OIDCTokenVerifier(
+                jwks_urls_provider=lambda: [
+                    f"{o.split('#host=', 1)[0]}/realms/{oauth_realm_sc}/protocol/openid-connect/certs"
+                    for o in _central_sts_origins()
+                ],
+                allowed_issuers_provider=lambda: [
+                    f"http://alpha-oidc.lct.local/realms/{oauth_realm_sc}",
+                    f"http://alpha-sts.lineage-alpha.svc.cluster.local:8095/realms/{oauth_realm_sc}",
+                    *[
+                        f"http://{o.split('#host=', 1)[1]}/realms/{oauth_realm_sc}"
+                        if "#host=" in o
+                        else f"{o}/realms/{oauth_realm_sc}"
+                        for o in _central_sts_origins()
+                    ],
+                ],
+                default_user_domain="org-alpha.io",
+            )
+            oauth_local_ver = OIDCTokenVerifier(
+                jwks_urls_provider=lambda: [
+                    f"{o.split('#host=', 1)[0]}/realms/{oauth_realm_sc}/protocol/openid-connect/certs"
+                    for o in _domain_sts_origins(identity.trust_domain)
+                ],
+                allowed_issuers_provider=lambda: [
+                    f"http://{own_short}-oidc.lct.local/realms/{oauth_realm_sc}",
+                    *[
+                        f"http://{o.split('#host=', 1)[1]}/realms/{oauth_realm_sc}"
+                        if "#host=" in o
+                        else f"{o}/realms/{oauth_realm_sc}"
+                        for o in _domain_sts_origins(identity.trust_domain)
+                    ],
+                ],
+                default_user_domain="org-alpha.io",
+            )
+            oauth_ex_cli = OAuthTokenExchangeClient(
+                realm=oauth_realm_sc,
+                client_secrets=sc_client_secrets,
+            )
 
         sidecar = LineageSidecar(
             identity=identity,
@@ -1305,17 +1994,64 @@ def main() -> None:
             inbound_host="0.0.0.0",
             inbound_port=inbound_port,
             outbound_port=outbound_port,
-            public_origin=public_origin,
+            public_origin=init_primary_origin,
             mtls_bundle=mtls_bundle,
             readiness_check=_sidecar_readiness,
+            delegation_mode=delegation_mode_env,
+            oauth_central_verifier=oauth_central_ver,
+            oauth_local_verifier=oauth_local_ver,
+            oauth_exchange_client=oauth_ex_cli,
+            oauth_central_sts_origins_provider=central_origins_fn,
+            oauth_domain_sts_origins_provider=domain_origins_fn,
         )
+        sidecar.set_public_origins(init_primary_origin, init_extra_origins)
+        if registered_card is not None:
+            sidecar.set_agent_card(registered_card)
+
+        if loc_watcher is not None:
+            def _on_node_locator_changed(new_snap: Any) -> None:
+                if new_snap is None or stop_event.is_set():
+                    return
+                new_locs = new_snap.build_service_locators(
+                    loc_slot,
+                    transport=loc_transport,
+                    spiffe_id=identity.spiffe_id,
+                )
+                if not new_locs:
+                    return
+                with card_lock:
+                    prev_dicts = [loc.to_dict() for loc in card_state["locators"]]
+                    next_dicts = [loc.to_dict() for loc in new_locs]
+                    if prev_dicts == next_dicts:
+                        return
+                    card_state["locators"] = new_locs
+                sidecar.set_public_origins(
+                    new_locs[0].origin_url,
+                    [loc.origin_url for loc in new_locs[1:]],
+                )
+                if should_register_card:
+                    try:
+                        updated = _mint_and_register_card(sidecar_ref=sidecar)
+                        if updated is not None:
+                            print(
+                                f"[lct-sidecar:locator] Re-signed AgentCard {identity.spiffe_id} v{updated.version} -> {[loc.origin_url for loc in new_locs]}",
+                                flush=True,
+                            )
+                    except Exception as exc:
+                        print(
+                            f"[lct-sidecar:locator-warn] Deferred AgentCard update on IP change: {exc}",
+                            flush=True,
+                        )
+
+            loc_watcher.add_callback(_on_node_locator_changed)
+            loc_watcher.start()
 
         if syncer is not None and syncer.identity_renewer is not None:
             def _on_svid_renewed(
                 _id: WorkloadIdentity, _mb: Optional[Any]
             ) -> None:
                 sidecar.on_identity_renewed()
-                if not is_tool:
+                if should_register_card:
                     try:
                         refreshed = _mint_and_register_card(sidecar_ref=sidecar)
                         if refreshed is not None:
@@ -1340,7 +2076,7 @@ def main() -> None:
 
         card_keeper_stop = threading.Event()
         card_keeper_thread: Optional[threading.Thread] = None
-        if not is_tool:
+        if should_register_card:
             def _card_keeper_loop() -> None:
                 from lineage.registry.agent_card import AgentCardError
 
@@ -1353,11 +2089,18 @@ def main() -> None:
                             existing = dir_client.get_agent(identity.spiffe_id)
                         except AgentCardError:
                             existing = None
+                        cur_loc_dicts = [loc.to_dict() for loc in card_state["locators"]]
+                        existing_loc_dicts = (
+                            [loc.to_dict() for loc in existing.locators]
+                            if existing is not None
+                            else []
+                        )
                         if (
                             existing is None
                             or existing.jkt != identity.jkt
                             or existing.workload_svid != identity.workload_svid
                             or existing.expires_at <= (time.time() + 25.0)
+                            or (cur_loc_dicts and existing_loc_dicts != cur_loc_dicts)
                         ):
                             _mint_and_register_card(sidecar_ref=sidecar)
                     except Exception:
@@ -1371,18 +2114,20 @@ def main() -> None:
         proto_tag = "mTLS-1.3" if mtls_bundle is not None else "HTTP"
         if registered_card is not None:
             print(
-                f"[lct-sidecar:{proto_tag}] Registered A2A v1.0 AgentCard {identity.spiffe_id} -> {public_origin} skills={list(registered_card.skills)} prio={registered_card.priority}",
+                f"[lct-sidecar:{proto_tag}] Registered signed AgentCard {identity.spiffe_id} -> {registered_card.endpoint} skills={list(registered_card.skills)} prio={registered_card.priority} ver={registered_card.version}",
                 flush=True,
             )
         else:
             print(
-                f"[lct-sidecar:{proto_tag}] Sidecar active for {identity.spiffe_id} -> {public_origin} mode={v_mode.value}",
+                f"[lct-sidecar:{proto_tag}] Sidecar active for {identity.spiffe_id} -> {init_primary_origin} mode={v_mode.value}",
                 flush=True,
             )
 
         try:
             stop_event.wait()
         finally:
+            if loc_watcher is not None:
+                loc_watcher.stop()
             card_keeper_stop.set()
             if card_keeper_thread is not None:
                 card_keeper_thread.join(timeout=1.5)

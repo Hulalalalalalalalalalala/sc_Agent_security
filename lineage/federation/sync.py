@@ -37,6 +37,15 @@ from lineage.federation.anchors import (
     compute_bundle_trust_anchor,
     extract_canonical_bundle_root_pem,
 )
+from lineage.federation.locators import (
+    MAX_DESCRIPTORS_PER_MESSAGE,
+    MAX_DESCRIPTOR_HTTP_BYTES,
+    DomainDescriptorStore,
+    SeedEndpointStore,
+    ServiceLocator,
+    SignedDomainDescriptor,
+    seed_candidate_descriptor_urls,
+)
 from lineage.identity import IdentityError, SpiffeId, TrustBundleResolver, WorkloadIdentity
 from lineage.k8s.bootstrap_services import (
     K8S_SA_TOKEN_PATH,
@@ -69,24 +78,42 @@ def parse_domain_url_map(spec: str) -> Dict[str, str]:
 
 
 class FederationBundleSyncer:
-    """Synchronizes public JWKS + X.509 Root CAs across autonomous trust domains."""
+    """Synchronizes public JWKS + X.509 Root CAs + Signed Domain Descriptors across trust domains."""
 
     def __init__(
         self,
-        peer_ca_urls: Mapping[str, str],
+        peer_ca_urls: Optional[Mapping[str, str]] = None,
         trust_resolver: Optional[TrustBundleResolver] = None,
         x509_trust_store: Optional[X509FederationTrustStore] = None,
         timeout: float = 3.0,
         anchor_store: Optional[TrustAnchorPinStore] = None,
         require_pinned_anchors: bool = False,
         audit_ca_url: Optional[str] = None,
+        local_trust_domain: Optional[str] = None,
+        seed_store: Optional[SeedEndpointStore] = None,
+        descriptor_store: Optional[DomainDescriptorStore] = None,
+        local_ca_url: Optional[str] = None,
+        sa_token_path: Optional[str] = None,
+        persisted_descriptors_file: Optional[str] = None,
     ) -> None:
         self.peer_ca_urls: Dict[str, str] = {
-            str(td): str(u).rstrip("/") for td, u in peer_ca_urls.items() if str(td)
+            str(td): str(u).rstrip("/")
+            for td, u in (peer_ca_urls or {}).items()
+            if str(td)
         }
         self.audit_ca_url: Optional[str] = (
             audit_ca_url.strip().rstrip("/") if audit_ca_url and audit_ca_url.strip() else None
         )
+        self.local_trust_domain: Optional[str] = (
+            local_trust_domain.strip().lower() if local_trust_domain else None
+        )
+        self.seed_store = seed_store
+        self.descriptor_store = descriptor_store
+        self.local_ca_url: Optional[str] = (
+            local_ca_url.strip().rstrip("/") if local_ca_url and local_ca_url.strip() else None
+        )
+        self.sa_token_path = sa_token_path
+        self.persisted_descriptors_file = persisted_descriptors_file
         self.trust_resolver = trust_resolver or TrustBundleResolver()
         self.x509_trust_store = x509_trust_store or X509FederationTrustStore()
         self.timeout = float(timeout)
@@ -100,17 +127,204 @@ class FederationBundleSyncer:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+        if self.persisted_descriptors_file and self.descriptor_store is not None:
+            self.descriptor_store.load_persisted_file(self.persisted_descriptors_file)
+            for desc in self.descriptor_store.all_descriptors().values():
+                try:
+                    self.apply_verified_descriptor(desc)
+                except Exception:
+                    continue
+
     def _all_target_urls(self) -> Dict[str, str]:
         targets = dict(self.peer_ca_urls)
         if self.audit_ca_url:
             targets.setdefault("org-audit.io", self.audit_ca_url)
         return targets
 
+    def _required_peer_domains_from_pins(self) -> List[str]:
+        if self.anchor_store is None:
+            return []
+        self.anchor_store.refresh_if_changed()
+        pins = self.anchor_store.all_pins()
+        return sorted(
+            td for td in pins.keys() if not self.local_trust_domain or td != self.local_trust_domain
+        )
+
     def _evict_peer_domain(self, domain: str) -> None:
         self.trust_resolver.evict_domain(domain)
         self.x509_trust_store.evict_domain(domain)
         with self._state_lock:
             self._verified_domains.pop(domain, None)
+
+    def apply_verified_descriptor(self, desc: SignedDomainDescriptor) -> None:
+        """Import X.509 Root CA + JWKS from an already pin- and signature-verified descriptor."""
+        td = desc.trust_domain
+        root_pem = extract_canonical_bundle_root_pem(desc.bundle)
+        self.x509_trust_store.register_domain_root_pem(td, root_pem)
+        keys_list = desc.bundle.get("keys") or []
+        if keys_list:
+            self.trust_resolver.register_bundle(desc.bundle)
+        if not self.local_trust_domain or td != self.local_trust_domain:
+            with self._state_lock:
+                self._verified_domains[td] = desc.trust_anchor
+                self._last_errors.pop(td, None)
+
+    def _push_learned_descriptors_to_local_ca(
+        self, learned: Sequence[SignedDomainDescriptor]
+    ) -> None:
+        if not learned or not self.local_ca_url or not self.sa_token_path:
+            return
+        try:
+            tok_file = resolve_sa_token_path(self.sa_token_path)
+            with open(tok_file, "r", encoding="utf-8") as fh:
+                sa_jwt = fh.read().strip()
+            httpx.post(
+                f"{self.local_ca_url}/v1/ca/learn-descriptors",
+                json={"descriptors": [d.to_dict() for d in learned]},
+                headers={"Authorization": f"Bearer {sa_jwt}"},
+                timeout=2.5,
+                trust_env=False,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _enforce_descriptor_response_limit(resp: httpx.Response) -> None:
+        cl = resp.headers.get("content-length")
+        if cl:
+            try:
+                if int(cl) > MAX_DESCRIPTOR_HTTP_BYTES:
+                    raise FederationSecurityError(
+                        f"Descriptor HTTP Content-Length {cl} exceeds {MAX_DESCRIPTOR_HTTP_BYTES} bytes"
+                    )
+            except ValueError:
+                pass
+
+    def _ingest_descriptor_list_payload(
+        self, payload: Any, learned_peers: List[SignedDomainDescriptor]
+    ) -> None:
+        if self.descriptor_store is None or not isinstance(payload, Mapping):
+            return
+        raw_items = payload.get("descriptors")
+        if not isinstance(raw_items, list) or len(raw_items) > MAX_DESCRIPTORS_PER_MESSAGE:
+            return
+        for raw_d in raw_items:
+            if not isinstance(raw_d, Mapping):
+                continue
+            try:
+                updated, desc = self.descriptor_store.ingest_raw_descriptor(raw_d)
+                self.apply_verified_descriptor(desc)
+                if updated and (
+                    not self.local_trust_domain
+                    or desc.trust_domain != self.local_trust_domain
+                ):
+                    learned_peers.append(desc)
+            except Exception:
+                continue
+
+    def sync_descriptors_from_seeds_and_peers(self) -> int:
+        """Bidirectionally announce & pull `/v1/federation/descriptors` across seeds & verified peers."""
+        if self.descriptor_store is None:
+            return 0
+        self.reconcile_anchor_evictions()
+        learned_peers: List[SignedDomainDescriptor] = []
+
+        # 1. Pull own `local_ca_url` FIRST so our local signed descriptor (and any descriptors
+        #    announced directly to our local CA) are present in `self.descriptor_store`.
+        local_ca_desc_url = (
+            f"{self.local_ca_url.rstrip('/')}/v1/federation/descriptors"
+            if self.local_ca_url
+            else None
+        )
+        if local_ca_desc_url:
+            try:
+                with httpx.Client(
+                    verify=True,
+                    timeout=self.timeout,
+                    follow_redirects=False,
+                    trust_env=False,
+                    event_hooks={"response": [self._enforce_descriptor_response_limit]},
+                ) as local_cli:
+                    r_loc = local_cli.get(local_ca_desc_url)
+                if r_loc.status_code == 200 and len(r_loc.content) <= MAX_DESCRIPTOR_HTTP_BYTES:
+                    self._ingest_descriptor_list_payload(r_loc.json(), learned_peers)
+            except Exception:
+                pass
+
+        # 2. Collect remote seed & verified peer descriptor endpoints
+        candidate_targets: List[Tuple[str, Optional[str], Optional[str]]] = []
+        if self.seed_store is not None:
+            for s in self.seed_store.list_seeds():
+                for u in seed_candidate_descriptor_urls(s):
+                    if u != local_ca_desc_url and all(
+                        existing_u != u for existing_u, _, _ in candidate_targets
+                    ):
+                        candidate_targets.append((u, None, None))
+        for peer_td, locs in self.descriptor_store.peer_locators(
+            "ca_bundle", exclude_domain=self.local_trust_domain
+        ).items():
+            for loc in locs:
+                u = f"{loc.origin_url}/v1/federation/descriptors"
+                if u != local_ca_desc_url and all(
+                    existing_u != u for existing_u, _, _ in candidate_targets
+                ):
+                    candidate_targets.append((u, peer_td, loc.spiffe_id))
+
+        # 3. For each remote endpoint, push our bounded verified gossip set AND pull theirs
+        for url, peer_td, loc_spiffe in candidate_targets:
+            verify_kw: Any = True
+            if url.startswith("https://"):
+                if (
+                    peer_td
+                    and loc_spiffe
+                    and self.x509_trust_store.has_domain(peer_td)
+                ):
+                    try:
+                        verify_kw = self.x509_trust_store.build_server_verify_ssl_context(
+                            expected_trust_domain=peer_td,
+                            check_hostname=False,
+                            expected_spiffe_id=loc_spiffe,
+                        )
+                    except MTLSError:
+                        continue
+                else:
+                    continue
+            try:
+                with httpx.Client(
+                    verify=verify_kw,
+                    timeout=self.timeout,
+                    follow_redirects=False,
+                    trust_env=False,
+                    event_hooks={"response": [self._enforce_descriptor_response_limit]},
+                ) as client:
+                    out_gossip = self.descriptor_store.export_gossip_payload()
+                    out_descs = out_gossip.get("descriptors") or []
+                    if out_descs:
+                        try:
+                            client.post(
+                                url,
+                                json={
+                                    "trust_domain": self.local_trust_domain,
+                                    "descriptors": out_descs[:MAX_DESCRIPTORS_PER_MESSAGE],
+                                },
+                            )
+                        except Exception:
+                            pass
+                    resp = client.get(url)
+                if (
+                    resp.status_code != 200
+                    or len(resp.content) > MAX_DESCRIPTOR_HTTP_BYTES
+                ):
+                    continue
+                payload = resp.json()
+            except Exception:
+                continue
+
+            self._ingest_descriptor_list_payload(payload, learned_peers)
+
+        if learned_peers:
+            self._push_learned_descriptors_to_local_ca(learned_peers)
+        return len(learned_peers)
 
     def _has_active_verified_pin(self, domain: str) -> bool:
         """Return True iff `domain` is already verified against the current local pin."""
@@ -137,12 +351,17 @@ class FederationBundleSyncer:
 
     def reconcile_anchor_evictions(self) -> bool:
         """Hot-reload `TrustAnchorPinStore` and evict any domain whose pin was removed or altered."""
+        desc_evicted: List[str] = []
+        if self.descriptor_store is not None:
+            desc_evicted = self.descriptor_store.reconcile_with_pins()
+            for td in desc_evicted:
+                self._evict_peer_domain(td)
         if self.anchor_store is None:
-            return False
+            return bool(desc_evicted)
         changed = self.anchor_store.refresh_if_changed()
         with self._state_lock:
             verified_snapshot = dict(self._verified_domains)
-        evicted_any = False
+        evicted_any = bool(desc_evicted)
         for td, prev_anchor in verified_snapshot.items():
             cur_pin = self.anchor_store.get_pin(td)
             if self.require_pinned_anchors and cur_pin is None:
@@ -170,6 +389,26 @@ class FederationBundleSyncer:
             return self.x509_trust_store.build_server_verify_ssl_context(
                 expected_trust_domain="org-audit.io",
                 check_hostname=True,
+            )
+        except MTLSError:
+            return None
+
+    def audit_locators(self) -> Tuple[ServiceLocator, ...]:
+        """Return signed `audit_collector` locators for `org-audit.io` from `descriptor_store`."""
+        if self.descriptor_store is None:
+            return ()
+        return self.descriptor_store.get_locators("org-audit.io", "audit_collector")
+
+    def audit_ssl_context_for_locator(self, loc: ServiceLocator) -> Optional[ssl.SSLContext]:
+        """Build SPIFFE-pinned (`check_hostname=False`, zero IP-SNI) TLS 1.3 context for an audit locator."""
+        self.reconcile_anchor_evictions()
+        if not self.x509_trust_store.has_domain("org-audit.io") or not loc.spiffe_id:
+            return None
+        try:
+            return self.x509_trust_store.build_server_verify_ssl_context(
+                expected_trust_domain="org-audit.io",
+                check_hostname=False,
+                expected_spiffe_id=loc.spiffe_id,
             )
         except MTLSError:
             return None
@@ -305,6 +544,45 @@ class FederationBundleSyncer:
         """Return `(ready_bool, diagnostic_dict)` for Kubernetes `/readyz` probes."""
         self.reconcile_anchor_evictions()
         targets = self._all_target_urls()
+        descriptor_mode = (not targets) and (self.descriptor_store is not None)
+        if descriptor_mode:
+            req_peers = self._required_peer_domains_from_pins()
+            awaiting_pins = bool(self.require_pinned_anchors and not req_peers)
+            with self._state_lock:
+                verified = dict(self._verified_domains)
+                rejected_counts = dict(self._rejected_bundle_counts)
+            missing: List[str] = []
+            for td in req_peers:
+                if td not in verified or (
+                    self.descriptor_store is not None
+                    and self.descriptor_store.get_descriptor(td) is None
+                ):
+                    missing.append(td)
+            desc_diag = (
+                self.descriptor_store.diagnostics()
+                if self.descriptor_store is not None
+                else {}
+            )
+            ready_ok = (not awaiting_pins) and (len(missing) == 0)
+            return (
+                ready_ok,
+                {
+                    "mode": "identity_descriptors",
+                    "awaiting_peer_trust_pins": awaiting_pins,
+                    "missing_domains": missing,
+                    "verified_domains": verified,
+                    "errors": desc_diag.get("last_descriptor_errors", {}),
+                    "rejected_bundle_counts": rejected_counts,
+                    "rejected_descriptor_counts": desc_diag.get(
+                        "rejected_descriptor_counts", {}
+                    ),
+                    "ignored_unpinned_domains": desc_diag.get(
+                        "ignored_unpinned_domains", []
+                    ),
+                    "trust_store_version": self.x509_trust_store.version,
+                },
+            )
+
         with self._state_lock:
             missing = sorted(td for td in targets if td not in self._verified_domains)
             verified = dict(self._verified_domains)
@@ -327,12 +605,28 @@ class FederationBundleSyncer:
         )
 
     def sync_all(self, require_all: bool = True, max_wait_sec: float = 45.0) -> None:
-        """Synchronize all configured peer domain bundles."""
+        """Synchronize all configured peer domain bundles & signed descriptors."""
         self.reconcile_anchor_evictions()
         deadline = time.time() + max(0.1, float(max_wait_sec))
         pending = self._all_target_urls()
+        if not pending and self.descriptor_store is not None:
+            while True:
+                self.sync_descriptors_from_seeds_and_peers()
+                ready_ok, diag = self.is_ready()
+                if ready_ok:
+                    return
+                if not require_all or time.time() >= deadline:
+                    if require_all:
+                        raise RuntimeError(
+                            f"Timed out syncing signed domain descriptors: {diag}"
+                        )
+                    return
+                time.sleep(0.4)
+
         last_err: Optional[Exception] = None
         while pending:
+            if self.descriptor_store is not None:
+                self.sync_descriptors_from_seeds_and_peers()
             for td, url in list(pending.items()):
                 try:
                     self.fetch_and_verify_peer(td, url)
@@ -459,6 +753,7 @@ class WorkloadIdentityRenewer:
             },
             headers={"Authorization": f"Bearer {sa_jwt}"},
             timeout=5.0,
+            trust_env=False,
         )
         resp.raise_for_status()
         ca_data = resp.json()
@@ -533,7 +828,7 @@ class WorkloadIdentityRenewer:
 
 def bootstrap_autonomous_workload(
     local_ca_url: str,
-    peer_ca_urls: Mapping[str, str],
+    peer_ca_urls: Optional[Mapping[str, str]] = None,
     sa_token_path: str = K8S_SA_TOKEN_PATH,
     max_wait_sec: float = 45.0,
     require_all_peers: bool = True,
@@ -547,10 +842,13 @@ def bootstrap_autonomous_workload(
     rotate_keypair_on_renewal: bool = False,
     on_renewed: Optional[Callable[[WorkloadIdentity, Optional[WorkloadMTLSBundle]], None]] = None,
     refresh_interval_sec: float = 2.0,
+    seed_store: Optional[SeedEndpointStore] = None,
+    descriptor_store: Optional[DomainDescriptorStore] = None,
+    persisted_descriptors_file: Optional[str] = None,
 ) -> Tuple[WorkloadIdentity, TrustBundleResolver, WorkloadMTLSBundle, FederationBundleSyncer]:
     """Generate RAM-only ES256 keypair, obtain `JWT-SVID` + `X.509-SVID` from local CA,
-    synchronize federated JWKS + X.509 Root CAs across peer domains, and start automatic
-    50%-lifetime background SVID/X.509 renewal.
+    synchronize federated JWKS + X.509 Root CAs + Signed Domain Descriptors across peer domains,
+    and start automatic 50%-lifetime background SVID/X.509 renewal.
     """
     resolved_tok_path = resolve_sa_token_path(sa_token_path)
     keypair = KeyPair.generate("ES256")
@@ -573,6 +871,7 @@ def bootstrap_autonomous_workload(
                 },
                 headers={"Authorization": f"Bearer {sa_jwt}"},
                 timeout=5.0,
+                trust_env=False,
             )
             if resp.status_code == 200:
                 ca_data = resp.json()
@@ -587,22 +886,43 @@ def bootstrap_autonomous_workload(
             f"Failed to bootstrap workload identity from {local_ca_url}: {last_err}"
         )
 
+    own_td = str(ca_data["trust_domain"])
+    own_bundle = ca_data.get("bundle")
+    own_anchor: Optional[str] = None
+    if isinstance(own_bundle, Mapping):
+        own_anchor = compute_bundle_trust_anchor(own_bundle)
+    if descriptor_store is not None:
+        descriptor_store.set_local_trust_domain(own_td, own_anchor)
+
     syncer = FederationBundleSyncer(
         peer_ca_urls=peer_ca_urls,
         timeout=peer_timeout,
         anchor_store=anchor_store,
         require_pinned_anchors=require_pinned_anchors,
         audit_ca_url=audit_ca_url,
+        local_trust_domain=own_td,
+        seed_store=seed_store,
+        descriptor_store=descriptor_store,
+        local_ca_url=local_ca_url,
+        sa_token_path=sa_token_path,
+        persisted_descriptors_file=persisted_descriptors_file,
     )
-    # Seed own domain bundle immediately, plus any pre-cached public peer bundles
-    own_td = str(ca_data["trust_domain"])
-    own_bundle = ca_data.get("bundle")
+    # Seed own domain bundle immediately, plus any pre-cached public peer bundles/descriptors
     if isinstance(own_bundle, Mapping):
         syncer.trust_resolver.register_bundle(own_bundle)
         if own_bundle.get("x509_root_pem") or own_bundle.get("x509_roots_pem"):
             syncer.x509_trust_store.register_domain_root_pem(
                 own_td, extract_canonical_bundle_root_pem(own_bundle)
             )
+    raw_ca_descs = ca_data.get("descriptors")
+    if descriptor_store is not None and isinstance(raw_ca_descs, list):
+        for raw_d in raw_ca_descs:
+            if isinstance(raw_d, Mapping):
+                try:
+                    _, v_desc = descriptor_store.ingest_raw_descriptor(raw_d)
+                    syncer.apply_verified_descriptor(v_desc)
+                except Exception:
+                    continue
     if seed_bundles:
         for sb in seed_bundles:
             if isinstance(sb, Mapping) and sb.get("trust_domain"):

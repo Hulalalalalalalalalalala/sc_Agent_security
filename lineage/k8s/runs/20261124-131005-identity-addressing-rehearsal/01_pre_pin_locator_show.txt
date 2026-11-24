@@ -1,0 +1,532 @@
+{
+  "timestamp": 1795497830.211,
+  "clusters": {
+    "lctmh-alpha": {
+      "role": "alpha",
+      "trust_domain": "org-alpha.io",
+      "host_node_locator": {
+        "role": "alpha",
+        "trust_domain": "org-alpha.io",
+        "epoch": 1,
+        "updated_at": 1795497173.177,
+        "locators": [
+          {
+            "host": "10.29.77.23",
+            "priority": 10,
+            "source": "macos:en0"
+          }
+        ],
+        "ports": {
+          "ca_federation": 30100,
+          "directory_federation": 30101,
+          "e2e_sync_hook": 30104,
+          "orchestrator-alpha": 30103,
+          "revocation_federation": 30102
+        }
+      },
+      "shareable_seed_endpoints": [
+        "10.29.77.23:30100"
+      ],
+      "configured_bootstrap_seeds": [
+        "192.168.65.254:31900"
+      ],
+      "domain_descriptors": [
+        {
+          "trust_domain": "org-alpha.io",
+          "scope": "own",
+          "version": 1795497726013,
+          "verification_status": "OWN_CA_SIGNED",
+          "signature_mode": "jwks_es256",
+          "age_seconds": 104.2,
+          "ttl_remaining_seconds": 3495.8,
+          "locators": {
+            "ca_bundle": [
+              {
+                "transport": "http-ro",
+                "host": "10.29.77.23",
+                "port": 30100,
+                "priority": 10
+              }
+            ],
+            "directory_federation": [
+              {
+                "transport": "mtls-tcp",
+                "host": "10.29.77.23",
+                "port": 30101,
+                "priority": 10,
+                "spiffe_id": "spiffe://org-alpha.io/ns/sys/sa/directory"
+              }
+            ],
+            "revocation_federation": [
+              {
+                "transport": "mtls-tcp",
+                "host": "10.29.77.23",
+                "port": 30102,
+                "priority": 10,
+                "spiffe_id": "spiffe://org-alpha.io/ns/sys/sa/revocation"
+              }
+            ]
+          }
+        }
+      ],
+      "workload_cards": [
+        {
+          "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+          "trust_domain": "org-alpha.io",
+          "version": "1795497728447",
+          "skills": [
+            {
+              "id": "travel.orchestrate",
+              "name": "Travel Orchestrate",
+              "description": "A2A v1.0 capability skill 'travel.orchestrate'",
+              "tags": [
+                "travel",
+                "orchestrate"
+              ],
+              "inputModes": [
+                "text/plain",
+                "application/json"
+              ],
+              "outputModes": [
+                "text/plain",
+                "application/json"
+              ]
+            }
+          ],
+          "verification_status": "SVID_AND_JWS_VERIFIED",
+          "ttl_remaining_seconds": 524.8,
+          "primary_endpoint": "https://10.29.77.23:30103",
+          "locators": [
+            {
+              "transport": "mtls-tcp",
+              "host": "10.29.77.23",
+              "port": 30103,
+              "priority": 10,
+              "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha"
+            }
+          ]
+        }
+      ]
+    },
+    "lctmh-beta": {
+      "role": "beta",
+      "trust_domain": "org-beta.io",
+      "host_node_locator": {
+        "role": "beta",
+        "trust_domain": "org-beta.io",
+        "epoch": 3,
+        "updated_at": 1795497738.712,
+        "locators": [
+          {
+            "host": "10.29.77.23",
+            "priority": 10,
+            "source": "macos:en0"
+          }
+        ],
+        "ports": {
+          "ca_federation": 31100,
+          "directory_federation": 31101,
+          "flight-specialist": 31103,
+          "hotel-specialist-backup": 31105,
+          "hotel-specialist-primary": 31104,
+          "revocation_federation": 31102
+        }
+      },
+      "shareable_seed_endpoints": [
+        "10.29.77.23:31100"
+      ],
+      "configured_bootstrap_seeds": [
+        "10.29.77.23:30100"
+      ],
+      "domain_descriptors": [
+        {
+          "trust_domain": "org-beta.io",
+          "scope": "own",
+          "version": 1795497740267,
+          "verification_status": "OWN_CA_SIGNED",
+          "signature_mode": "jwks_es256",
+          "age_seconds": 89.9,
+          "ttl_remaining_seconds": 3510.1,
+          "locators": {
+            "ca_bundle": [
+              {
+                "transport": "http-ro",
+                "host": "10.29.77.23",
+                "port": 31100,
+                "priority": 10
+              }
+            ],
+            "directory_federation": [
+              {
+                "transport": "mtls-tcp",
+                "host": "10.29.77.23",
+                "port": 31101,
+                "priority": 10,
+                "spiffe_id": "spiffe://org-beta.io/ns/sys/sa/directory"
+              }
+            ],
+            "revocation_federation": [
+              {
+                "transport": "mtls-tcp",
+                "host": "10.29.77.23",
+                "port": 31102,
+                "priority": 10,
+                "spiffe_id": "spiffe://org-beta.io/ns/sys/sa/revocation"
+              }
+            ]
+          }
+        }
+      ],
+      "workload_cards": [
+        {
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+          "trust_domain": "org-beta.io",
+          "version": "1795497741205",
+          "skills": [
+            {
+              "id": "travel.flight",
+              "name": "Travel Flight",
+              "description": "A2A v1.0 capability skill 'travel.flight'",
+              "tags": [
+                "travel",
+                "flight"
+              ],
+              "inputModes": [
+                "text/plain",
+                "application/json"
+              ],
+              "outputModes": [
+                "text/plain",
+                "application/json"
+              ]
+            }
+          ],
+          "verification_status": "SVID_AND_JWS_VERIFIED",
+          "ttl_remaining_seconds": 536.8,
+          "primary_endpoint": "https://10.29.77.23:31103",
+          "locators": [
+            {
+              "transport": "mtls-tcp",
+              "host": "10.29.77.23",
+              "port": 31103,
+              "priority": 10,
+              "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist"
+            }
+          ]
+        },
+        {
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+          "trust_domain": "org-beta.io",
+          "version": "1795497739992",
+          "skills": [
+            {
+              "id": "travel.hotel",
+              "name": "Travel Hotel",
+              "description": "A2A v1.0 capability skill 'travel.hotel'",
+              "tags": [
+                "travel",
+                "hotel"
+              ],
+              "inputModes": [
+                "text/plain",
+                "application/json"
+              ],
+              "outputModes": [
+                "text/plain",
+                "application/json"
+              ]
+            }
+          ],
+          "verification_status": "SVID_AND_JWS_VERIFIED",
+          "ttl_remaining_seconds": 536.8,
+          "primary_endpoint": "https://10.29.77.23:31104",
+          "locators": [
+            {
+              "transport": "mtls-tcp",
+              "host": "10.29.77.23",
+              "port": 31104,
+              "priority": 10,
+              "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary"
+            }
+          ]
+        },
+        {
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup",
+          "trust_domain": "org-beta.io",
+          "version": "1795497747450",
+          "skills": [
+            {
+              "id": "travel.hotel",
+              "name": "Travel Hotel",
+              "description": "A2A v1.0 capability skill 'travel.hotel'",
+              "tags": [
+                "travel",
+                "hotel"
+              ],
+              "inputModes": [
+                "text/plain",
+                "application/json"
+              ],
+              "outputModes": [
+                "text/plain",
+                "application/json"
+              ]
+            }
+          ],
+          "verification_status": "SVID_AND_JWS_VERIFIED",
+          "ttl_remaining_seconds": 536.8,
+          "primary_endpoint": "https://10.29.77.23:31105",
+          "locators": [
+            {
+              "transport": "mtls-tcp",
+              "host": "10.29.77.23",
+              "port": 31105,
+              "priority": 10,
+              "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup"
+            }
+          ]
+        }
+      ]
+    },
+    "lctmh-pay": {
+      "role": "pay",
+      "trust_domain": "org-payment.io",
+      "host_node_locator": {
+        "role": "pay",
+        "trust_domain": "org-payment.io",
+        "epoch": 1,
+        "updated_at": 1795497406.912,
+        "locators": [
+          {
+            "host": "10.29.77.23",
+            "priority": 10,
+            "source": "macos:en0"
+          }
+        ],
+        "ports": {
+          "ca_federation": 32200,
+          "directory_federation": 32201,
+          "payment-vault-mcp": 32205,
+          "revocation_federation": 32202,
+          "settlement-converger": 32203,
+          "travel-ops-mcp": 32204
+        }
+      },
+      "shareable_seed_endpoints": [
+        "10.29.77.23:32200"
+      ],
+      "configured_bootstrap_seeds": [
+        "10.29.77.23:31100"
+      ],
+      "domain_descriptors": [
+        {
+          "trust_domain": "org-payment.io",
+          "scope": "own",
+          "version": 1795497751422,
+          "verification_status": "OWN_CA_SIGNED",
+          "signature_mode": "jwks_es256",
+          "age_seconds": 78.8,
+          "ttl_remaining_seconds": 3521.2,
+          "locators": {
+            "ca_bundle": [
+              {
+                "transport": "http-ro",
+                "host": "10.29.77.23",
+                "port": 32200,
+                "priority": 10
+              }
+            ],
+            "directory_federation": [
+              {
+                "transport": "mtls-tcp",
+                "host": "10.29.77.23",
+                "port": 32201,
+                "priority": 10,
+                "spiffe_id": "spiffe://org-payment.io/ns/sys/sa/directory"
+              }
+            ],
+            "revocation_federation": [
+              {
+                "transport": "mtls-tcp",
+                "host": "10.29.77.23",
+                "port": 32202,
+                "priority": 10,
+                "spiffe_id": "spiffe://org-payment.io/ns/sys/sa/revocation"
+              }
+            ]
+          }
+        }
+      ],
+      "workload_cards": [
+        {
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+          "trust_domain": "org-payment.io",
+          "version": "1795497766579",
+          "skills": [
+            {
+              "id": "mcp.travel-ops",
+              "name": "Mcp Travel Ops",
+              "description": "A2A v1.0 capability skill 'mcp.travel-ops'",
+              "tags": [
+                "mcp",
+                "travel",
+                "ops"
+              ],
+              "inputModes": [
+                "text/plain",
+                "application/json"
+              ],
+              "outputModes": [
+                "text/plain",
+                "application/json"
+              ]
+            }
+          ],
+          "verification_status": "SVID_AND_JWS_VERIFIED",
+          "ttl_remaining_seconds": 549.8,
+          "primary_endpoint": "https://10.29.77.23:32204",
+          "locators": [
+            {
+              "transport": "mtls-tcp",
+              "host": "10.29.77.23",
+              "port": 32204,
+              "priority": 10,
+              "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp"
+            }
+          ]
+        },
+        {
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp",
+          "trust_domain": "org-payment.io",
+          "version": "1795497758992",
+          "skills": [
+            {
+              "id": "mcp.payment-vault",
+              "name": "Mcp Payment Vault",
+              "description": "A2A v1.0 capability skill 'mcp.payment-vault'",
+              "tags": [
+                "mcp",
+                "payment",
+                "vault"
+              ],
+              "inputModes": [
+                "text/plain",
+                "application/json"
+              ],
+              "outputModes": [
+                "text/plain",
+                "application/json"
+              ]
+            }
+          ],
+          "verification_status": "SVID_AND_JWS_VERIFIED",
+          "ttl_remaining_seconds": 549.8,
+          "primary_endpoint": "https://10.29.77.23:32205",
+          "locators": [
+            {
+              "transport": "mtls-tcp",
+              "host": "10.29.77.23",
+              "port": 32205,
+              "priority": 10,
+              "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp"
+            }
+          ]
+        },
+        {
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+          "trust_domain": "org-payment.io",
+          "version": "1795497758707",
+          "skills": [
+            {
+              "id": "settlement.converge",
+              "name": "Settlement Converge",
+              "description": "A2A v1.0 capability skill 'settlement.converge'",
+              "tags": [
+                "settlement",
+                "converge"
+              ],
+              "inputModes": [
+                "text/plain",
+                "application/json"
+              ],
+              "outputModes": [
+                "text/plain",
+                "application/json"
+              ]
+            }
+          ],
+          "verification_status": "SVID_AND_JWS_VERIFIED",
+          "ttl_remaining_seconds": 549.8,
+          "primary_endpoint": "https://10.29.77.23:32203",
+          "locators": [
+            {
+              "transport": "mtls-tcp",
+              "host": "10.29.77.23",
+              "port": 32203,
+              "priority": 10,
+              "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger"
+            }
+          ]
+        }
+      ]
+    },
+    "lctmh-audit": {
+      "role": "audit",
+      "trust_domain": "org-audit.io",
+      "host_node_locator": {
+        "role": "audit",
+        "trust_domain": "org-audit.io",
+        "epoch": 1,
+        "updated_at": 1795497057.6,
+        "locators": [
+          {
+            "host": "192.168.65.254",
+            "priority": 10,
+            "source": "operator-override"
+          }
+        ],
+        "ports": {
+          "audit_collector": 31901,
+          "ca_federation": 31900
+        }
+      },
+      "shareable_seed_endpoints": [
+        "192.168.65.254:31900"
+      ],
+      "configured_bootstrap_seeds": [
+        "10.29.77.23:32200"
+      ],
+      "domain_descriptors": [
+        {
+          "trust_domain": "org-audit.io",
+          "scope": "own",
+          "version": 1795497711834,
+          "verification_status": "OWN_CA_SIGNED",
+          "signature_mode": "x509_root_es256",
+          "age_seconds": 118.4,
+          "ttl_remaining_seconds": 3481.6,
+          "locators": {
+            "audit_collector": [
+              {
+                "transport": "tls-tcp",
+                "host": "192.168.65.254",
+                "port": 31901,
+                "priority": 10,
+                "spiffe_id": "spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector"
+              }
+            ],
+            "ca_bundle": [
+              {
+                "transport": "http-ro",
+                "host": "192.168.65.254",
+                "port": 31900,
+                "priority": 10
+              }
+            ]
+          }
+        }
+      ],
+      "workload_cards": []
+    }
+  }
+}

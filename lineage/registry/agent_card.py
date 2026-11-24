@@ -24,6 +24,12 @@ from lineage.common.crypto import (
     require_finite_timestamp,
     sha256_b64url,
 )
+from lineage.common.locators import (
+    LocatorError,
+    ServiceLocator,
+    sort_and_dedup_locators,
+    validate_locator_host,
+)
 from lineage.identity.spiffe import IdentityError, SpiffeId, WorkloadIdentity
 from lineage.identity.trust_bundle import TrustBundleResolver
 
@@ -181,10 +187,23 @@ class AgentCard:
     default_input_modes: Tuple[str, ...] = ("text/plain", "application/json")
     default_output_modes: Tuple[str, ...] = ("text/plain", "application/json")
     streaming_supported: bool = True
+    locators: Tuple[ServiceLocator, ...] = ()
 
     @property
     def url(self) -> str:
         return self.endpoint
+
+    def candidate_origins(self) -> List[str]:
+        """Return prioritized clean origin URLs (`scheme://host:port`) for outbound routing."""
+        if self.locators:
+            return [loc.origin_url for loc in self.locators]
+        return [self.endpoint]
+
+    def candidate_return_origins(self) -> List[str]:
+        """Return prioritized clean origin URLs (`scheme://host:port`) for upward return routing."""
+        if self.locators:
+            return [loc.origin_url for loc in self.locators]
+        return [self.return_endpoint]
 
     def _resolved_skill_objects(self) -> List[Dict[str, Any]]:
         if self.skill_objects:
@@ -193,7 +212,7 @@ class AgentCard:
 
     def core_claims(self) -> Dict[str, Any]:
         """Deterministic claim body covered by `jws_signature` & `signatures`."""
-        return {
+        claims: Dict[str, Any] = {
             "name": self.name,
             "description": self.description,
             "url": self.endpoint,
@@ -226,6 +245,17 @@ class AgentCard:
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
         }
+        if self.locators:
+            claims["locators"] = [loc.to_dict() for loc in self.locators]
+            claims["supportedInterfaces"] = [
+                {
+                    "url": loc.origin_url,
+                    "protocolBinding": "JSONRPC",
+                    "protocolVersion": self.protocol_version,
+                }
+                for loc in self.locators
+            ]
+        return claims
 
     def to_dict(self) -> Dict[str, Any]:
         data = self.core_claims()
@@ -248,8 +278,8 @@ class AgentCard:
         cls,
         identity: WorkloadIdentity,
         name: str,
-        endpoint: str,
-        skills: Iterable[Union[str, AgentSkill, Mapping[str, Any]]],
+        endpoint: Optional[str] = None,
+        skills: Iterable[Union[str, AgentSkill, Mapping[str, Any]]] = (),
         description: str = "",
         return_endpoint: Optional[str] = None,
         supported_tools: Iterable[str] = (),
@@ -258,13 +288,53 @@ class AgentCard:
         priority: int = 100,
         ttl_seconds: float = 3600.0,
         streaming_supported: bool = True,
+        locators: Iterable[Union[ServiceLocator, Mapping[str, Any]]] = (),
+        allowed_locator_cidrs: Optional[Iterable[str] | str] = None,
         now: Optional[float] = None,
     ) -> "AgentCard":
         spiffe = SpiffeId.parse(identity.spiffe_id)
-        norm_endpoint = _validate_http_endpoint(endpoint, "endpoint")
-        norm_ret = _validate_http_endpoint(
-            return_endpoint if return_endpoint else norm_endpoint, "return_endpoint"
-        )
+
+        parsed_locs: List[ServiceLocator] = []
+        for raw_loc in locators:
+            try:
+                loc = (
+                    raw_loc
+                    if isinstance(raw_loc, ServiceLocator)
+                    else ServiceLocator.from_dict(
+                        raw_loc, allowed_cidrs=allowed_locator_cidrs
+                    )
+                )
+                validate_locator_host(loc.host, allowed_cidrs=allowed_locator_cidrs)
+            except LocatorError as exc:
+                raise AgentCardError(f"Invalid AgentCard locator: {exc}") from exc
+            if loc.spiffe_id is not None and loc.spiffe_id != spiffe.uri:
+                raise AgentCardError(
+                    f"AgentCard locator spiffe_id {loc.spiffe_id!r} != card spiffe_id {spiffe.uri!r}"
+                )
+            parsed_locs.append(loc)
+        loc_tuple = sort_and_dedup_locators(parsed_locs) if parsed_locs else ()
+
+        if loc_tuple:
+            derived_origin = loc_tuple[0].origin_url
+            if endpoint is not None:
+                norm_ep_check = _validate_http_endpoint(endpoint, "endpoint")
+                if norm_ep_check != derived_origin:
+                    raise AgentCardError(
+                        f"AgentCard endpoint {norm_ep_check!r} must match primary signed locator {derived_origin!r}"
+                    )
+            norm_endpoint = derived_origin
+            norm_ret = (
+                _validate_http_endpoint(return_endpoint, "return_endpoint")
+                if return_endpoint
+                else derived_origin
+            )
+        else:
+            if not endpoint:
+                raise AgentCardError("AgentCard requires either locators or endpoint")
+            norm_endpoint = _validate_http_endpoint(endpoint, "endpoint")
+            norm_ret = _validate_http_endpoint(
+                return_endpoint if return_endpoint else norm_endpoint, "return_endpoint"
+            )
 
         by_id: Dict[str, AgentSkill] = {}
         for s_item in skills:
@@ -311,6 +381,7 @@ class AgentCard:
             protocol_version="1.0",
             skill_objects=sorted_skill_objs,
             streaming_supported=bool(streaming_supported),
+            locators=loc_tuple,
         )
         sig = jws_sign_compact(
             payload=provisional.core_claims(),
@@ -320,11 +391,28 @@ class AgentCard:
         return cls(**{**provisional.__dict__, "jws_signature": sig})
 
     @classmethod
+    def verify_and_parse(
+        cls,
+        raw: Mapping[str, Any],
+        trust_resolver: TrustBundleResolver,
+        now: Optional[float] = None,
+        allowed_locator_cidrs: Optional[Iterable[str] | str] = None,
+    ) -> "AgentCard":
+        """Alias for `from_dict_and_verify` matching `SignedDomainDescriptor.verify_and_parse`."""
+        return cls.from_dict_and_verify(
+            raw=raw,
+            trust_resolver=trust_resolver,
+            now=now,
+            allowed_locator_cidrs=allowed_locator_cidrs,
+        )
+
+    @classmethod
     def from_dict_and_verify(
         cls,
         raw: Mapping[str, Any],
         trust_resolver: TrustBundleResolver,
         now: Optional[float] = None,
+        allowed_locator_cidrs: Optional[Iterable[str] | str] = None,
     ) -> "AgentCard":
         """Parse and cryptographically verify an A2A v1.0 AgentCard against the Trust Bundle."""
         if not isinstance(raw, Mapping):
@@ -396,7 +484,7 @@ class AgentCard:
         except IdentityError as exc:
             raise AgentCardError(f"AgentCard SVID verification failed: {exc}") from exc
 
-        # 2. Reconstruct card structure
+        # 2. Reconstruct card structure (including signed locators when present)
         try:
             status = AgentStatus(str(raw.get("status", "ACTIVE")))
             ver_raw = raw["version"]
@@ -407,6 +495,23 @@ class AgentCard:
             issued_at = require_finite_timestamp(raw["issued_at"], "AgentCard.issued_at")
             expires_at = require_finite_timestamp(raw["expires_at"], "AgentCard.expires_at")
 
+            locators_raw = raw.get("locators")
+            loc_tuple: Tuple[ServiceLocator, ...] = ()
+            if locators_raw is not None:
+                if not isinstance(locators_raw, list) or not locators_raw:
+                    raise AgentCardError("AgentCard locators must be a non-empty list when present")
+                parsed_locs: List[ServiceLocator] = []
+                for l_item in locators_raw:
+                    loc_obj = ServiceLocator.from_dict(
+                        l_item, allowed_cidrs=allowed_locator_cidrs
+                    )
+                    if loc_obj.spiffe_id is not None and loc_obj.spiffe_id != spiffe.uri:
+                        raise AgentCardError(
+                            f"AgentCard locator spiffe_id {loc_obj.spiffe_id!r} != {spiffe.uri!r}"
+                        )
+                    parsed_locs.append(loc_obj)
+                loc_tuple = sort_and_dedup_locators(parsed_locs)
+
             raw_ep = raw.get("endpoint") if "endpoint" in raw else raw.get("url")
             endpoint = _validate_http_endpoint(str(raw_ep), "endpoint")
             if "url" in raw and "endpoint" in raw:
@@ -415,6 +520,10 @@ class AgentCard:
                     raise AgentCardError(
                         f"AgentCard url {norm_url!r} conflicts with endpoint {endpoint!r}"
                     )
+            if loc_tuple and endpoint != loc_tuple[0].origin_url:
+                raise AgentCardError(
+                    f"AgentCard endpoint {endpoint!r} mismatches primary signed locator {loc_tuple[0].origin_url!r}"
+                )
             return_endpoint = _validate_http_endpoint(
                 str(raw.get("return_endpoint") or endpoint), "return_endpoint"
             )
@@ -454,6 +563,8 @@ class AgentCard:
             supported_tools = tuple(str(t) for t in tools_raw)
         except AgentCardError:
             raise
+        except LocatorError as exc:
+            raise AgentCardError(f"Invalid AgentCard locator: {exc}") from exc
         except Exception as exc:
             raise AgentCardError(f"Malformed AgentCard fields: {exc}") from exc
 
@@ -489,6 +600,7 @@ class AgentCard:
             default_input_modes=in_modes,
             default_output_modes=out_modes,
             streaming_supported=streaming_ok,
+            locators=loc_tuple,
         )
 
         # 3. Verify workload's JWS signature over canonical core_claims

@@ -74,14 +74,14 @@ from lineage.multihost import (
     FORBIDDEN_HOST_PORTS,
     ROLE_ORDER,
     ROLE_SPECS,
-    build_fqdn_ip_map,
+    allocate_role_ports,
     evaluate_http_date_clock_skew,
     generate_domain_ca_secret_bundle,
     parse_roles_csv,
-    patch_coredns_corefile,
     render_e2e_sync_service_manifest,
     render_kind_cluster_config,
     render_role_k8s_manifests,
+    sanitize_coredns_corefile,
     validate_ipv4_address,
 )
 from lineage.multihost.lct_multihost_cli import (
@@ -141,10 +141,8 @@ class Milestone6MultiHostTests(unittest.TestCase):
         seen_svc_cidrs: Set[str] = set()
 
         expected_ports = {
-            "alpha": {30094, 30491, 30492, 30441, 30990},
-            "beta": {31094, 31491, 31492, 31441, 31442, 31443},
-            "pay": {32094, 32491, 32492, 32441, 32442, 32443},
-            "audit": {30893},
+            role: set(allocate_role_ports(role).values())
+            for role in ROLE_ORDER
         }
 
         for role in ROLE_ORDER:
@@ -216,11 +214,11 @@ class Milestone6MultiHostTests(unittest.TestCase):
                         self.assertEqual(app_env_names.get("LCT_ENABLE_FAULT_INJECTION"), "true")
 
     # -------------------------------------------------------------------------
-    # 2. CoreDNS `hosts` Patching, `host.docker.internal`, & IPv4 Validation
+    # 2. CoreDNS Sanitization (`host.docker.internal` Preserved) & IPv4 Validation
     # -------------------------------------------------------------------------
     def test_02_coredns_hosts_patching_idempotency_and_ipv4_validation(self) -> None:
-        self.assertEqual(validate_ipv4_address("10.29.77.23", "--alpha-ip"), "10.29.77.23")
-        self.assertEqual(validate_ipv4_address("192.168.1.6", "--beta-ip"), "192.168.1.6")
+        self.assertEqual(validate_ipv4_address("10.29.77.23", "--ip"), "10.29.77.23")
+        self.assertEqual(validate_ipv4_address("192.168.1.6", "--ip"), "192.168.1.6")
         for bad_ip in (
             "",
             "127.0.0.1",
@@ -234,15 +232,9 @@ class Milestone6MultiHostTests(unittest.TestCase):
             "alpha.local",
         ):
             with self.assertRaises(ValueError, msg=f"Expected rejection for {bad_ip!r}"):
-                validate_ipv4_address(bad_ip, "--alpha-ip")
+                validate_ipv4_address(bad_ip, "--ip")
 
-        fqdn_map = build_fqdn_ip_map("10.29.77.23", "10.29.77.24", "10.29.77.25")
-        self.assertEqual(fqdn_map["orchestrator-alpha.org-alpha.io"], "10.29.77.23")
-        self.assertEqual(fqdn_map["audit-collector.org-audit.io"], "10.29.77.23")
-        self.assertEqual(fqdn_map["flight-specialist.org-beta.io"], "10.29.77.24")
-        self.assertEqual(fqdn_map["payment-vault-mcp.org-payment.io"], "10.29.77.25")
-
-        base_corefile = (
+        legacy_corefile = (
             ".:53 {\n"
             "    errors\n"
             "    health {\n"
@@ -251,6 +243,8 @@ class Milestone6MultiHostTests(unittest.TestCase):
             "    ready\n"
             "    hosts {\n"
             "        192.168.65.254 host.docker.internal\n"
+            "        10.29.77.24 beta-ca.org-beta.io\n"
+            "        10.29.77.23 audit-collector.org-audit.io\n"
             "        fallthrough\n"
             "    }\n"
             "    kubernetes cluster.local in-addr.arpa ip6.arpa {\n"
@@ -260,34 +254,16 @@ class Milestone6MultiHostTests(unittest.TestCase):
             "    forward . /etc/resolv.conf\n"
             "}\n"
         )
-        patched_1 = patch_coredns_corefile(
-            base_corefile, "10.29.77.23", "10.29.77.24", "10.29.77.25"
-        )
-        # Exactly ONE `hosts {` stanza, `host.docker.internal` preserved, `cluster.local` intact!
-        self.assertEqual(patched_1.count("hosts {"), 1)
-        self.assertIn("192.168.65.254 host.docker.internal", patched_1)
-        self.assertIn("10.29.77.24 beta-ca.org-beta.io", patched_1)
-        self.assertIn("10.29.77.23 audit-collector.org-audit.io", patched_1)
-        self.assertIn("kubernetes cluster.local", patched_1)
+        sanitized_1 = sanitize_coredns_corefile(legacy_corefile)
+        # Exactly ONE `hosts {` stanza, `host.docker.internal` preserved, zero cross-domain FQDNs!
+        self.assertEqual(sanitized_1.count("hosts {"), 1)
+        self.assertIn("192.168.65.254 host.docker.internal", sanitized_1)
+        self.assertNotIn("org-beta.io", sanitized_1)
+        self.assertNotIn("org-audit.io", sanitized_1)
+        self.assertIn("kubernetes cluster.local", sanitized_1)
 
-        # Idempotent re-patch & DHCP IP update (`update-peer-ips`)
-        patched_same = patch_coredns_corefile(
-            patched_1, "10.29.77.23", "10.29.77.24", "10.29.77.25"
-        )
-        self.assertEqual(patched_1, patched_same)
-
-        patched_dhcp = patch_coredns_corefile(
-            patched_1,
-            "192.168.1.6",
-            "192.168.1.7",
-            "192.168.1.8",
-            audit_ip="192.168.1.9",
-        )
-        self.assertEqual(patched_dhcp.count("hosts {"), 1)
-        self.assertNotIn("10.29.77.23", patched_dhcp)
-        self.assertIn("192.168.65.254 host.docker.internal", patched_dhcp)
-        self.assertIn("192.168.1.7 beta-ca.org-beta.io", patched_dhcp)
-        self.assertIn("192.168.1.9 audit-collector.org-audit.io", patched_dhcp)
+        # Idempotent re-sanitization
+        self.assertEqual(sanitized_1, sanitize_coredns_corefile(sanitized_1))
 
     # -------------------------------------------------------------------------
     # 3. Trust Anchor Pinning, Stable CA Roots, & Keyless TLS 1.3 Audit Collector
@@ -1438,12 +1414,15 @@ class Milestone6MultiHostTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         lineage_root = repo_root / "lineage"
 
-        # (1) [MEDIUM-M6-01] Default `alpha` manifests do NOT expose permanent NodePort 30990 Service
+        # (1) [MEDIUM-M6-01] Default `alpha` manifests do NOT expose permanent sync Service
         alpha_docs = list(yaml.safe_load_all(render_role_k8s_manifests("alpha")))
         svc_names = {d["metadata"]["name"] for d in alpha_docs if d["kind"] == "Service"}
         self.assertNotIn("e2e-user-gateway-sync", svc_names)
         transient_svc = render_e2e_sync_service_manifest("lineage-alpha")
-        self.assertEqual(transient_svc["spec"]["ports"][0]["nodePort"], 30990)
+        self.assertEqual(
+            transient_svc["spec"]["ports"][0]["nodePort"],
+            allocate_role_ports("alpha")["e2e_sync_hook"],
+        )
 
         # (2) [MEDIUM-M6-02] `trust fetch --expect` match/mismatch + `--yes` UNVERIFIED TOFU warning
         ca_beta = TrustDomainCA("org-beta.io", alg="ES256")
@@ -1625,7 +1604,7 @@ class Milestone6MultiHostTests(unittest.TestCase):
         arch_txt = (lineage_root / "ARCHITECTURE.md").read_text(encoding="utf-8")
         self.assertIn("defaultMode: 0440", arch_txt)
         self.assertIn("fsGroup: 2000", arch_txt)
-        self.assertIn("30990", arch_txt)
+        self.assertIn("e2e-user-gateway-sync", arch_txt)
         self.assertNotIn("`0400`", arch_txt)
 
         preflight_txt = (lineage_root / "multihost" / "preflight.sh").read_text(encoding="utf-8")

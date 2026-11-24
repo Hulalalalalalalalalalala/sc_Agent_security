@@ -1,0 +1,7 @@
+{
+  "phase": "before_switch",
+  "beta_descriptor_version": 1795497986086,
+  "beta_descriptor_host": "10.29.77.23",
+  "flight_card_version": "1795498059962",
+  "flight_card_endpoint": "https://10.29.77.23:31103"
+}

@@ -63,25 +63,34 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`k8s/K8S_DEPLOYMENT.md`](./k8s/K
 
 ---
 
-## 4. 3-Machine Physical Interconnection (`lineage/multihost/`)
+## 4. 4-Machine Identity-Addressed Physical Federation (`lineage/multihost/`)
 
-Deploy autonomous LCT roles (`alpha,audit`, `beta`, `pay`) across **3 separate physical machines** (macOS, Linux, or Windows + WSL2) over a LAN, hotspot, or Tailscale network with host-NIC `extraPortMappings`, CoreDNS FQDN resolution, SSH-style SHA-256 trust anchor pinning (`lct-trust-anchors` hot-reload), startup-order independence, TLS 1.3 keyless audit collection, and automatic 50%-TTL SVID/X.509 renewal:
+Deploy autonomous LCT roles (`alpha`, `beta`, `pay`, `audit` — `1:1` across **4 physical machines** or any role combination) over a standard RFC1918 LAN (macOS, Linux, or Windows + WSL2) with **Identifier / Locator Separation**: zero static peer IP flags, zero global port conventions, zero CoreDNS cross-cluster `hosts` entries, automatic host LAN IP detection (`locator-agent.py`), SSH-style SHA-256 trust anchor pinning (`trust import`), bidirectional signed descriptor gossip, SPIFFE-pinned TLS 1.3 (`0` IP-literal SNI), and zero-restart DHCP IP switching:
 
 ```bash
-# 1. Preflight check (ports, Docker, Ollama, peer TCP & HTTP Date clock skew)
-bash lineage/scripts/multihost.sh preflight --roles alpha,audit --alpha-ip <IP1> --beta-ip <IP2> --pay-ip <IP3>
+# 1. Machine 1 (alpha — initial seedless hub node; auto-detects LAN IP & local NodePorts)
+bash lineage/scripts/multihost.sh deploy --roles alpha
+# -> Prints shareable seed (e.g., --seed 10.29.77.23:30100) and org-alpha.io sha256:...
 
-# 2. Deploy local role(s) and print out-of-band SHA-256 trust anchor(s)
-bash lineage/scripts/multihost.sh deploy --roles alpha,audit --alpha-ip <IP1> --beta-ip <IP2> --pay-ip <IP3>
+# 2. Machine 2 (beta), Machine 3 (pay), Machine 4 (audit) — each needs ONLY --seed <Machine1_IP:Port>
+bash lineage/scripts/multihost.sh deploy --roles beta --seed <M1_IP:PORT>
+bash lineage/scripts/multihost.sh deploy --roles pay --seed <M1_IP:PORT>
+bash lineage/scripts/multihost.sh deploy --roles audit --seed <M1_IP:PORT>
 
-# 3. Pin verified peer anchors (zero-restart hot-reload) & run interactive cross-machine CLI
-bash lineage/scripts/multihost.sh trust add org-beta.io sha256:<X509_SPKI_HEX>:<JWKS_SET_HEX>
+# 3. Combine the 4 domain anchor lines into anchors.txt & import on each machine (displays & confirms)
+bash lineage/scripts/multihost.sh trust import anchors.txt
+
+# 4. Inspect signed descriptors/cards, run A2A v1.0 E2E, & compare OAuth 2.0 RFC 8693 vs LCT
+bash lineage/scripts/multihost.sh locator show
 bash lineage/scripts/multihost.sh status
 bash lineage/scripts/multihost.sh send --text "Book Tokyo flight and hotel for Alice" --stream
 bash lineage/scripts/multihost.sh e2e
+bash lineage/scripts/multihost.sh compare
 ```
 
-See [`multihost/MULTIHOST_GUIDE.md`](./multihost/MULTIHOST_GUIDE.md) for complete OS-specific firewall setup, DHCP IP update (`update-peer-ips`), fault injection, and troubleshooting.
+By default, `alpha` deploys a real **`quay.io/keycloak/keycloak:26.5.2`** OIDC / RFC 8693 Token Exchange container (`--sts-engine auto|keycloak|lightweight|none`, `--delegation-mode dual`), bridging Hop-0 human OIDC logins (`RS256` `user_oidc_token`) into LCT `RootBlock` `B_0` while allowing side-by-side empirical comparison of **`oauth_centralized`**, **`oauth_federated`**, and **`lct`** on the exact same 4-cluster deployment (`multihost.sh compare`).
+
+See [`multihost/MULTIHOST_GUIDE.md`](./multihost/MULTIHOST_GUIDE.md) for Windows `-Profile Any` firewall setup, WSL2 multi-NIC `--advertise-ip` & daemon lifecycle, live role migration, OAuth 2.0 vs. LCT protocol comparison, fault injection, and troubleshooting.
 
 ---
 

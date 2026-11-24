@@ -1,0 +1,20 @@
+{
+  "task_id": "task-mh-1fdfff7090",
+  "stream_integrity_ok": false,
+  "reconstruction": {
+    "sub": "user:alice@org-alpha.io",
+    "reconstructed_complete": true,
+    "lineage_paths_observed": [
+      "/task-mh-1fdfff7090/OrchestratorAlpha",
+      "/task-mh-1fdfff7090/OrchestratorAlpha/FlightB1",
+      "/task-mh-1fdfff7090/OrchestratorAlpha/FlightB1/SettlementC",
+      "/task-mh-1fdfff7090/OrchestratorAlpha/SettleTrigger",
+      "/task-mh-1fdfff7090/OrchestratorAlpha/hotel-specialist-primary",
+      "/task-mh-1fdfff7090/OrchestratorAlpha/hotel-specialist-primary/SettlementC"
+    ],
+    "verified_hops": 12,
+    "tool_invocations_verified": 6,
+    "resilience_classifications": [],
+    "anomalies": []
+  }
+}

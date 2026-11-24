@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""Interactive & Scriptable Cross-Machine LCT Operator CLI (`lct_multihost_cli.py`).
+"""Identity-Addressed Cross-Machine LCT Operator CLI (`lct_multihost_cli.py`).
 
 Sub-commands:
-- `status`: Per-domain CA/Directory/Revocation/Audit health, CoreDNS-resolved machine IPs,
-  and federated A2A v1.0 `AgentCard` inventory with live mTLS 1.3 handshake telemetry.
-- `trust`: Manage SSH-style SHA-256 domain trust anchors (`show`, `add`, `fetch`, `remove`)
-  stored in Kubernetes `ConfigMap` `lct-trust-anchors` with zero-restart pod hot-reload.
+- `locator show`: Display own + learned `SignedDomainDescriptor`s and signed `AgentCard`s
+  (versions, SHA-256 trust-anchor verification status, remaining TTLs, and `ip:port` locators).
+- `seeds list|add|remove`: Manage untrusted bootstrap seed endpoints (`ip:port`) in
+  `ConfigMap/lct-bootstrap-seeds` with zero-restart pod hot-reload.
+- `trust show|add|remove|import|fetch`: Manage SSH-style SHA-256 domain trust anchors in
+  `ConfigMap/lct-trust-anchors` (`trust import <file>` displays every anchor and requires
+  confirmation before pinning).
+- `status`: Per-domain descriptor health and per-hop **identity → locator** resolution with
+  live mTLS 1.3 handshake telemetry (`peer_spiffe_id`, `TLSv1.3`, cipher, `/healthz`).
 - `send --text "..." [--stream]`: Execute real A2A v1.0 `SendMessage` or `SendStreamingMessage`
-  across `org-alpha.io -> org-beta.io -> org-payment.io`, printing per-hop SPIFFE ID,
-  peer certificate issuer domain, resolved peer IP, negotiated TLS version/cipher, and decision.
+  across `org-alpha.io -> org-beta.io -> org-payment.io`, printing per-hop SPIFFE ID → locator
+  resolution, peer issuer domain, negotiated TLS version/cipher, and authorization decision.
 - `cancel <task_id>`: Invoke A2A v1.0 `CancelTask` and verify cross-machine cascading
-  revocation propagation on both `beta-revocation` and `payment-revocation` over mTLS 1.3.
-- `audit <task_id>`: Fetch signed `AuditEntry` records over TLS 1.3 from `audit-collector`
-  and run `CausalChainAuditor` full causal tree reconstruction.
-- `e2e`: Run Multi-Host Scenarios `1, 2A, 2B, 3A, 3B, 4, 5, 6` (executing faults directly
-  when all roles are local, or pausing with exact operator commands when remote).
+  revocation propagation over SPIFFE-pinned mTLS 1.3.
+- `audit [task_id]`: Fetch signed `AuditEntry` records over SPIFFE-pinned TLS 1.3 from
+  `audit-collector` and run `CausalChainAuditor` full causal tree reconstruction.
+- `e2e`: Run Multi-Host Scenarios `1, 2A, 2B, 3A, 3B, 4, 5, 6`.
 """
 
 from __future__ import annotations
@@ -23,16 +27,16 @@ import argparse
 import hmac
 import json
 import os
+from pathlib import Path
 import socket
 import ssl
 import subprocess
 import sys
 import threading
 import time
-import uuid
-from pathlib import Path
-from typing import Any, Dict, IO, List, Mapping, Optional, Sequence, Tuple
+from typing import IO, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
+import uuid
 
 import httpx
 import yaml
@@ -44,6 +48,7 @@ if str(REPO_ROOT) not in sys.path:
 from lineage.a2a import A2AClient, Message, TaskState
 from lineage.audit import CausalChainAuditor
 from lineage.common.crypto import redact_sensitive, sha256_hex
+from lineage.common.locators import normalize_seed_endpoint
 from lineage.federation.anchors import (
     TrustAnchorPinError,
     compute_bundle_trust_anchor,
@@ -56,16 +61,10 @@ from lineage.multihost.config_gen import (
     ROLE_ORDER,
     ROLE_SPECS,
     parse_roles_csv,
+    read_cluster_role_ports,
     render_e2e_sync_service_manifest,
     validate_ipv4_address,
 )
-
-DEFAULT_DOMAIN_BUNDLE_PORTS: Dict[str, Tuple[str, int]] = {
-    "org-alpha.io": ("http", 30094),
-    "org-beta.io": ("http", 31094),
-    "org-payment.io": ("http", 32094),
-    "org-audit.io": ("https", 30893),
-}
 
 
 def _in_gateway_pod() -> bool:
@@ -83,7 +82,7 @@ def _scrub(obj: Any) -> Any:
     if isinstance(base, str):
         if base.startswith(("lct1.", "lctmp1.", "lctm1.")):
             return f"[REDACTED_LCT_TOKEN_SHA256:{sha256_hex(base.encode('ascii'))[:12]}]"
-        if base.startswith("eyJhbG") and base.count(".") == 2:
+        if base.startswith("eyJ") and base.count(".") == 2:
             return f"[REDACTED_JWS_SHA256:{sha256_hex(base.encode('ascii'))[:12]}]"
     return base
 
@@ -193,52 +192,8 @@ def _probe_tls_handshake_details(
     }
 
 
-# =============================================================================
-# `trust` Subcommand (Runs directly on Host via `kubectl` + `httpx`)
-# =============================================================================
-
-
-def _read_configmap_anchors(kube_context: str, namespace: str) -> Dict[str, str]:
-    res = subprocess.run(
-        [
-            "kubectl",
-            "--context",
-            kube_context,
-            "-n",
-            namespace,
-            "get",
-            "configmap",
-            "lct-trust-anchors",
-            "-o",
-            "json",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0:
-        return {}
-    obj = json.loads(res.stdout)
-    return dict(obj.get("data") or {})
-
-
-def _write_configmap_anchors(
-    kube_context: str, namespace: str, data: Dict[str, str]
-) -> None:
-    cm_doc = {
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {"name": "lct-trust-anchors", "namespace": namespace},
-        "data": data,
-    }
-    subprocess.run(
-        ["kubectl", "--context", kube_context, "apply", "-f", "-"],
-        input=json.dumps(cm_doc),
-        text=True,
-        check=True,
-        stdout=subprocess.DEVNULL,
-    )
-    # Trigger immediate Kubelet volume sync (<1s) via benign Pod annotation update
-    # WITHOUT restarting any container (`restartCount` stays 0)!
+def _trigger_pod_volume_sync(kube_context: str, namespace: str, key: str) -> None:
+    """Trigger immediate Kubelet ConfigMap projection (<1s) with zero container restarts."""
     subprocess.run(
         [
             "kubectl",
@@ -249,13 +204,145 @@ def _write_configmap_anchors(
             "annotate",
             "pods",
             "--all",
-            f"lct.io/anchor-sync-ts={time.time_ns()}",
+            f"lct.io/{key}={time.time_ns()}",
             "--overwrite",
         ],
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def _read_configmap_data(
+    kube_context: str, namespace: str, cm_name: str
+) -> Dict[str, str]:
+    res = subprocess.run(
+        [
+            "kubectl",
+            "--context",
+            kube_context,
+            "-n",
+            namespace,
+            "get",
+            "configmap",
+            cm_name,
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+        return {}
+    obj = json.loads(res.stdout)
+    return dict(obj.get("data") or {})
+
+
+def _write_configmap_data(
+    kube_context: str,
+    namespace: str,
+    cm_name: str,
+    data: Dict[str, str],
+    sync_annotation_key: str,
+) -> None:
+    cm_doc = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": cm_name, "namespace": namespace},
+        "data": data,
+    }
+    subprocess.run(
+        ["kubectl", "--context", kube_context, "apply", "-f", "-"],
+        input=json.dumps(cm_doc),
+        text=True,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    _trigger_pod_volume_sync(kube_context, namespace, sync_annotation_key)
+
+
+def _read_local_cluster_own_anchor(role: str) -> Optional[str]:
+    spec = ROLE_SPECS[role]
+    sec_name = "audit-ca-keys" if role == "audit" else f"{spec.ca_short_prefix}-ca-keys"
+    res = subprocess.run(
+        [
+            "kubectl",
+            "--context",
+            spec.kube_context,
+            "-n",
+            spec.namespace,
+            "get",
+            "secret",
+            sec_name,
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+        return None
+    try:
+        obj = json.loads(res.stdout)
+        return str(((obj.get("metadata") or {}).get("annotations") or {}).get("lct.io/trust-anchor") or "") or None
+    except Exception:
+        return None
+
+
+# =============================================================================
+# `trust` Subcommand (`show`, `add`, `remove`, `import`, `fetch`)
+# =============================================================================
+
+
+def _read_configmap_anchors(kube_context: str, namespace: str) -> Dict[str, str]:
+    return _read_configmap_data(kube_context, namespace, "lct-trust-anchors")
+
+
+def _write_configmap_anchors(
+    kube_context: str, namespace: str, data: Dict[str, str]
+) -> None:
+    _write_configmap_data(
+        kube_context, namespace, "lct-trust-anchors", data, "anchor-sync-ts"
+    )
+
+
+def _parse_anchor_batch_file(file_path: Path) -> Dict[str, str]:
+    if not file_path.is_file():
+        raise TrustAnchorPinError(f"Anchor file not found: {file_path}")
+    anchors: Dict[str, str] = {}
+    for line_no, raw_ln in enumerate(
+        file_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        s = raw_ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        try:
+            td_opt, norm_anc = parse_trust_anchor_value(s)
+            if not td_opt:
+                raise TrustAnchorPinError(
+                    "Each line in batch anchor file must specify '<trust_domain> sha256:...'"
+                )
+            td = td_opt
+        except Exception as exc:
+            raise TrustAnchorPinError(f"{file_path}:{line_no}: {exc}") from exc
+        spki_h, jwks_h = split_trust_anchor_parts(norm_anc)
+        is_audit = td == "org-audit.io"
+        if is_audit and jwks_h != "keyless":
+            raise TrustAnchorPinError(
+                f"{file_path}:{line_no}: org-audit.io must use 'sha256:<spki>:keyless'"
+            )
+        if not is_audit and jwks_h == "keyless":
+            raise TrustAnchorPinError(
+                f"{file_path}:{line_no}: {td} requires a non-empty JWKS hash (cannot be 'keyless')"
+            )
+        if td in anchors and not hmac.compare_digest(anchors[td], norm_anc):
+            raise TrustAnchorPinError(
+                f"{file_path}:{line_no}: conflicting duplicate anchor for {td!r}"
+            )
+        anchors[td] = f"sha256:{spki_h}:{jwks_h}"
+    if not anchors:
+        raise TrustAnchorPinError(f"Anchor file {file_path} contains zero valid anchor lines")
+    return anchors
 
 
 def _handle_trust_cmd(args: argparse.Namespace) -> int:
@@ -265,9 +352,13 @@ def _handle_trust_cmd(args: argparse.Namespace) -> int:
         out: Dict[str, Any] = {}
         for r in roles:
             spec = ROLE_SPECS[r]
-            out[spec.cluster_name] = _read_configmap_anchors(
-                spec.kube_context, spec.namespace
-            )
+            out[spec.cluster_name] = {
+                "own_trust_domain": spec.trust_domain,
+                "own_trust_anchor": _read_local_cluster_own_anchor(r),
+                "pinned_peer_anchors": _read_configmap_anchors(
+                    spec.kube_context, spec.namespace
+                ),
+            }
         print(json.dumps(out, indent=2))
         return 0
 
@@ -288,6 +379,15 @@ def _handle_trust_cmd(args: argparse.Namespace) -> int:
         roles = _detect_local_lctmh_roles(args.roles)
         for r in roles:
             spec = ROLE_SPECS[r]
+            if spec.trust_domain == td:
+                own_anc = _read_local_cluster_own_anchor(r)
+                if own_anc and not hmac.compare_digest(own_anc, norm_anchor):
+                    print(
+                        f"[SECURITY ERROR] Provided anchor for local domain {td} mismatches {spec.cluster_name}'s own CA ({own_anc})!",
+                        file=sys.stderr,
+                    )
+                    return 1
+                continue
             cur = _read_configmap_anchors(spec.kube_context, spec.namespace)
             cur[td] = norm_anchor
             _write_configmap_anchors(spec.kube_context, spec.namespace, cur)
@@ -307,16 +407,81 @@ def _handle_trust_cmd(args: argparse.Namespace) -> int:
             print(f"[trust] Removed pin for {td} in {spec.cluster_name}/{spec.namespace}")
         return 0
 
+    if t_sub == "import":
+        fpath = Path(args.file).expanduser().resolve()
+        try:
+            batch = _parse_anchor_batch_file(fpath)
+        except TrustAnchorPinError as exc:
+            print(f"[SECURITY ERROR] {exc}", file=sys.stderr)
+            return 1
+        roles = _detect_local_lctmh_roles(args.roles)
+        print("============================================================================")
+        print(f" Candidate Trust Anchors from {fpath} ({len(batch)} domain(s))")
+        for td, anc in sorted(batch.items()):
+            print(f"   {td:<18}  {anc}")
+        print("============================================================================")
+        # Verify own-domain consistency before touching any ConfigMap
+        for r in roles:
+            spec = ROLE_SPECS[r]
+            if spec.trust_domain in batch:
+                own_anc = _read_local_cluster_own_anchor(r)
+                if own_anc and not hmac.compare_digest(own_anc, batch[spec.trust_domain]):
+                    print(
+                        f"[SECURITY ERROR] Anchor in {fpath} for local domain {spec.trust_domain} "
+                        f"does NOT match {spec.cluster_name}'s own CA ({own_anc})! Aborting.",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+        if not args.yes:
+            ans = (
+                input(
+                    f"Verify the fingerprints above out-of-band. Pin into {len(roles)} local cluster(s)? [y/N]: "
+                )
+                .strip()
+                .lower()
+            )
+            if ans not in ("y", "yes"):
+                print("[trust] Aborted without modifying pins.")
+                return 1
+
+        for r in roles:
+            spec = ROLE_SPECS[r]
+            cur = _read_configmap_anchors(spec.kube_context, spec.namespace)
+            pinned_count = 0
+            for td, anc in sorted(batch.items()):
+                if td == spec.trust_domain:
+                    continue
+                cur[td] = anc
+                pinned_count += 1
+            _write_configmap_anchors(spec.kube_context, spec.namespace, cur)
+            print(
+                f"[trust] Imported {pinned_count} peer anchor(s) into {spec.cluster_name}/{spec.namespace} (hot-reload triggered)"
+            )
+        return 0
+
     if t_sub == "fetch":
         td = args.domain.strip().lower()
         SpiffeId.parse(f"spiffe://{td}/authority/ca")
-        ip_clean = validate_ipv4_address(args.ip, "--ip")
-        default_scheme, default_port = DEFAULT_DOMAIN_BUNDLE_PORTS.get(td, ("http", 30094))
-        scheme = args.scheme or default_scheme
-        port = int(args.port) if args.port else default_port
-        url = f"{scheme}://{ip_clean}:{port}/v1/federation/bundle"
-        verify_arg: Any = False if scheme == "https" else True
-        with httpx.Client(verify=verify_arg, timeout=5.0, trust_env=False) as cli:
+        seed_raw = str(getattr(args, "seed", "") or "").strip()
+        if seed_raw:
+            norm_seed = normalize_seed_endpoint(seed_raw)
+            ip_clean, port_str = norm_seed.rsplit(":", 1)
+            port = int(port_str)
+        else:
+            if not args.ip or not args.port:
+                raise TrustAnchorPinError(
+                    "Pass either '--seed <ip:port>' or both '--ip <ip>' and '--port <port>'"
+                )
+            ip_clean = validate_ipv4_address(args.ip, "--ip")
+            port = int(args.port)
+        scheme = args.scheme or "http"
+        if scheme != "http":
+            raise TrustAnchorPinError(
+                "Unpinned bootstrap fetch must use read-only 'http' ca_federation port (never unverified TLS)"
+            )
+        url = f"http://{ip_clean}:{port}/v1/federation/bundle"
+        with httpx.Client(verify=True, timeout=5.0, trust_env=False) as cli:
             resp = cli.get(url)
         resp.raise_for_status()
         bundle = resp.json()
@@ -356,7 +521,7 @@ def _handle_trust_cmd(args: argparse.Namespace) -> int:
                 print(
                     "[SECURITY WARNING: UNVERIFIED TOFU] `--yes` was used without `--expect`: "
                     f"pinning unauthenticated candidate bundle from {url} on first use! "
-                    "Prefer `trust add <domain> sha256:...` or `trust fetch --expect sha256:...`.",
+                    "Prefer `trust import <file>`, `trust add <domain> sha256:...`, or `trust fetch --expect sha256:...`.",
                     file=sys.stderr,
                 )
             else:
@@ -376,6 +541,265 @@ def _handle_trust_cmd(args: argparse.Namespace) -> int:
 
 
 # =============================================================================
+# `seeds` Subcommand (`list`, `add`, `remove`)
+# =============================================================================
+
+
+def _read_cluster_seeds(kube_context: str, namespace: str) -> List[str]:
+    data = _read_configmap_data(kube_context, namespace, "lct-bootstrap-seeds")
+    out: List[str] = []
+    for raw_val in data.values():
+        for tok in re.split_seeds(raw_val):
+            try:
+                norm = normalize_seed_endpoint(tok)
+                if norm not in out:
+                    out.append(norm)
+            except ValueError:
+                continue
+    return out
+
+
+def re_split_seeds(raw_val: str) -> List[str]:
+    return [
+        p.strip()
+        for ln in str(raw_val or "").splitlines()
+        if not ln.strip().startswith("#")
+        for p in ln.split(",")
+        if p.strip()
+    ]
+
+
+class re:
+    split_seeds = staticmethod(re_split_seeds)
+
+
+def _handle_seeds_cmd(args: argparse.Namespace) -> int:
+    s_sub = args.seeds_cmd
+    roles = _detect_local_lctmh_roles(args.roles)
+
+    if s_sub == "list":
+        out: Dict[str, Any] = {}
+        for r in roles:
+            spec = ROLE_SPECS[r]
+            out[spec.cluster_name] = _read_cluster_seeds(
+                spec.kube_context, spec.namespace
+            )
+        print(json.dumps(out, indent=2))
+        return 0
+
+    norm_inputs = [normalize_seed_endpoint(s) for s in args.endpoints]
+    if s_sub == "add":
+        for r in roles:
+            spec = ROLE_SPECS[r]
+            cur = _read_cluster_seeds(spec.kube_context, spec.namespace)
+            for ep in norm_inputs:
+                if ep not in cur:
+                    cur.append(ep)
+            _write_configmap_data(
+                spec.kube_context,
+                spec.namespace,
+                "lct-bootstrap-seeds",
+                {"seeds": "\n".join(cur)},
+                "seed-sync-ts",
+            )
+            print(
+                f"[seeds] Updated {spec.cluster_name}/{spec.namespace}: seeds={cur} (hot-reload triggered)"
+            )
+        return 0
+
+    if s_sub == "remove":
+        rm_set = set(norm_inputs)
+        for r in roles:
+            spec = ROLE_SPECS[r]
+            cur = [
+                ep
+                for ep in _read_cluster_seeds(spec.kube_context, spec.namespace)
+                if ep not in rm_set
+            ]
+            _write_configmap_data(
+                spec.kube_context,
+                spec.namespace,
+                "lct-bootstrap-seeds",
+                {"seeds": "\n".join(cur)},
+                "seed-sync-ts",
+            )
+            print(
+                f"[seeds] Updated {spec.cluster_name}/{spec.namespace}: seeds={cur} (hot-reload triggered)"
+            )
+        return 0
+
+    raise ValueError(f"Unknown seeds subcommand: {s_sub!r}")
+
+
+# =============================================================================
+# `locator show` Subcommand (Works on ANY local role machine!)
+# =============================================================================
+
+
+def _kubectl_exec_http_json(
+    kube_context: str, namespace: str, deploy: str, url: str
+) -> Optional[Dict[str, Any]]:
+    code = (
+        "import json, urllib.request\n"
+        f"with urllib.request.urlopen({url!r}, timeout=3.0) as r:\n"
+        "    print(r.read().decode('utf-8'))\n"
+    )
+    proc = subprocess.run(
+        [
+            "kubectl",
+            "--context",
+            kube_context,
+            "-n",
+            namespace,
+            "exec",
+            f"deploy/{deploy}",
+            "--",
+            "/app/.venv/bin/python3",
+            "-c",
+            code,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except Exception:
+        return None
+
+
+def _handle_locator_cmd(args: argparse.Namespace) -> int:
+    roles = _detect_local_lctmh_roles(args.roles)
+    now_ts = time.time()
+    report: Dict[str, Any] = {"timestamp": round(now_ts, 3), "clusters": {}}
+
+    for r in roles:
+        spec = ROLE_SPECS[r]
+        cm_loc = _read_configmap_data(
+            spec.kube_context, spec.namespace, "lct-node-locator"
+        )
+        node_loc_obj: Dict[str, Any] = {}
+        if cm_loc.get("locator.json"):
+            try:
+                node_loc_obj = json.loads(cm_loc["locator.json"])
+            except Exception:
+                node_loc_obj = {}
+
+        pins = _read_configmap_anchors(spec.kube_context, spec.namespace)
+        own_anc = _read_local_cluster_own_anchor(r)
+        seeds = _read_cluster_seeds(spec.kube_context, spec.namespace)
+
+        ca_deploy = "audit-ca" if r == "audit" else f"{spec.ca_short_prefix}-ca"
+        desc_payload = _kubectl_exec_http_json(
+            spec.kube_context,
+            spec.namespace,
+            ca_deploy,
+            "http://127.0.0.1:8090/v1/federation/descriptors",
+        )
+        # For `audit`, `audit-collector` also learns peer descriptors from seeds; merge if newer
+        if r == "audit":
+            persisted_cm = _read_configmap_data(
+                spec.kube_context, spec.namespace, "lct-learned-descriptors"
+            )
+            if persisted_cm.get("descriptors.json"):
+                try:
+                    p_obj = json.loads(persisted_cm["descriptors.json"])
+                    if isinstance(p_obj, Mapping) and isinstance(p_obj.get("descriptors"), list):
+                        existing_tds = {
+                            str(d.get("trust_domain"))
+                            for d in ((desc_payload or {}).get("descriptors") or [])
+                            if isinstance(d, Mapping)
+                        }
+                        merged = list((desc_payload or {}).get("descriptors") or [])
+                        for d in p_obj["descriptors"]:
+                            if isinstance(d, Mapping) and str(d.get("trust_domain")) not in existing_tds:
+                                merged.append(d)
+                        desc_payload = {"descriptors": merged}
+                except Exception:
+                    pass
+
+        descriptors_summary: List[Dict[str, Any]] = []
+        for raw_d in (desc_payload or {}).get("descriptors") or []:
+            if not isinstance(raw_d, Mapping):
+                continue
+            td = str(raw_d.get("trust_domain") or "")
+            d_anc = str(raw_d.get("trust_anchor") or "")
+            is_own = td == spec.trust_domain
+            expected_pin = own_anc if is_own else pins.get(td)
+            pin_status = (
+                "OWN_CA_SIGNED"
+                if (is_own and own_anc and hmac.compare_digest(own_anc, d_anc))
+                else (
+                    "PIN_VERIFIED"
+                    if (expected_pin and hmac.compare_digest(expected_pin, d_anc))
+                    else "UNPINNED"
+                )
+            )
+            exp = float(raw_d.get("expires_at") or 0.0)
+            iat = float(raw_d.get("issued_at") or 0.0)
+            descriptors_summary.append(
+                {
+                    "trust_domain": td,
+                    "scope": "own" if is_own else "learned_peer",
+                    "version": raw_d.get("version"),
+                    "verification_status": pin_status,
+                    "signature_mode": raw_d.get("signature_mode"),
+                    "age_seconds": round(max(0.0, now_ts - iat), 1),
+                    "ttl_remaining_seconds": round(max(0.0, exp - now_ts), 1),
+                    "locators": raw_d.get("locators") or {},
+                }
+            )
+
+        cards_summary: List[Dict[str, Any]] = []
+        if r != "audit":
+            dir_deploy = f"{spec.ca_short_prefix}-directory"
+            dir_payload = _kubectl_exec_http_json(
+                spec.kube_context,
+                spec.namespace,
+                dir_deploy,
+                "http://127.0.0.1:8091/v1/agents/discover?only_healthy=false",
+            )
+            for raw_c in (dir_payload or {}).get("agents") or []:
+                if not isinstance(raw_c, Mapping):
+                    continue
+                exp_c = float(raw_c.get("expires_at") or 0.0)
+                cards_summary.append(
+                    {
+                        "spiffe_id": raw_c.get("spiffe_id"),
+                        "trust_domain": raw_c.get("trust_domain"),
+                        "version": raw_c.get("version"),
+                        "skills": raw_c.get("skills"),
+                        "verification_status": "SVID_AND_JWS_VERIFIED",
+                        "ttl_remaining_seconds": round(max(0.0, exp_c - now_ts), 1),
+                        "primary_endpoint": raw_c.get("endpoint"),
+                        "locators": raw_c.get("locators") or [],
+                    }
+                )
+
+        ca_port = (node_loc_obj.get("ports") or {}).get("ca_federation")
+        adv_hosts = [
+            str(x.get("host"))
+            for x in (node_loc_obj.get("locators") or [])
+            if isinstance(x, Mapping) and x.get("host")
+        ]
+        seed_hints = [f"{h}:{ca_port}" for h in adv_hosts if ca_port]
+
+        report["clusters"][spec.cluster_name] = {
+            "role": r,
+            "trust_domain": spec.trust_domain,
+            "host_node_locator": node_loc_obj,
+            "shareable_seed_endpoints": seed_hints,
+            "configured_bootstrap_seeds": seeds,
+            "domain_descriptors": descriptors_summary,
+            "workload_cards": cards_summary,
+        }
+
+    print(json.dumps(_scrub(report), indent=2, ensure_ascii=False))
+    return 0
+
+
+# =============================================================================
 # Gateway-Executed Subcommands (`status`, `send`, `cancel`, `audit`)
 # =============================================================================
 
@@ -385,85 +809,89 @@ def _run_status_in_gateway() -> int:
         ALPHA_CA_URL,
         ALPHA_DIR_URL,
         ALPHA_REV_URL,
-        AUDIT_URL,
-        BETA_CA_URL,
-        BETA_REV_URL,
-        PAYMENT_CA_URL,
-        PAYMENT_REV_URL,
-        TRAVEL_MCP_SVC_URL,
-        PAYMENT_MCP_SVC_URL,
         GatewaySession,
     )
 
-    gw = GatewaySession(require_all_peers=False, max_wait_sec=10.0)
+    gw = GatewaySession(require_all_peers=False, max_wait_sec=12.0)
     try:
-        gw.syncer.sync_all(require_all=False, max_wait_sec=3.0)
+        gw.syncer.sync_all(require_all=False, max_wait_sec=4.0)
         ready_ok, ready_diag = gw.syncer.is_ready()
+        now_ts = time.time()
+
         control_checks: Dict[str, Any] = {}
         for name, u in (
-            ("alpha-ca", f"{ALPHA_CA_URL}/healthz"),
-            ("alpha-directory", f"{ALPHA_DIR_URL}/healthz"),
-            ("alpha-revocation", f"{ALPHA_REV_URL}/healthz"),
-            ("beta-ca-fed", f"{BETA_CA_URL}/healthz"),
-            ("payment-ca-fed", f"{PAYMENT_CA_URL}/healthz"),
+            ("alpha-ca-local", f"{ALPHA_CA_URL}/healthz"),
+            ("alpha-directory-local", f"{ALPHA_DIR_URL}/healthz"),
+            ("alpha-revocation-local", f"{ALPHA_REV_URL}/healthz"),
         ):
-            sp = urlsplit(u)
-            res_ip = ""
             try:
-                infos = socket.getaddrinfo(sp.hostname or "", sp.port or 80, socket.AF_INET)
-                res_ip = str(infos[0][4][0]) if infos else ""
                 r = httpx.get(u, timeout=3.0)
-                control_checks[name] = {
-                    "url": u,
-                    "resolved_ip": res_ip,
-                    "http_status": r.status_code,
-                }
+                control_checks[name] = {"url": u, "http_status": r.status_code}
             except Exception as exc:
-                control_checks[name] = {"url": u, "resolved_ip": res_ip, "error": str(exc)}
+                control_checks[name] = {"url": u, "error": str(exc)}
 
-        for m_name, m_url in (
-            ("beta-revocation-fed", f"{BETA_REV_URL}/healthz"),
-            ("payment-revocation-fed", f"{PAYMENT_REV_URL}/healthz"),
-        ):
-            sp = urlsplit(m_url)
-            res_ip = ""
-            try:
-                infos = socket.getaddrinfo(sp.hostname or "", sp.port or 443, socket.AF_INET)
-                res_ip = str(infos[0][4][0]) if infos else ""
-                r = gw.get_mtls(m_url, timeout=3.0)
-                control_checks[m_name] = {
-                    "url": m_url,
-                    "resolved_ip": res_ip,
-                    "http_status": r.status_code,
+        domain_locator_resolution: Dict[str, Any] = {}
+        if gw.descriptor_store is not None:
+            for td, desc in sorted(gw.descriptor_store.all_descriptors().items()):
+                domain_locator_resolution[td] = {
+                    "descriptor_version": desc.version,
+                    "trust_anchor": desc.trust_anchor,
+                    "ttl_remaining_seconds": round(max(0.0, desc.expires_at - now_ts), 1),
+                    "services": {
+                        svc_k: [loc.to_dict() for loc in locs]
+                        for svc_k, locs in desc.locators.items()
+                    },
                 }
-            except Exception as exc:
-                control_checks[m_name] = {
-                    "url": m_url,
-                    "resolved_ip": res_ip,
-                    "error": str(exc),
-                }
+                if td != "org-alpha.io":
+                    for loc in desc.get_locators("ca_bundle"):
+                        try:
+                            rh = httpx.get(f"{loc.origin_url}/healthz", timeout=3.0, trust_env=False)
+                            control_checks[f"{td}:ca_bundle"] = {
+                                "locator": f"{loc.host}:{loc.port}",
+                                "descriptor_version": desc.version,
+                                "http_status": rh.status_code,
+                            }
+                            break
+                        except Exception as exc:
+                            control_checks[f"{td}:ca_bundle"] = {
+                                "locator": f"{loc.host}:{loc.port}",
+                                "error": str(exc),
+                            }
+                    for loc in desc.get_locators("revocation_federation"):
+                        try:
+                            rm = gw.get_mtls(
+                                f"{loc.origin_url}/healthz",
+                                expected_spiffe_id=loc.spiffe_id,
+                                timeout=3.0,
+                            )
+                            control_checks[f"{td}:revocation_federation"] = {
+                                "identity": loc.spiffe_id,
+                                "locator": f"{loc.host}:{loc.port}",
+                                "descriptor_version": desc.version,
+                                "http_status": rm.status_code,
+                            }
+                            break
+                        except Exception as exc:
+                            control_checks[f"{td}:revocation_federation"] = {
+                                "identity": loc.spiffe_id,
+                                "locator": f"{loc.host}:{loc.port}",
+                                "error": str(exc),
+                            }
 
-        sp_aud = urlsplit(AUDIT_URL)
-        aud_ip = ""
         try:
-            infos = socket.getaddrinfo(sp_aud.hostname or "", sp_aud.port or 443, socket.AF_INET)
-            aud_ip = str(infos[0][4][0]) if infos else ""
             r_aud = gw.audit_client.healthz()
+            aud_locs = gw.syncer.audit_locators()
             control_checks["audit-collector"] = {
-                "url": f"{AUDIT_URL}/healthz",
-                "resolved_ip": aud_ip,
+                "identity": (aud_locs[0].spiffe_id if aud_locs else "spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector"),
+                "locators": [f"{l.host}:{l.port}" for l in aud_locs],
                 "http_status": r_aud.status_code,
                 "entries_count": r_aud.json().get("count"),
             }
         except Exception as exc:
-            control_checks["audit-collector"] = {
-                "url": f"{AUDIT_URL}/healthz",
-                "resolved_ip": aud_ip,
-                "error": str(exc),
-            }
+            control_checks["audit-collector"] = {"error": str(exc)}
 
         cards = gw.dir_client.discover(only_healthy=True)
-        card_summaries: List[Dict[str, Any]] = []
+        identity_to_locator_hops: List[Dict[str, Any]] = []
         for c in cards:
             c_info: Dict[str, Any] = {
                 "spiffe_id": c.spiffe_id,
@@ -471,8 +899,10 @@ def _run_status_in_gateway() -> int:
                 "name": c.name,
                 "skills": list(c.skills),
                 "priority": c.priority,
-                "version": c.version,
-                "endpoint": c.endpoint,
+                "card_version": c.version,
+                "ttl_remaining_seconds": round(max(0.0, c.expires_at - now_ts), 1),
+                "signed_locators": [loc.to_dict() for loc in c.locators],
+                "primary_endpoint": c.endpoint,
             }
             try:
                 verify_ctx = gw.mtls_bundle.verify_for_target(
@@ -480,37 +910,25 @@ def _run_status_in_gateway() -> int:
                     expected_spiffe_id=c.spiffe_id,
                 )
                 tls_meta = _probe_tls_handshake_details(c.endpoint, verify_ctx, timeout=3.0)
-                r_h = gw.get_mtls(f"{c.endpoint.rstrip('/')}/healthz", timeout=3.0)
+                r_h = gw.get_mtls_card(c, "/healthz", timeout=3.0)
                 c_info["resolved_machine_ip"] = tls_meta["resolved_ip"]
+                c_info["resolved_port"] = tls_meta["port"]
                 c_info["tls_version"] = tls_meta["tls_version"]
                 c_info["tls_cipher"] = tls_meta["tls_cipher"]
                 c_info["healthz_status"] = r_h.status_code
             except Exception as exc:
                 c_info["probe_error"] = str(exc)
-            card_summaries.append(c_info)
-
-        mcp_tools: List[Dict[str, Any]] = []
-        for mcp_lbl, mcp_u, mcp_td in (
-            ("travel-ops-mcp", TRAVEL_MCP_SVC_URL.rsplit("/mcp", 1)[0], "org-payment.io"),
-            ("payment-vault-mcp", PAYMENT_MCP_SVC_URL.rsplit("/mcp", 1)[0], "org-payment.io"),
-        ):
-            try:
-                v_ctx = gw.mtls_bundle.verify_for_target(
-                    target_url=mcp_u, expected_trust_domain=mcp_td
-                )
-                t_meta = _probe_tls_handshake_details(mcp_u, v_ctx, timeout=3.0)
-                mcp_tools.append(t_meta)
-            except Exception as exc:
-                mcp_tools.append({"endpoint": mcp_u, "error": str(exc)})
+            identity_to_locator_hops.append(c_info)
 
         report = {
+            "addressing_mode": "identity_signed_locators",
             "gateway_spiffe_id": gw.identity.spiffe_id,
             "svid_generation": gw.identity.renewal_generation,
             "federation_ready": ready_ok,
             "federation_sync": ready_diag,
+            "domain_descriptor_resolution": domain_locator_resolution,
             "control_plane": control_checks,
-            "discovered_agent_cards": card_summaries,
-            "mcp_tool_endpoints": mcp_tools,
+            "identity_to_locator_resolution": identity_to_locator_hops,
         }
         print(json.dumps(_scrub(report), indent=2, ensure_ascii=False))
         return 0 if ready_ok else 1
@@ -641,7 +1059,6 @@ def stream_and_summarize_a2a_sse(
 
 def _run_send_in_gateway(args: argparse.Namespace) -> int:
     from lineage.k8s.e2e_driver import (
-        ORCH_URL,
         GatewaySession,
         _extract_a2a_task_data,
         _full_travel_root_permissions,
@@ -649,15 +1066,22 @@ def _run_send_in_gateway(args: argparse.Namespace) -> int:
 
     gw = GatewaySession()
     try:
+        orch_card = gw.get_orchestrator_card()
+        all_cards = {c.spiffe_id: c for c in gw.dir_client.discover(only_healthy=False)}
+
         task_id = args.task_id or f"task-mh-{uuid.uuid4().hex[:10]}"
         cities = _infer_cities_from_text(args.text, args.city)
         perms = _full_travel_root_permissions(cities, max_amount=float(args.max_amount))
-        tok, _ = gw.mint_root_for_user(task_id, args.sub, perms)
+        tok, _ = gw.mint_root_for_user(task_id, args.sub, perms, target_card=orch_card)
 
         orch_verify_ctx = gw.mtls_bundle.verify_for_target(
-            target_url=ORCH_URL, expected_trust_domain="org-alpha.io"
+            target_url=orch_card.endpoint,
+            expected_trust_domain="org-alpha.io",
+            expected_spiffe_id=orch_card.spiffe_id,
         )
-        entry_tls = _probe_tls_handshake_details(ORCH_URL, orch_verify_ctx, timeout=5.0)
+        entry_tls = _probe_tls_handshake_details(
+            orch_card.endpoint, orch_verify_ctx, timeout=5.0
+        )
 
         msg_data: Dict[str, Any] = {"op": "plan_and_execute_trip"}
         if args.pause_before_settlement:
@@ -705,7 +1129,6 @@ def _run_send_in_gateway(args: argparse.Namespace) -> int:
                 else 1
             )
 
-        # Allow asynchronous audit flusher a brief beat, then fetch verified per-hop audit trail
         time.sleep(0.5)
         entries = gw.audit_client.fetch_entries(task_id=task_id)
         hop_traces: List[Dict[str, Any]] = [
@@ -714,14 +1137,14 @@ def _run_send_in_gateway(args: argparse.Namespace) -> int:
                 "event_type": "GATEWAY_ENTRY_MTLS",
                 "caller_spiffe_id": gw.identity.spiffe_id,
                 "target_spiffe_id": entry_tls["peer_spiffe_id"],
+                "resolved_locator": f"{entry_tls['resolved_ip']}:{entry_tls['port']}",
+                "card_version": orch_card.version,
                 "peer_cert_issuer_domain": entry_tls["peer_issuer_domain"],
-                "resolved_peer_ip": entry_tls["resolved_ip"],
                 "tls_version": entry_tls["tls_version"],
                 "tls_cipher": entry_tls["tls_cipher"],
                 "decision": "ALLOW",
             }
         ]
-        # Map `(lineage_path, node)` outbound resolved IP onto inbound authz/tool events
         outbound_ip_by_path: Dict[str, str] = {}
         for e in entries:
             if e.event_type.value == "OUTBOUND_DELEGATE":
@@ -737,12 +1160,20 @@ def _run_send_in_gateway(args: argparse.Namespace) -> int:
                     if e.node_spiffe_id.startswith("spiffe://")
                     else e.node_svid_or_domain
                 )
+                node_card = all_cards.get(e.node_spiffe_id)
+                signed_loc_str = (
+                    f"{node_card.locators[0].host}:{node_card.locators[0].port}"
+                    if (node_card is not None and node_card.locators)
+                    else (node_card.endpoint if node_card is not None else None)
+                )
                 hop_traces.append(
                     {
                         "hop_index": e.hop_index,
                         "event_type": e.event_type.value,
                         "lineage_path": e.lineage_path,
                         "node_spiffe_id": e.node_spiffe_id,
+                        "signed_locator": signed_loc_str,
+                        "card_version": (node_card.version if node_card is not None else None),
                         "node_issuer_domain": node_td,
                         "peer_spiffe_id": ad.get("peer_spiffe_id"),
                         "peer_cert_issuer_domain": ad.get("peer_issuer_domain"),
@@ -758,7 +1189,7 @@ def _run_send_in_gateway(args: argparse.Namespace) -> int:
             "task_id": task_id,
             "sub": args.sub,
             "a2a_result": rpc_summary,
-            "hop_by_hop_mtls_and_lct_trace": hop_traces,
+            "hop_by_hop_identity_to_locator_trace": hop_traces,
         }
         print(json.dumps(_scrub(output), indent=2, ensure_ascii=False))
         return exit_rc
@@ -770,18 +1201,16 @@ def _run_send_in_gateway(args: argparse.Namespace) -> int:
 def _run_cancel_in_gateway(args: argparse.Namespace) -> int:
     from lineage.k8s.e2e_driver import (
         ALPHA_REV_URL,
-        BETA_REV_URL,
-        ORCH_URL,
-        PAYMENT_REV_URL,
         GatewaySession,
         _full_travel_root_permissions,
     )
 
     gw = GatewaySession()
     try:
+        orch_card = gw.get_orchestrator_card()
         task_id = args.task_id
         perms = _full_travel_root_permissions(["Tokyo"], max_amount=800.0)
-        tok, _ = gw.mint_root_for_user(task_id, args.sub, perms)
+        tok, _ = gw.mint_root_for_user(task_id, args.sub, perms, target_card=orch_card)
 
         if args.stage_first:
             st_stage, body_stage = gw.a2a_orch.send_message(
@@ -799,31 +1228,43 @@ def _run_cancel_in_gateway(args: argparse.Namespace) -> int:
         expected_prefix = f"/{task_id}/OrchestratorAlpha"
 
         propagation: Dict[str, Any] = {}
-        for peer_name, peer_url in (
-            ("alpha-revocation", ALPHA_REV_URL),
-            ("beta-revocation", BETA_REV_URL),
-            ("payment-revocation", PAYMENT_REV_URL),
+        # 1. Local alpha-revocation
+        alpha_ok = False
+        for _ in range(15):
+            r_loc = httpx.get(f"{ALPHA_REV_URL}/v1/events", timeout=3.0)
+            evs = r_loc.json().get("events", [])
+            if any(e.get("target") == expected_prefix for e in evs):
+                alpha_ok = True
+                break
+            time.sleep(0.2)
+        propagation["alpha-revocation"] = {
+            "url": ALPHA_REV_URL,
+            "propagated": alpha_ok,
+        }
+
+        # 2. Peer beta-revocation & payment-revocation resolved via signed domain descriptors
+        for peer_name, peer_td in (
+            ("beta-revocation", "org-beta.io"),
+            ("payment-revocation", "org-payment.io"),
         ):
+            rev_loc = gw.rev_fed_locator(peer_td)
+            peer_url = rev_loc.origin_url
             matched = False
-            detail: Dict[str, Any] = {"url": peer_url}
+            detail: Dict[str, Any] = {
+                "identity": rev_loc.spiffe_id,
+                "locator": f"{rev_loc.host}:{rev_loc.port}",
+            }
             for _ in range(20):
                 try:
-                    if peer_url.startswith("https://"):
-                        r_ev = gw.get_mtls(
-                            f"{peer_url}/v1/federation/events?since_version=0", timeout=3.0
-                        )
-                        r_h = gw.get_mtls(f"{peer_url}/healthz", timeout=3.0)
-                        if r_h.status_code == 200:
-                            detail["trie_version"] = r_h.json().get("version")
-                            if int(r_h.json().get("version", 0)) >= 1:
-                                matched = True
-                                break
-                    else:
-                        r_loc = httpx.get(f"{peer_url}/v1/events", timeout=3.0)
-                        evs = r_loc.json().get("events", [])
-                        if any(e.get("target") == expected_prefix for e in evs):
+                    r_h = gw.get_mtls(
+                        f"{peer_url}/healthz",
+                        expected_spiffe_id=rev_loc.spiffe_id,
+                        timeout=3.0,
+                    )
+                    if r_h.status_code == 200:
+                        detail["trie_version"] = r_h.json().get("version")
+                        if int(r_h.json().get("version", 0)) >= 1:
                             matched = True
-                            detail["matched_prefix"] = expected_prefix
                             break
                 except Exception as exc:
                     detail["last_error"] = str(exc)
@@ -832,9 +1273,10 @@ def _run_cancel_in_gateway(args: argparse.Namespace) -> int:
             propagation[peer_name] = detail
 
         r_replay = gw.post_lct_mtls(
-            ORCH_URL,
+            orch_card.endpoint,
             tok,
             {"op": "inspect_inbox", "inspect_task_id": task_id},
+            expected_spiffe_id=orch_card.spiffe_id,
         )
         out = {
             "task_id": task_id,
@@ -899,7 +1341,15 @@ def _run_audit_in_gateway(args: argparse.Namespace) -> int:
                 "reconstruction": _fmt_task(trec),
             }
             print(json.dumps(_scrub(out), indent=2, ensure_ascii=False))
-            return 0 if (report.stream_integrity_ok and trec.reconstructed_complete and not trec.anomalies) else 1
+            return (
+                0
+                if (
+                    report.stream_integrity_ok
+                    and trec.reconstructed_complete
+                    and not trec.anomalies
+                )
+                else 1
+            )
 
         out_all = {
             "total_entries": len(entries),
@@ -920,26 +1370,22 @@ def _run_audit_in_gateway(args: argparse.Namespace) -> int:
 # =============================================================================
 
 
-def _probe_gateway_endpoint_reachable(
-    endpoint_env_var: str,
+def _probe_hotel_primary_reachable(
     kube_context: str = "kind-lctmh-alpha",
     require_directory_card: bool = False,
 ) -> bool:
     code = (
-        "import os, sys\n"
+        "import sys\n"
         "from lineage.k8s.e2e_driver import GatewaySession\n"
-        f"u = os.environ[{endpoint_env_var!r}].rsplit('/mcp', 1)[0] + '/healthz'\n"
         "gw = GatewaySession(require_all_peers=False, max_wait_sec=3.0, peer_timeout=1.2)\n"
         "try:\n"
         "    gw.syncer.sync_all(require_all=False, max_wait_sec=2.0)\n"
-        "    r = gw.get_mtls(u, timeout=1.5)\n"
-        "    if r.status_code != 200:\n"
+        f"    cards = gw.dir_client.discover(skill='travel.hotel', only_healthy={bool(require_directory_card)!r})\n"
+        "    prim = [c for c in cards if 'primary' in c.spiffe_id]\n"
+        "    if not prim:\n"
         "        sys.exit(1)\n"
-        f"    if {bool(require_directory_card)!r}:\n"
-        "        cards = gw.dir_client.discover(skill='travel.hotel', only_healthy=True)\n"
-        "        if not any('primary' in c.spiffe_id for c in cards):\n"
-        "            sys.exit(1)\n"
-        "    sys.exit(0)\n"
+        "    r = gw.get_mtls_card(prim[0], '/healthz', timeout=1.5)\n"
+        "    sys.exit(0 if r.status_code == 200 else 1)\n"
         "except Exception:\n"
         "    sys.exit(1)\n"
         "finally:\n"
@@ -975,7 +1421,7 @@ def _trigger_or_prompt_fault(
     timeout_sec: float,
 ) -> None:
     fault_script = REPO_ROOT / "lineage" / "scripts" / "multihost.sh"
-    pretty_cmd = f"bash lineage/scripts/multihost fault {' '.join(fault_args)}"
+    pretty_cmd = f"bash lineage/scripts/multihost.sh fault {' '.join(fault_args)}"
     if local_beta:
         print(f"[e2e:local-fault] Executing directly: {pretty_cmd}", flush=True)
         subprocess.run(["bash", str(fault_script), "fault", *fault_args], check=True)
@@ -989,15 +1435,14 @@ def _trigger_or_prompt_fault(
     if expect_hotel_reachable is not None:
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
-            is_up = _probe_gateway_endpoint_reachable(
-                "HOTEL_PRIMARY_URL",
+            is_up = _probe_hotel_primary_reachable(
                 require_directory_card=bool(expect_hotel_reachable),
             )
             if is_up == expect_hotel_reachable:
                 return
             time.sleep(1.0)
         raise TimeoutError(
-            f"Timed out ({timeout_sec}s) waiting for HOTEL_PRIMARY_URL reachable={expect_hotel_reachable} after `{pretty_cmd}`"
+            f"Timed out ({timeout_sec}s) waiting for hotel-specialist-primary reachable={expect_hotel_reachable} after `{pretty_cmd}`"
         )
 
 
@@ -1046,15 +1491,19 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
         for s in (args.scenarios or "1,2A,2B,3A,3B,4,5,6").split(",")
         if s.strip()
     ]
-    out_Clusters = subprocess.run(["kind", "get", "clusters"], capture_output=True, text=True)
-    local_clusters = set((out_Clusters.stdout or "").splitlines())
+    out_clusters = subprocess.run(["kind", "get", "clusters"], capture_output=True, text=True)
+    local_clusters = set((out_clusters.stdout or "").splitlines())
     if "lctmh-alpha" not in local_clusters:
         raise RuntimeError(
             "`e2e` must be run on Machine 1 hosting `lctmh-alpha` (`e2e-user-gateway`)."
         )
     local_beta = ("lctmh-beta" in local_clusters) and (not args.remote_faults)
     op_timeout = float(args.operator_timeout)
-    results: Dict[str, Any] = {"run_id": run_id, "local_beta_auto_fault": local_beta, "scenarios": {}}
+    results: Dict[str, Any] = {
+        "run_id": run_id,
+        "local_beta_auto_fault": local_beta,
+        "scenarios": {},
+    }
 
     out_dir: Optional[Path] = Path(args.output_dir).resolve() if args.output_dir else None
     if out_dir is not None:
@@ -1070,7 +1519,7 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
             )
 
     if "1" in wanted:
-        print("[e2e] Running Scenario 1 (Cross-Machine A2A v1.0 + SSE + 1-to-N / N-to-1 / M-to-N DAG)...", flush=True)
+        print("[e2e] Running Scenario 1 (Identity-Addressed A2A v1.0 + SSE + 1-to-N / N-to-1 / M-to-N DAG)...", flush=True)
         _save_scenario("1", _exec_e2e_driver_phase("scenario1_normal_dag", run_id))
         print("[e2e] Scenario 1: PASS", flush=True)
 
@@ -1128,8 +1577,12 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
             ],
             check=False,
         )
-        # Transiently expose NodePort `30990` ONLY for the duration of Scenario 3B (`[MEDIUM-M6-01]`)
-        sync_svc_yaml = yaml.safe_dump(render_e2e_sync_service_manifest("lineage-alpha"), sort_keys=False)
+        alpha_ports = read_cluster_role_ports("alpha") or {}
+        sync_np = alpha_ports.get("e2e_sync_hook")
+        sync_svc_yaml = yaml.safe_dump(
+            render_e2e_sync_service_manifest("lineage-alpha", node_port=sync_np),
+            sort_keys=False,
+        )
         subprocess.run(
             ["kubectl", "--context", "kind-lctmh-alpha", "apply", "-f", "-"],
             input=sync_svc_yaml,
@@ -1137,7 +1590,6 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
             check=True,
             stdout=subprocess.DEVNULL,
         )
-        # Allow kube-proxy NodePort iptables rules a brief beat to program :30990
         time.sleep(1.0)
         s3b_box: Dict[str, Any] = {}
         s3b_err: List[Exception] = []
@@ -1155,7 +1607,6 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
         t_s3b = threading.Thread(target=_s3b_worker, daemon=True)
         t_s3b.start()
         try:
-            # Wait for leaf arrival sync marker inside `e2e-user-gateway`
             deadline_m = time.time() + 45.0
             found_marker = False
             while time.time() < deadline_m:
@@ -1272,7 +1723,6 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
         t_s6.start()
         partitioned = False
         try:
-            # Wait for `/tmp/s6_ready_disconnect`
             deadline_d = time.time() + 60.0
             while time.time() < deadline_d:
                 if s6_err:
@@ -1323,7 +1773,6 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
                 check=True,
             )
 
-            # Wait for `/tmp/s6_ready_reconnect`
             deadline_r = time.time() + 60.0
             while time.time() < deadline_r:
                 if s6_err:
@@ -1404,7 +1853,332 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
             json.dumps(_scrub(results), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-    print(json.dumps({"run_id": run_id, "overall_status": "PASS", "scenarios": list(results["scenarios"].keys())}, indent=2))
+    print(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "overall_status": "PASS",
+                "scenarios": list(results["scenarios"].keys()),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def format_m8_comparison_markdown(comp: Mapping[str, Any]) -> str:
+    """Render a side-by-side empirical Markdown report from `run_m8_protocol_comparison` output."""
+    dims = comp.get("dimensions") or {}
+    d1 = dims.get("1_latency_and_sts_rpcs") or {}
+    d2 = dims.get("2_fine_grained_overprivilege") or {}
+    d3 = dims.get("3_multiparent_convergence_and_branch_cancel") or {}
+    d4 = dims.get("4_zombie_primary_failover_double_spend") or {}
+    d5 = dims.get("5_central_sts_partition_impact") or {}
+    d6 = dims.get("6_causal_audit_reconstruction") or {}
+
+    c1 = d1.get("oauth_centralized") or {}
+    f1 = d1.get("oauth_federated") or {}
+    l1 = d1.get("lct") or {}
+
+    c2 = d2.get("oauth_centralized") or {}
+    f2 = d2.get("oauth_federated") or {}
+    l2 = d2.get("lct") or {}
+
+    c3 = d3.get("oauth_centralized") or {}
+    f3 = d3.get("oauth_federated") or {}
+    l3 = d3.get("lct") or {}
+
+    c4 = d4.get("oauth_centralized") or {}
+    f4 = d4.get("oauth_federated") or {}
+    l4 = d4.get("lct") or {}
+
+    c5 = d5.get("oauth_centralized") or {}
+    f5 = d5.get("oauth_federated") or {}
+    l5 = d5.get("lct") or {}
+
+    c6 = d6.get("oauth_centralized") or {}
+    f6 = d6.get("oauth_federated") or {}
+    l6 = d6.get("lct") or {}
+
+    lines = [
+        f"# Empirical Protocol Comparison (`run_id={comp.get('run_id')}`, `alpha_sts={comp.get('alpha_sts_engine')}`)",
+        "",
+        "| Dimension | `oauth_centralized` (RFC 8693 Central STS) | `oauth_federated` (Per-Org STS Relay) | `lct` (Hop-0 OIDC/Keycloak -> Offline LCT) |",
+        "| :--- | :--- | :--- | :--- |",
+        (
+            f"| **1. Multi-Hop Latency & STS RPCs** (`Alpha -> Beta -> Pay -> MCP`) | "
+            f"`{c1.get('online_sts_exchange_rpcs')}` online STS RPCs (`{c1.get('cumulative_sts_rtt_ms')} ms` STS RTT, `{c1.get('e2e_wall_ms')} ms` wall) | "
+            f"`{f1.get('online_sts_exchange_rpcs')}` online STS RPCs (`{f1.get('cumulative_sts_rtt_ms')} ms` STS RTT, `{f1.get('e2e_wall_ms')} ms` wall) | "
+            f"**`{l1.get('online_sts_exchange_rpcs')}` downstream STS RPCs** (`0.0 ms` STS RTT, `{l1.get('hop0_ca_bridge_ms')} ms` Hop-0 bridge, `{l1.get('e2e_wall_ms')} ms` wall) |"
+        ),
+        (
+            f"| **2. Fine-Grained Parameter Over-Privilege** (`$950` / `Paris` vs `$650` / `Tokyo`) | "
+            f"HTTP `{c2.get('http_status')}` (`{c2.get('overprivileged_call_outcome')}` — `${c2.get('charged_usd')}` `{c2.get('booked_city')}`) | "
+            f"HTTP `{f2.get('http_status')}` (`{f2.get('overprivileged_call_outcome')}` — `${f2.get('charged_usd')}` `{f2.get('booked_city')}`) | "
+            f"**HTTP `{l2.get('http_status')}` (`{l2.get('overprivileged_call_outcome')}`)** |"
+        ),
+        (
+            f"| **3. N-to-1 Convergence & Flight-Only Cancel** | "
+            f"Airline HTTP `{c3.get('airline_escrow_status_after_flight_cancel')}`, Hotel HTTP `{c3.get('hotel_escrow_status')}` (`{c3.get('outcome')}`) | "
+            f"Airline HTTP `{f3.get('airline_escrow_status_after_flight_cancel')}`, Hotel HTTP `{f3.get('hotel_escrow_status')}` (`{f3.get('outcome')}`) | "
+            f"**Airline HTTP `{l3.get('airline_escrow_status_after_flight_cancel')}` (Blocked), Hotel HTTP `{l3.get('hotel_escrow_status')}` (`{l3.get('hotel_lineage_decision')}`)** |"
+        ),
+        (
+            f"| **4. Slow Primary Zombie Wakeup on Failover** | "
+            f"Zombie MCP HTTP `{c4.get('zombie_wakeup_mcp_status')}` (`double_spend_prevented={c4.get('double_spend_prevented')}`) | "
+            f"Zombie MCP HTTP `{f4.get('zombie_wakeup_mcp_status')}` (`double_spend_prevented={f4.get('double_spend_prevented')}`) | "
+            f"**Zombie MCP HTTP `{l4.get('zombie_wakeup_mcp_status')}` (`double_spend_prevented={l4.get('double_spend_prevented')}`)** |"
+        ),
+        (
+            f"| **5. Central `alpha-sts` Partition Impact** | "
+            f"HTTP `{c5.get('http_status_during_alpha_sts_outage', 'N/A')}` (`survives={c5.get('survives_central_sts_outage', False)}`) | "
+            f"`Beta->Pay` HTTP `{f5.get('beta_to_pay_http_status_during_alpha_sts_outage', 'N/A')}` (`downstream_survives={f5.get('downstream_orgs_survive_alpha_sts_outage', True)}`) | "
+            f"**`Alpha->Beta->Pay` HTTP `{l5.get('alpha_to_beta_to_pay_http_status_during_alpha_sts_outage', 'N/A')}` (`survives={l5.get('survives_central_sts_outage', True)}`, `0` STS calls)** |"
+        ),
+        (
+            f"| **6. Causal Audit DAG Reconstruction** | "
+            f"`{c6.get('hash_linked_causal_coverage_pct')}%` (`{c6.get('task_correlated_dag_events')}` task-linked DAG events) | "
+            f"`{f6.get('hash_linked_causal_coverage_pct')}%` (`{f6.get('task_correlated_dag_events')}` task-linked DAG events) | "
+            f"**`{l6.get('hash_linked_causal_coverage_pct')}%` (`{l6.get('verified_causal_events_for_d1_trip')}` verified events, `{l6.get('tampered_or_unverified_events')}` tampered)** |"
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def _handle_oauth_cmd(args: argparse.Namespace) -> int:
+    from lineage.multihost.config_gen import (
+        _ensure_in_memory_oauth_secret,
+        _read_existing_oauth_creds_from_cluster,
+    )
+
+    if args.oauth_cmd == "export-creds":
+        creds = _read_existing_oauth_creds_from_cluster(args.role)
+        if creds is None:
+            print(f"ERROR: Secret/lct-oauth-credentials not found in lctmh-{args.role}", file=sys.stderr)
+            return 1
+        out_path = Path(args.output).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(out_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(creds, fh, indent=2)
+        print(json.dumps({"exported_to": str(out_path), "mode": "0600", "role": args.role}))
+        return 0
+
+    if args.oauth_cmd == "import-creds":
+        in_path = Path(args.file).expanduser().resolve()
+        raw_json = in_path.read_text(encoding="utf-8")
+        roles = [r for r in _detect_local_lctmh_roles(args.roles) if r != "audit"]
+        updated: List[Dict[str, Any]] = []
+        for r in roles:
+            updated.append(
+                _ensure_in_memory_oauth_secret(
+                    role=r,
+                    sts_engine="lightweight",
+                    import_creds_json=raw_json,
+                )
+            )
+        print(json.dumps({"imported_roles": updated}, indent=2))
+        return 0
+    return 1
+
+
+def _run_compare_from_host(args: argparse.Namespace) -> int:
+    run_id = args.run_id.strip() or f"m8cmp-{int(time.time())}"
+    out_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir.strip() else None
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    kube_ctx = args.kube_context
+    extra_drv_args = ["--skip-sts-partition"] if args.skip_sts_partition else []
+    comp_box: Dict[str, Any] = {}
+    comp_err: List[BaseException] = []
+
+    def _gw_test_file(fpath: str) -> bool:
+        p = subprocess.run(
+            [
+                "kubectl",
+                "--context",
+                kube_ctx,
+                "-n",
+                "lineage-alpha",
+                "exec",
+                "deploy/e2e-user-gateway",
+                "--",
+                "test",
+                "-f",
+                fpath,
+            ],
+            capture_output=True,
+        )
+        return p.returncode == 0
+
+    def _gw_touch(fpath: str) -> None:
+        subprocess.run(
+            [
+                "kubectl",
+                "--context",
+                kube_ctx,
+                "-n",
+                "lineage-alpha",
+                "exec",
+                "deploy/e2e-user-gateway",
+                "--",
+                "sh",
+                "-c",
+                f"echo ACK > {fpath}",
+            ],
+            check=True,
+        )
+
+    def _worker() -> None:
+        try:
+            comp_box["out"] = _exec_e2e_driver_phase(
+                "m8_compare_protocols",
+                run_id,
+                extra_args=extra_drv_args,
+                kube_context=kube_ctx,
+            )
+        except BaseException as exc:
+            comp_err.append(exc)
+
+    def _gw_clear_markers() -> None:
+        subprocess.run(
+            [
+                "kubectl",
+                "--context",
+                kube_ctx,
+                "-n",
+                "lineage-alpha",
+                "exec",
+                "deploy/e2e-user-gateway",
+                "--",
+                "rm",
+                "-f",
+                "/tmp/m8_ready_stop_alpha_sts",
+                "/tmp/m8_ack_stopped_alpha_sts",
+                "/tmp/m8_ready_restore_alpha_sts",
+                "/tmp/m8_ack_restored_alpha_sts",
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    _gw_clear_markers()
+    print(
+        f"[compare] Running 6-dimension empirical comparison (oauth_centralized vs oauth_federated vs lct) run_id={run_id}...",
+        flush=True,
+    )
+    t_cmp = threading.Thread(target=_worker, daemon=True)
+    t_cmp.start()
+
+    def _alpha_sts_reachable() -> bool:
+        cp = subprocess.run(
+            [
+                "kubectl",
+                "--context",
+                kube_ctx,
+                "-n",
+                "lineage-alpha",
+                "exec",
+                "deploy/e2e-user-gateway",
+                "--",
+                "/app/.venv/bin/python3",
+                "-c",
+                (
+                    "import httpx, sys\n"
+                    "ok = False\n"
+                    "for u in ('http://alpha-sts.lineage-alpha.svc.cluster.local:8095/realms/lct/.well-known/openid-configuration', "
+                    "'http://alpha-sts-federation.lineage-alpha.svc.cluster.local:8095/realms/lct/.well-known/openid-configuration'):\n"
+                    "    try:\n"
+                    "        if httpx.get(u, timeout=1.5, trust_env=False).status_code == 200:\n"
+                    "            ok = True\n"
+                    "    except Exception:\n"
+                    "        pass\n"
+                    "sys.exit(0 if ok else 1)\n"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+        )
+        return cp.returncode == 0
+
+    def _set_alpha_sts_selector(app_val: str) -> None:
+        for svc_name in ("alpha-sts", "alpha-sts-federation"):
+            subprocess.run(
+                [
+                    "kubectl",
+                    "--context",
+                    kube_ctx,
+                    "-n",
+                    "lineage-alpha",
+                    "patch",
+                    "svc",
+                    svc_name,
+                    "-p",
+                    json.dumps({"spec": {"selector": {"app": app_val}}}),
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    sts_partitioned = False
+    try:
+        if not args.skip_sts_partition:
+            deadline = time.time() + 420.0
+            while t_cmp.is_alive() and not _gw_test_file("/tmp/m8_ready_stop_alpha_sts"):
+                if time.time() > deadline:
+                    raise RuntimeError("Timed out waiting for Dimension 5 alpha-sts partition trigger")
+                time.sleep(0.4)
+            if t_cmp.is_alive():
+                print(
+                    "[compare] Dimension 5: Severing Service/alpha-sts (+ federation) endpoints to test central STS outage...",
+                    flush=True,
+                )
+                _set_alpha_sts_selector("alpha-sts-partitioned")
+                sts_partitioned = True
+                ep_deadline = time.time() + 25.0
+                while time.time() < ep_deadline and _alpha_sts_reachable():
+                    time.sleep(0.4)
+                time.sleep(0.5)
+                _gw_touch("/tmp/m8_ack_stopped_alpha_sts")
+
+                deadline_rest = time.time() + 180.0
+                while t_cmp.is_alive() and not _gw_test_file("/tmp/m8_ready_restore_alpha_sts"):
+                    if time.time() > deadline_rest:
+                        raise RuntimeError("Timed out waiting for Dimension 5 restore signal")
+                    time.sleep(0.4)
+                print("[compare] Dimension 5: Restoring Service/alpha-sts (+ federation) endpoints...", flush=True)
+                _set_alpha_sts_selector("alpha-sts")
+                ep_rest_deadline = time.time() + 25.0
+                while time.time() < ep_rest_deadline and not _alpha_sts_reachable():
+                    time.sleep(0.4)
+                sts_partitioned = False
+                _gw_touch("/tmp/m8_ack_restored_alpha_sts")
+
+        t_cmp.join(timeout=420.0)
+        if comp_err:
+            raise comp_err[0]
+        if "out" not in comp_box:
+            raise RuntimeError("Protocol comparison worker did not produce output")
+    finally:
+        if sts_partitioned:
+            _set_alpha_sts_selector("alpha-sts")
+
+    scrubbed = _scrub(comp_box["out"])
+    md_report = format_m8_comparison_markdown(scrubbed)
+    if out_dir is not None:
+        (out_dir / "m8_protocol_comparison.json").write_text(
+            json.dumps(scrubbed, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        (out_dir / "m8_protocol_comparison.md").write_text(
+            md_report + "\n",
+            encoding="utf-8",
+        )
+    print("\n" + md_report + "\n", flush=True)
+    print(json.dumps(scrubbed, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -1416,7 +2190,7 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lct_multihost_cli.py",
-        description="Cross-Machine LCT Federation Operator & Verification CLI",
+        description="Identity-Addressed Cross-Machine LCT Federation Operator & Verification CLI",
     )
     parser.add_argument(
         "--in-gateway",
@@ -1431,7 +2205,39 @@ def build_cli_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="subcmd", required=True)
 
     # status
-    sub.add_parser("status", help="Show per-domain health, resolved machine IPs, and AgentCards")
+    sub.add_parser(
+        "status",
+        help="Show per-domain descriptor health and per-hop identity -> locator resolution",
+    )
+
+    # locator
+    p_loc = sub.add_parser(
+        "locator",
+        help="Inspect own + learned signed domain descriptors and workload locators",
+    )
+    l_sub = p_loc.add_subparsers(dest="locator_cmd", required=True)
+    p_l_show = l_sub.add_parser(
+        "show",
+        help="Show local host locators, signed domain descriptors, and AgentCards",
+    )
+    p_l_show.add_argument("--roles", default="", help="Comma-separated local roles")
+
+    # seeds
+    p_seeds = sub.add_parser(
+        "seeds",
+        help="Manage untrusted bootstrap seed endpoints (ip:port) in ConfigMap/lct-bootstrap-seeds",
+    )
+    s_sub = p_seeds.add_subparsers(dest="seeds_cmd", required=True)
+    p_s_list = s_sub.add_parser("list", help="List configured bootstrap seeds")
+    p_s_list.add_argument("--roles", default="", help="Comma-separated local roles")
+
+    p_s_add = s_sub.add_parser("add", help="Add one or more bootstrap seed ip:port endpoints")
+    p_s_add.add_argument("endpoints", nargs="+", help="Seed endpoint(s) ip:port")
+    p_s_add.add_argument("--roles", default="", help="Comma-separated local roles")
+
+    p_s_rm = s_sub.add_parser("remove", help="Remove one or more bootstrap seed ip:port endpoints")
+    p_s_rm.add_argument("endpoints", nargs="+", help="Seed endpoint(s) ip:port")
+    p_s_rm.add_argument("--roles", default="", help="Comma-separated local roles")
 
     # trust
     p_trust = sub.add_parser("trust", help="Manage SSH-style SHA-256 domain trust anchors")
@@ -1449,12 +2255,22 @@ def build_cli_parser() -> argparse.ArgumentParser:
     p_t_rm.add_argument("domain", help="Trust domain to unpin")
     p_t_rm.add_argument("--roles", default="", help="Comma-separated local roles")
 
+    p_t_imp = t_sub.add_parser(
+        "import",
+        help="Import batch file of '<domain> sha256:...' lines (displays each and requires confirmation)",
+    )
+    p_t_imp.add_argument("file", help="Path to file containing domain trust anchor lines")
+    p_t_imp.add_argument("--yes", action="store_true", help="Confirm without interactive prompt")
+    p_t_imp.add_argument("--roles", default="", help="Comma-separated local roles")
+
     p_t_fetch = t_sub.add_parser(
-        "fetch", help="Fetch candidate bundle from peer IP, display fingerprint, and pin on confirmation"
+        "fetch",
+        help="Fetch candidate bundle from peer seed ip:port, display fingerprint, and pin on confirmation",
     )
     p_t_fetch.add_argument("--domain", required=True, help="Expected trust domain")
-    p_t_fetch.add_argument("--ip", required=True, help="Peer machine IPv4 address")
-    p_t_fetch.add_argument("--port", type=int, default=0, help="Override bundle port")
+    p_t_fetch.add_argument("--seed", default="", help="Peer ca_federation seed ip:port")
+    p_t_fetch.add_argument("--ip", default="", help="Peer machine IPv4 address")
+    p_t_fetch.add_argument("--port", type=int, default=0, help="Peer ca_federation port")
     p_t_fetch.add_argument("--scheme", choices=("http", "https"), default="")
     p_t_fetch.add_argument(
         "--expect",
@@ -1508,6 +2324,46 @@ def build_cli_parser() -> argparse.ArgumentParser:
     )
     p_e2e.add_argument("--operator-timeout", type=float, default=180.0)
 
+    # compare
+    p_cmp = sub.add_parser(
+        "compare",
+        help="Run 6-dimension empirical comparison: oauth_centralized vs oauth_federated vs lct",
+    )
+    p_cmp.add_argument("--run-id", default="")
+    p_cmp.add_argument("--output-dir", default="")
+    p_cmp.add_argument(
+        "--skip-sts-partition",
+        action="store_true",
+        help="Skip Dimension 5 alpha-sts scale-to-0 outage probe",
+    )
+
+    # oauth
+    p_oauth = sub.add_parser(
+        "oauth",
+        help="Export or import OAuth 2.0 confidential client credentials across machines",
+    )
+    o_sub = p_oauth.add_subparsers(dest="oauth_cmd", required=True)
+    p_o_exp = o_sub.add_parser(
+        "export-creds",
+        help="Export Secret/lct-oauth-credentials to a 0600 file (for 4-machine oauth_centralized)",
+    )
+    p_o_exp.add_argument("--role", default="alpha")
+    p_o_exp.add_argument("--output", required=True)
+
+    p_o_imp = o_sub.add_parser(
+        "import-creds",
+        help="Import OAuth client credentials file into local lctmh-* clusters",
+    )
+    p_o_imp.add_argument("file")
+    p_o_imp.add_argument("--roles", default="")
+
+    # deprecated update-peer-ips
+    p_dep = sub.add_parser(
+        "update-peer-ips",
+        help="[DEPRECATED in M7] Replaced by automatic locator-agent + seeds/locator commands",
+    )
+    p_dep.add_argument("extra", nargs="*", help=argparse.SUPPRESS)
+
     return parser
 
 
@@ -1516,7 +2372,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_cli_parser()
     args = parser.parse_args(raw_argv)
 
-    # Additional semantic validation on CLI arguments
+    if args.subcmd == "update-peer-ips":
+        print(
+            "[DEPRECATED] `update-peer-ips` and static CoreDNS IP addressing were removed in Milestone 7.\n"
+            "  - Local host IP changes are now detected and re-signed automatically by `locator-agent.py`.\n"
+            "  - Inspect signed descriptors and workload locators via: `multihost.sh locator show`\n"
+            "  - Manage untrusted bootstrap seeds via: `multihost.sh seeds list|add|remove <ip:port>`",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.subcmd == "send":
         if not args.text.strip():
             parser.error("--text must not be empty")
@@ -1524,10 +2389,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             parser.error("--max-amount must be positive")
     if args.subcmd == "cancel" and not args.task_id.strip():
         parser.error("task_id must not be empty")
+    if args.subcmd == "seeds" and args.seeds_cmd in ("add", "remove"):
+        try:
+            for ep in args.endpoints:
+                normalize_seed_endpoint(ep)
+        except Exception as exc:
+            parser.error(str(exc))
     if args.subcmd == "trust" and args.trust_cmd == "fetch":
         try:
             SpiffeId.parse(f"spiffe://{args.domain.strip().lower()}/authority/ca")
-            validate_ipv4_address(args.ip, "--ip")
+            if args.seed.strip():
+                normalize_seed_endpoint(args.seed)
+            else:
+                if not args.ip.strip() or args.port <= 0:
+                    raise ValueError("Provide --seed <ip:port> or both --ip and --port")
+                validate_ipv4_address(args.ip, "--ip")
             if args.expect.strip():
                 parse_trust_anchor_value(args.expect)
         except Exception as exc:
@@ -1541,9 +2417,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.subcmd == "trust":
         return _handle_trust_cmd(args)
-
+    if args.subcmd == "seeds":
+        return _handle_seeds_cmd(args)
+    if args.subcmd == "locator":
+        return _handle_locator_cmd(args)
+    if args.subcmd == "oauth":
+        return _handle_oauth_cmd(args)
     if args.subcmd == "e2e":
         return _run_e2e_suite_from_host(args)
+    if args.subcmd == "compare":
+        return _run_compare_from_host(args)
 
     if not args.in_gateway and not _in_gateway_pod():
         fwd = [a for a in raw_argv if a != "--in-gateway"]

@@ -1,0 +1,403 @@
+{
+  "addressing_mode": "identity_signed_locators",
+  "gateway_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway",
+  "svid_generation": 0,
+  "federation_ready": true,
+  "federation_sync": {
+    "mode": "identity_descriptors",
+    "awaiting_peer_trust_pins": false,
+    "missing_domains": [],
+    "verified_domains": {
+      "org-audit.io": "sha256:13d79156d616edb089addfc1aa15dfe18743872db6ca4b31e6c694b54424c4af:keyless",
+      "org-beta.io": "sha256:85520bad9e8b91610b473b401b4de0adcbc1990d88cf3419c4af9e6a04b90a56:aafa8e1f92739b3b2c5ab68869cecfba233352bcab2753e57f606a803f4b195d",
+      "org-payment.io": "sha256:9d5f22d31722287c87eb3741e4566b5005aab1e3bb17730f3c41864d1fc6e354:dd6d4e87e754d46839c16be41a1af4876a441db80dcdb977d00385e0ad8623ed"
+    },
+    "errors": {},
+    "rejected_bundle_counts": {},
+    "rejected_descriptor_counts": {},
+    "ignored_unpinned_domains": [],
+    "trust_store_version": 4
+  },
+  "domain_descriptor_resolution": {
+    "org-alpha.io": {
+      "descriptor_version": 1795509751701,
+      "trust_anchor": "sha256:3a3db943ef56ea0ffa86195f13d1cddb1a31aa15e87d54190e5861ae46fd1ca8:f3b30cf698e637e29077460ce0b6e8a8437bb50f10f0ee023360420d083d9a9e",
+      "ttl_remaining_seconds": 3426.0,
+      "services": {
+        "ca_bundle": [
+          {
+            "transport": "http-ro",
+            "host": "10.29.77.23",
+            "port": 30100,
+            "priority": 10
+          }
+        ],
+        "directory_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "10.29.77.23",
+            "port": 30101,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-alpha.io/ns/sys/sa/directory"
+          }
+        ],
+        "oauth_sts": [
+          {
+            "transport": "http-ro",
+            "host": "10.29.77.23",
+            "port": 30105,
+            "priority": 10
+          }
+        ],
+        "revocation_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "10.29.77.23",
+            "port": 30102,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-alpha.io/ns/sys/sa/revocation"
+          }
+        ]
+      }
+    },
+    "org-audit.io": {
+      "descriptor_version": 1795509911203,
+      "trust_anchor": "sha256:13d79156d616edb089addfc1aa15dfe18743872db6ca4b31e6c694b54424c4af:keyless",
+      "ttl_remaining_seconds": 3585.5,
+      "services": {
+        "audit_collector": [
+          {
+            "transport": "tls-tcp",
+            "host": "192.168.65.254",
+            "port": 31901,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector"
+          }
+        ],
+        "ca_bundle": [
+          {
+            "transport": "http-ro",
+            "host": "192.168.65.254",
+            "port": 31900,
+            "priority": 10
+          }
+        ]
+      }
+    },
+    "org-beta.io": {
+      "descriptor_version": 1795509816518,
+      "trust_anchor": "sha256:85520bad9e8b91610b473b401b4de0adcbc1990d88cf3419c4af9e6a04b90a56:aafa8e1f92739b3b2c5ab68869cecfba233352bcab2753e57f606a803f4b195d",
+      "ttl_remaining_seconds": 3490.9,
+      "services": {
+        "ca_bundle": [
+          {
+            "transport": "http-ro",
+            "host": "10.29.77.23",
+            "port": 31100,
+            "priority": 10
+          }
+        ],
+        "directory_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "10.29.77.23",
+            "port": 31101,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-beta.io/ns/sys/sa/directory"
+          }
+        ],
+        "oauth_sts": [
+          {
+            "transport": "http-ro",
+            "host": "10.29.77.23",
+            "port": 31106,
+            "priority": 10
+          }
+        ],
+        "revocation_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "10.29.77.23",
+            "port": 31102,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-beta.io/ns/sys/sa/revocation"
+          }
+        ]
+      }
+    },
+    "org-payment.io": {
+      "descriptor_version": 1795509862037,
+      "trust_anchor": "sha256:9d5f22d31722287c87eb3741e4566b5005aab1e3bb17730f3c41864d1fc6e354:dd6d4e87e754d46839c16be41a1af4876a441db80dcdb977d00385e0ad8623ed",
+      "ttl_remaining_seconds": 3536.4,
+      "services": {
+        "ca_bundle": [
+          {
+            "transport": "http-ro",
+            "host": "10.29.77.23",
+            "port": 32100,
+            "priority": 10
+          }
+        ],
+        "directory_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "10.29.77.23",
+            "port": 32101,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-payment.io/ns/sys/sa/directory"
+          }
+        ],
+        "oauth_sts": [
+          {
+            "transport": "http-ro",
+            "host": "10.29.77.23",
+            "port": 32106,
+            "priority": 10
+          }
+        ],
+        "revocation_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "10.29.77.23",
+            "port": 32102,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-payment.io/ns/sys/sa/revocation"
+          }
+        ]
+      }
+    }
+  },
+  "control_plane": {
+    "alpha-ca-local": {
+      "url": "http://alpha-ca.lineage-alpha.svc.cluster.local:8090/healthz",
+      "http_status": 200
+    },
+    "alpha-directory-local": {
+      "url": "http://alpha-directory.lineage-alpha.svc.cluster.local:8091/healthz",
+      "http_status": 200
+    },
+    "alpha-revocation-local": {
+      "url": "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092/healthz",
+      "http_status": 200
+    },
+    "org-audit.io:ca_bundle": {
+      "locator": "192.168.65.254:31900",
+      "descriptor_version": 1795509911203,
+      "http_status": 200
+    },
+    "org-beta.io:ca_bundle": {
+      "locator": "10.29.77.23:31100",
+      "descriptor_version": 1795509816518,
+      "http_status": 200
+    },
+    "org-beta.io:revocation_federation": {
+      "identity": "spiffe://org-beta.io/ns/sys/sa/revocation",
+      "locator": "10.29.77.23:31102",
+      "descriptor_version": 1795509816518,
+      "http_status": 200
+    },
+    "org-payment.io:ca_bundle": {
+      "locator": "10.29.77.23:32100",
+      "descriptor_version": 1795509862037,
+      "http_status": 200
+    },
+    "org-payment.io:revocation_federation": {
+      "identity": "spiffe://org-payment.io/ns/sys/sa/revocation",
+      "locator": "10.29.77.23:32102",
+      "descriptor_version": 1795509862037,
+      "http_status": 200
+    },
+    "audit-collector": {
+      "identity": "spiffe://org-audit.io/ns/lineage-audit/sa/audit-collector",
+      "locators": [
+        "192.168.65.254:31901"
+      ],
+      "http_status": 200,
+      "entries_count": 0
+    }
+  },
+  "identity_to_locator_resolution": [
+    {
+      "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp",
+      "trust_domain": "org-payment.io",
+      "name": "Payment Vault MCP Server",
+      "skills": [
+        "mcp.payment-vault"
+      ],
+      "priority": 10,
+      "card_version": 1795509868094,
+      "ttl_remaining_seconds": 564.3,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "10.29.77.23",
+          "port": 32105,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/payment-vault-mcp"
+        }
+      ],
+      "primary_endpoint": "https://10.29.77.23:32105",
+      "resolved_machine_ip": "10.29.77.23",
+      "resolved_port": 32105,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp",
+      "trust_domain": "org-payment.io",
+      "name": "Travel Ops MCP Server",
+      "skills": [
+        "mcp.travel-ops"
+      ],
+      "priority": 10,
+      "card_version": 1795509868085,
+      "ttl_remaining_seconds": 564.3,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "10.29.77.23",
+          "port": 32104,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/travel-ops-mcp"
+        }
+      ],
+      "primary_endpoint": "https://10.29.77.23:32104",
+      "resolved_machine_ip": "10.29.77.23",
+      "resolved_port": 32104,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+      "trust_domain": "org-payment.io",
+      "name": "Settlement Converger C",
+      "skills": [
+        "settlement.converge"
+      ],
+      "priority": 10,
+      "card_version": 1795509867982,
+      "ttl_remaining_seconds": 564.3,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "10.29.77.23",
+          "port": 32103,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger"
+        }
+      ],
+      "primary_endpoint": "https://10.29.77.23:32103",
+      "resolved_machine_ip": "10.29.77.23",
+      "resolved_port": 32103,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist",
+      "trust_domain": "org-beta.io",
+      "name": "Flight Specialist B1",
+      "skills": [
+        "travel.flight"
+      ],
+      "priority": 10,
+      "card_version": 1795509822607,
+      "ttl_remaining_seconds": 519.3,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "10.29.77.23",
+          "port": 31103,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/flight-specialist"
+        }
+      ],
+      "primary_endpoint": "https://10.29.77.23:31103",
+      "resolved_machine_ip": "10.29.77.23",
+      "resolved_port": 31103,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary",
+      "trust_domain": "org-beta.io",
+      "name": "Hotel Specialist Primary B2",
+      "skills": [
+        "travel.hotel"
+      ],
+      "priority": 10,
+      "card_version": 1795509822584,
+      "ttl_remaining_seconds": 519.3,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "10.29.77.23",
+          "port": 31104,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary"
+        }
+      ],
+      "primary_endpoint": "https://10.29.77.23:31104",
+      "resolved_machine_ip": "10.29.77.23",
+      "resolved_port": 31104,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+      "trust_domain": "org-alpha.io",
+      "name": "Orchestrator Alpha",
+      "skills": [
+        "travel.orchestrate"
+      ],
+      "priority": 10,
+      "card_version": 1795509753222,
+      "ttl_remaining_seconds": 454.3,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "10.29.77.23",
+          "port": 30103,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha"
+        }
+      ],
+      "primary_endpoint": "https://10.29.77.23:30103",
+      "resolved_machine_ip": "10.29.77.23",
+      "resolved_port": 30103,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup",
+      "trust_domain": "org-beta.io",
+      "name": "Hotel Specialist Backup B2-Sub",
+      "skills": [
+        "travel.hotel"
+      ],
+      "priority": 20,
+      "card_version": 1795509822681,
+      "ttl_remaining_seconds": 519.3,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "10.29.77.23",
+          "port": 31105,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-backup"
+        }
+      ],
+      "primary_endpoint": "https://10.29.77.23:31105",
+      "resolved_machine_ip": "10.29.77.23",
+      "resolved_port": 31105,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    }
+  ]
+}

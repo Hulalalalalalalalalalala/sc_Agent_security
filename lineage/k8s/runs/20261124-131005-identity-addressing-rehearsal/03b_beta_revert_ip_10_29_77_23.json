@@ -1,0 +1,24 @@
+{
+  "roles": {
+    "beta": {
+      "epoch": 7,
+      "updated_locator": true,
+      "locators": [
+        {
+          "host": "10.29.77.23",
+          "priority": 10,
+          "source": "macos:en0"
+        }
+      ],
+      "ports": {
+        "ca_federation": 31100,
+        "directory_federation": 31101,
+        "flight-specialist": 31103,
+        "hotel-specialist-backup": 31105,
+        "hotel-specialist-primary": 31104,
+        "revocation_federation": 31102
+      },
+      "persisted_descriptors": 4
+    }
+  }
+}

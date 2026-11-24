@@ -17,7 +17,7 @@ import ssl
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, Union
 
 import httpx
 
@@ -612,11 +612,11 @@ class A2AServerEngine:
 
 
 class A2AClient:
-    """Official A2A v1.0 JSON-RPC 2.0 + SSE Client with LCT + DPoP + mTLS support."""
+    """Official A2A v1.0 JSON-RPC 2.0 + SSE Client with LCT + DPoP + SPIFFE-pinned mTLS & locator fallback."""
 
     def __init__(
         self,
-        agent_base_url: str,
+        agent_base_url: str = "",
         signer: Optional[WorkloadIdentity] = None,
         ssl_context: Optional[ssl.SSLContext] = None,
         mtls_bundle: Optional[WorkloadMTLSBundle] = None,
@@ -624,8 +624,25 @@ class A2AClient:
         expected_spiffe_id: Optional[str] = None,
         rpc_path: str = "/a2a",
         timeout: float = 90.0,
+        agent_card: Optional[AgentCard] = None,
+        locator_origins: Optional[Iterable[str]] = None,
     ) -> None:
-        self.agent_base_url = agent_base_url.rstrip("/")
+        self.agent_card = agent_card
+        if agent_card is not None:
+            expected_spiffe_id = expected_spiffe_id or agent_card.spiffe_id
+            expected_trust_domain = expected_trust_domain or agent_card.trust_domain
+            if not agent_base_url:
+                agent_base_url = agent_card.endpoint
+        self.agent_base_url = (agent_base_url or "").rstrip("/")
+        self._locator_origins: Tuple[str, ...] = (
+            tuple(o.rstrip("/") for o in locator_origins if o)
+            if locator_origins is not None
+            else (
+                tuple(o.rstrip("/") for o in agent_card.candidate_origins())
+                if agent_card is not None
+                else ()
+            )
+        )
         self.signer = signer
         self.ssl_context = ssl_context
         self.mtls_bundle = mtls_bundle
@@ -633,6 +650,18 @@ class A2AClient:
         self.expected_spiffe_id = expected_spiffe_id
         self.rpc_path = rpc_path if rpc_path.startswith("/") else f"/{rpc_path}"
         self.timeout = float(timeout)
+        self.last_used_origin: Optional[str] = self.agent_base_url or None
+
+    def _candidate_origins(self) -> List[str]:
+        origins: List[str] = []
+        for o in self._locator_origins:
+            if o and o not in origins:
+                origins.append(o)
+        if self.agent_base_url and self.agent_base_url not in origins:
+            origins.append(self.agent_base_url)
+        if not origins:
+            raise ValueError("A2AClient has no target locator or agent_base_url")
+        return origins
 
     def _build_headers(
         self,
@@ -652,10 +681,11 @@ class A2AClient:
             headers["DPoP"] = create_dpop_proof(self.signer, "POST", url, compact_token)
         return headers
 
-    def _verify_kwarg(self) -> Any:
+    def _verify_kwarg(self, base_url: Optional[str] = None) -> Any:
+        target = base_url or self.agent_base_url
         if self.mtls_bundle is not None:
             return self.mtls_bundle.verify_for_target(
-                target_url=self.agent_base_url,
+                target_url=target,
                 expected_trust_domain=self.expected_trust_domain,
                 expected_spiffe_id=self.expected_spiffe_id,
             )
@@ -666,12 +696,28 @@ class A2AClient:
         trust_resolver: TrustBundleResolver,
         well_known_path: str = "/.well-known/agent-card.json",
     ) -> Tuple[AgentCard, Dict[str, Any]]:
-        url = f"{self.agent_base_url}{well_known_path}"
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
-            resp = client.get(url, headers={"A2A-Version": A2A_PROTOCOL_VERSION})
-            resp.raise_for_status()
-            raw = resp.json()
-        return AgentCard.from_dict_and_verify(raw, trust_resolver), raw
+        last_exc: Optional[Exception] = None
+        cands = self._candidate_origins()
+        for idx, base in enumerate(cands):
+            url = f"{base}{well_known_path}"
+            eff_to = (
+                httpx.Timeout(connect=2.5, read=self.timeout, write=10.0, pool=5.0)
+                if idx + 1 < len(cands)
+                else self.timeout
+            )
+            try:
+                with httpx.Client(
+                    verify=self._verify_kwarg(base), timeout=eff_to, trust_env=False
+                ) as client:
+                    resp = client.get(url, headers={"A2A-Version": A2A_PROTOCOL_VERSION})
+                    resp.raise_for_status()
+                    raw = resp.json()
+                self.last_used_origin = base
+                return AgentCard.from_dict_and_verify(raw, trust_resolver), raw
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
 
     def call_rpc(
         self,
@@ -680,19 +726,33 @@ class A2AClient:
         compact_token: Optional[str] = None,
         rpc_id: Optional[str] = None,
     ) -> Tuple[int, Dict[str, Any]]:
-        url = f"{self.agent_base_url}{self.rpc_path}"
         payload = {
             "jsonrpc": "2.0",
             "id": rpc_id or f"rpc-{uuid.uuid4().hex[:10]}",
             "method": method,
             "params": dict(params),
         }
-        headers = self._build_headers(url, compact_token, accept="application/json")
-        with httpx.Client(
-            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
-        ) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            return resp.status_code, resp.json()
+        last_exc: Optional[Exception] = None
+        cands = self._candidate_origins()
+        for idx, base in enumerate(cands):
+            url = f"{base}{self.rpc_path}"
+            headers = self._build_headers(url, compact_token, accept="application/json")
+            eff_to = (
+                httpx.Timeout(connect=2.5, read=self.timeout, write=10.0, pool=5.0)
+                if idx + 1 < len(cands)
+                else self.timeout
+            )
+            try:
+                with httpx.Client(
+                    verify=self._verify_kwarg(base), timeout=eff_to, trust_env=False
+                ) as client:
+                    resp = client.post(url, json=payload, headers=headers)
+                    self.last_used_origin = base
+                    return resp.status_code, resp.json()
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
 
     def send_message(
         self,
@@ -729,7 +789,6 @@ class A2AClient:
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Tuple[int, str, List[Dict[str, Any]]]:
         """Invoke `SendStreamingMessage` and parse live `text/event-stream` SSE frames."""
-        url = f"{self.agent_base_url}{self.rpc_path}"
         params: Dict[str, Any] = {"message": message.to_dict()}
         if configuration:
             params["configuration"] = dict(configuration)
@@ -739,34 +798,52 @@ class A2AClient:
             "method": "SendStreamingMessage",
             "params": params,
         }
-        headers = self._build_headers(url, compact_token, accept="text/event-stream")
-        events: List[Dict[str, Any]] = []
-        with httpx.Client(
-            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
-        ) as client:
-            with client.stream("POST", url, json=payload, headers=headers) as resp:
-                status_code = resp.status_code
-                content_type = resp.headers.get("content-type", "")
-                if "text/event-stream" not in content_type.lower():
-                    raw_body = resp.read().decode("utf-8", errors="replace")
-                    try:
-                        err_ev = json.loads(raw_body)
-                    except Exception:
-                        err_ev = {"raw": raw_body}
-                    events.append(err_ev)
-                    if on_event is not None:
-                        on_event(err_ev)
-                    return status_code, content_type, events
-
-                for line in resp.iter_lines():
-                    s = line.strip()
-                    if not s or s.startswith(":"):
-                        continue
-                    if s.startswith("data:"):
-                        data_str = s[len("data:") :].strip()
-                        if data_str:
-                            ev = json.loads(data_str)
-                            events.append(ev)
+        last_exc: Optional[Exception] = None
+        cands = self._candidate_origins()
+        for idx, base in enumerate(cands):
+            url = f"{base}{self.rpc_path}"
+            headers = self._build_headers(url, compact_token, accept="text/event-stream")
+            events: List[Dict[str, Any]] = []
+            eff_to = (
+                httpx.Timeout(connect=2.5, read=self.timeout, write=10.0, pool=5.0)
+                if idx + 1 < len(cands)
+                else self.timeout
+            )
+            try:
+                with httpx.Client(
+                    verify=self._verify_kwarg(base), timeout=eff_to, trust_env=False
+                ) as client:
+                    with client.stream("POST", url, json=payload, headers=headers) as resp:
+                        status_code = resp.status_code
+                        content_type = resp.headers.get("content-type", "")
+                        if "text/event-stream" not in content_type.lower():
+                            raw_body = resp.read().decode("utf-8", errors="replace")
+                            try:
+                                err_ev = json.loads(raw_body)
+                            except Exception:
+                                err_ev = {"raw": raw_body}
+                            events.append(err_ev)
                             if on_event is not None:
-                                on_event(ev)
-        return status_code, content_type, events
+                                on_event(err_ev)
+                            self.last_used_origin = base
+                            return status_code, content_type, events
+
+                        for line in resp.iter_lines():
+                            s = line.strip()
+                            if not s or s.startswith(":"):
+                                continue
+                            if s.startswith("data:"):
+                                data_str = s[len("data:") :].strip()
+                                if data_str:
+                                    ev = json.loads(data_str)
+                                    events.append(ev)
+                                    if on_event is not None:
+                                        on_event(ev)
+                self.last_used_origin = base
+                return status_code, content_type, events
+            except Exception as exc:
+                if events:
+                    raise
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc

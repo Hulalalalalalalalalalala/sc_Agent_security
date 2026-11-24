@@ -59,6 +59,9 @@ class AgentDirectoryService:
         federation_peer_cert_verifier: Optional[Callable[[bytes], Tuple[str, str]]] = None,
         mtls_bundle: Optional[WorkloadMTLSBundle] = None,
         readiness_check: Optional[Callable[[], Tuple[bool, Dict[str, Any]]]] = None,
+        descriptor_store: Optional[Any] = None,
+        allowed_locator_cidrs: Optional[Iterable[str] | str] = None,
+        on_descriptor_learned: Optional[Callable[[Any], None]] = None,
     ) -> None:
         self.trust_resolver = trust_resolver
         self.revocation_trie = revocation_trie
@@ -72,6 +75,9 @@ class AgentDirectoryService:
         self._client_ssl_context = client_ssl_context
         self._mtls_bundle = mtls_bundle
         self._readiness_check = readiness_check
+        self.descriptor_store = descriptor_store
+        self.allowed_locator_cidrs = allowed_locator_cidrs
+        self.on_descriptor_learned = on_descriptor_learned
         self._lock = threading.RLock()
         self._cards: Dict[str, AgentCard] = {}
         self._quarantined_spiffe_ids: Set[str] = set()
@@ -117,7 +123,7 @@ class AgentDirectoryService:
         url = self._http.start()
         if self._federation_http is not None:
             self._federation_http.start()
-        if self.peer_directory_urls:
+        if self.peer_directory_urls or self.descriptor_store is not None:
             self.start_federation_sync()
         return url
 
@@ -131,13 +137,30 @@ class AgentDirectoryService:
         self,
         peer_url: Optional[str] = None,
         expected_domain: Optional[str] = None,
+        expected_spiffe_id: Optional[str] = None,
     ) -> Any:
         if self._mtls_bundle is not None:
             return self._mtls_bundle.verify_for_target(
                 target_url=peer_url,
                 expected_trust_domain=expected_domain,
+                expected_spiffe_id=expected_spiffe_id,
             )
         return self._client_ssl_context if self._client_ssl_context is not None else True
+
+    def _resolve_peer_directory_targets(
+        self,
+    ) -> Dict[str, List[Tuple[str, Optional[str]]]]:
+        targets: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+        if self.descriptor_store is not None:
+            for peer_td, locs in self.descriptor_store.peer_locators(
+                "directory_federation", exclude_domain=self.local_trust_domain
+            ).items():
+                targets[peer_td] = [(loc.origin_url, loc.spiffe_id) for loc in locs]
+        for peer_td, peer_url in list(self.peer_directory_urls.items()):
+            lst = targets.setdefault(peer_td, [])
+            if all(u != peer_url for u, _ in lst):
+                lst.append((peer_url, None))
+        return targets
 
     @property
     def base_url(self) -> str:
@@ -177,7 +200,11 @@ class AgentDirectoryService:
 
     def register_card_direct(self, raw_card: Dict[str, Any]) -> AgentCard:
         """Validate and store a signed AgentCard (enforcing local_trust_domain when configured)."""
-        card = AgentCard.from_dict_and_verify(raw_card, self.trust_resolver)
+        card = AgentCard.from_dict_and_verify(
+            raw_card,
+            self.trust_resolver,
+            allowed_locator_cidrs=self.allowed_locator_cidrs,
+        )
         if (
             self.local_trust_domain is not None
             and card.trust_domain != self.local_trust_domain
@@ -213,7 +240,11 @@ class AgentDirectoryService:
         """
         if self.local_trust_domain and expected_peer_domain == self.local_trust_domain:
             raise AgentCardError("Cannot ingest own domain via federated peer channel")
-        card = AgentCard.from_dict_and_verify(raw_card, self.trust_resolver)
+        card = AgentCard.from_dict_and_verify(
+            raw_card,
+            self.trust_resolver,
+            allowed_locator_cidrs=self.allowed_locator_cidrs,
+        )
         if card.trust_domain != expected_peer_domain:
             raise AgentCardError(
                 f"Federated directory spoofing blocked: peer {expected_peer_domain!r} "
@@ -233,28 +264,66 @@ class AgentDirectoryService:
             self._cards[card.spiffe_id] = card
         return card
 
-    def sync_from_federation_peers(self) -> int:
-        """Pull verified public AgentCards from all configured peer domain directories."""
-        imported = 0
-        for peer_td, peer_url in list(self.peer_directory_urls.items()):
+    def _ingest_gossip_descriptors(self, raw_list: Any) -> int:
+        if (
+            self.descriptor_store is None
+            or not isinstance(raw_list, list)
+            or len(raw_list) > 32
+        ):
+            return 0
+        learned = 0
+        for raw_d in raw_list:
+            if not isinstance(raw_d, Mapping):
+                continue
             try:
-                with httpx.Client(
-                    verify=self._http_verify_kwarg(peer_url=peer_url, expected_domain=peer_td),
-                    timeout=2.0,
-                ) as client:
-                    resp = client.get(f"{peer_url}/v1/federation/cards")
-                    resp.raise_for_status()
-                    data = resp.json()
+                updated, desc = self.descriptor_store.ingest_raw_descriptor(raw_d)
+                if self.on_descriptor_learned is not None:
+                    self.on_descriptor_learned(desc)
+                if updated:
+                    learned += 1
             except Exception:
                 continue
-            if data.get("trust_domain") != peer_td:
-                continue
-            for raw_c in data.get("cards") or []:
-                try:
-                    self.ingest_federated_card(raw_c, expected_peer_domain=peer_td)
-                    imported += 1
-                except Exception:
-                    continue
+        return learned
+
+    def sync_from_federation_peers(self) -> int:
+        """Pull verified public AgentCards + gossiped domain descriptors from peer directories."""
+        imported = 0
+        # Snapshot up to 2 passes if gossip reveals a new peer domain during pass 1
+        visited_domains: Set[str] = set()
+        for _ in range(2):
+            target_map = self._resolve_peer_directory_targets()
+            pending = [td for td in target_map if td not in visited_domains]
+            if not pending:
+                break
+            for peer_td in pending:
+                visited_domains.add(peer_td)
+                for peer_url, exp_spiffe in target_map[peer_td]:
+                    try:
+                        with httpx.Client(
+                            verify=self._http_verify_kwarg(
+                                peer_url=peer_url,
+                                expected_domain=peer_td,
+                                expected_spiffe_id=exp_spiffe,
+                            ),
+                            timeout=2.0,
+                            trust_env=False,
+                        ) as client:
+                            resp = client.get(f"{peer_url}/v1/federation/cards")
+                            resp.raise_for_status()
+                            data = resp.json()
+                    except Exception:
+                        continue
+                    if not isinstance(data, Mapping) or data.get("trust_domain") != peer_td:
+                        continue
+                    if "descriptors" in data:
+                        self._ingest_gossip_descriptors(data.get("descriptors"))
+                    for raw_c in data.get("cards") or []:
+                        try:
+                            self.ingest_federated_card(raw_c, expected_peer_domain=peer_td)
+                            imported += 1
+                        except Exception:
+                            continue
+                    break
         return imported
 
     def start_federation_sync(self, interval_sec: float = 0.8) -> None:
@@ -285,17 +354,25 @@ class AgentDirectoryService:
 
     def _notify_federation_peers(self) -> None:
         """Zero-trust wakeup signal prompting peer directories to pull `/v1/federation/cards`."""
-        if not self.peer_directory_urls:
+        target_map = self._resolve_peer_directory_targets()
+        if not target_map:
             return
-        for peer_td, peer_url in list(self.peer_directory_urls.items()):
-            try:
-                with httpx.Client(
-                    verify=self._http_verify_kwarg(peer_url=peer_url, expected_domain=peer_td),
-                    timeout=0.6,
-                ) as client:
-                    client.post(f"{peer_url}/v1/federation/notify", json={})
-            except Exception:
-                pass
+        for peer_td, candidates in target_map.items():
+            for peer_url, exp_spiffe in candidates:
+                try:
+                    with httpx.Client(
+                        verify=self._http_verify_kwarg(
+                            peer_url=peer_url,
+                            expected_domain=peer_td,
+                            expected_spiffe_id=exp_spiffe,
+                        ),
+                        timeout=0.6,
+                        trust_env=False,
+                    ) as client:
+                        client.post(f"{peer_url}/v1/federation/notify", json={})
+                    break
+                except Exception:
+                    continue
 
     def quarantine_workload(self, spiffe_id: str) -> bool:
         """Mark a workload as QUARANTINED so discovery immediately excludes it."""
@@ -364,9 +441,15 @@ class AgentDirectoryService:
             except IdentityError:
                 return 403, {"error": "invalid_federation_peer_spiffe"}, {}
 
-        if req.method == "GET" and req.path == "/v1/federation/cards":
+        if req.method == "GET" and req.path in (
+            "/v1/federation/cards",
+            "/v1/federation/descriptors",
+        ):
             return self._dispatch(req)
-        if req.method == "POST" and req.path == "/v1/federation/notify":
+        if req.method == "POST" and req.path in (
+            "/v1/federation/notify",
+            "/v1/federation/descriptors",
+        ):
             return self._dispatch(req)
         return (
             403,
@@ -584,26 +667,44 @@ class AgentDirectoryService:
                 {},
             )
 
+        if req.method == "GET" and req.path == "/v1/federation/descriptors":
+            if self.descriptor_store is None:
+                return 200, {"trust_domain": self.local_trust_domain, "descriptors": []}, {}
+            return 200, self.descriptor_store.export_gossip_payload(), {}
+
+        if req.method == "POST" and req.path == "/v1/federation/descriptors":
+            if len(req.body) > 1_048_576:
+                return 413, {"error": "descriptor_payload_too_large", "max_bytes": 1_048_576}, {}
+            body = req.json()
+            raw_list = body.get("descriptors") if isinstance(body, Mapping) else None
+            if not isinstance(raw_list, list):
+                return 400, {"error": "invalid_descriptors_list"}, {}
+            if len(raw_list) > 32:
+                return 400, {"error": "too_many_descriptors", "max_descriptors": 32}, {}
+            learned = self._ingest_gossip_descriptors(raw_list)
+            return 200, {"accepted": True, "learned": learned}, {}
+
         if req.method == "GET" and req.path == "/v1/federation/cards":
             local_cards = self.discover_cards(
                 trust_domain=self.local_trust_domain,
                 only_healthy=True,
             )
-            return (
-                200,
-                {
-                    "trust_domain": self.local_trust_domain,
-                    "cards": [c.to_dict() for c in local_cards],
-                },
-                {},
-            )
+            payload: Dict[str, Any] = {
+                "trust_domain": self.local_trust_domain,
+                "cards": [c.to_dict() for c in local_cards],
+            }
+            if self.descriptor_store is not None:
+                payload["descriptors"] = self.descriptor_store.export_gossip_payload()[
+                    "descriptors"
+                ]
+            return 200, payload, {}
 
         if req.method == "GET" and req.path == "/v1/agents/get":
             spiffe_id = str(req.query.get("spiffe_id", ""))
             with self._lock:
                 card = self._cards.get(spiffe_id)
                 quarantined = spiffe_id in self._quarantined_spiffe_ids
-            if card is None and self.peer_directory_urls:
+            if card is None and self._resolve_peer_directory_targets():
                 self.sync_from_federation_peers()
                 with self._lock:
                     card = self._cards.get(spiffe_id)
@@ -645,7 +746,7 @@ class AgentDirectoryService:
                 exclude_spiffe_ids=excluded,
                 only_healthy=only_healthy,
             )
-            if not cards and self.peer_directory_urls:
+            if not cards and self._resolve_peer_directory_targets():
                 self.sync_from_federation_peers()
                 cards = self.discover_cards(
                     skill=str(skill) if skill else None,
@@ -667,17 +768,21 @@ class AgentDirectoryClient:
         trust_resolver: TrustBundleResolver,
         timeout: float = 3.0,
         ssl_context: Optional[ssl.SSLContext] = None,
+        allowed_locator_cidrs: Optional[Iterable[str] | str] = None,
     ) -> None:
         self.directory_url = directory_url.rstrip("/")
         self.trust_resolver = trust_resolver
         self.timeout = timeout
         self.ssl_context = ssl_context
+        self.allowed_locator_cidrs = allowed_locator_cidrs
 
     def _verify_kwarg(self) -> Any:
         return self.ssl_context if self.ssl_context is not None else True
 
     def register(self, card: AgentCard) -> Dict[str, Any]:
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
+        with httpx.Client(
+            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
+        ) as client:
             resp = client.post(
                 f"{self.directory_url}/v1/agents/register",
                 json={"agent_card": card.to_dict()},
@@ -727,7 +832,9 @@ class AgentDirectoryClient:
                 "command_jws": cmd_jws,
             }
 
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
+        with httpx.Client(
+            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
+        ) as client:
             resp = client.post(
                 f"{self.directory_url}/v1/agents/quarantine",
                 json=req_json,
@@ -739,7 +846,9 @@ class AgentDirectoryClient:
         return resp.json()
 
     def get_agent(self, spiffe_id: str) -> Optional[AgentCard]:
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
+        with httpx.Client(
+            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
+        ) as client:
             resp = client.get(
                 f"{self.directory_url}/v1/agents/get",
                 params={"spiffe_id": spiffe_id},
@@ -750,7 +859,11 @@ class AgentDirectoryClient:
         data = resp.json()
         if data.get("quarantined"):
             return None
-        return AgentCard.from_dict_and_verify(data["agent_card"], self.trust_resolver)
+        return AgentCard.from_dict_and_verify(
+            data["agent_card"],
+            self.trust_resolver,
+            allowed_locator_cidrs=self.allowed_locator_cidrs,
+        )
 
     def discover(
         self,
@@ -770,7 +883,9 @@ class AgentDirectoryClient:
         if excluded_list:
             params["exclude"] = ",".join(excluded_list)
 
-        with httpx.Client(verify=self._verify_kwarg(), timeout=self.timeout) as client:
+        with httpx.Client(
+            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
+        ) as client:
             resp = client.get(
                 f"{self.directory_url}/v1/agents/discover",
                 params=params,
@@ -781,7 +896,11 @@ class AgentDirectoryClient:
         excluded_set = set(excluded_list)
         for raw_card in raw_agents:
             # Defense-in-depth: client locally verifies signature & SVID against TrustBundle!
-            card = AgentCard.from_dict_and_verify(raw_card, self.trust_resolver)
+            card = AgentCard.from_dict_and_verify(
+                raw_card,
+                self.trust_resolver,
+                allowed_locator_cidrs=self.allowed_locator_cidrs,
+            )
             if card.spiffe_id in excluded_set:
                 continue
             if skill and skill not in card.skills:
@@ -790,3 +909,12 @@ class AgentDirectoryClient:
                 continue
             verified.append(card)
         return verified
+
+    def get_descriptors(self) -> List[Dict[str, Any]]:
+        with httpx.Client(
+            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
+        ) as client:
+            resp = client.get(f"{self.directory_url}/v1/federation/descriptors")
+        resp.raise_for_status()
+        data = resp.json()
+        return list(data.get("descriptors") or [])

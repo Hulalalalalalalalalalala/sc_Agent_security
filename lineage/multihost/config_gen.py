@@ -1,15 +1,17 @@
-"""Multi-Host Kind Config, CoreDNS Zone Patcher, Role Manifests & In-Memory CA Bootstrapper.
+"""Multi-Host Kind Config, Dynamic Per-Machine Port Allocator, Role Manifests & CA Bootstrapper.
 
 Covers:
 1. Per-role Kind cluster configs (`lctmh-alpha`, `lctmh-beta`, `lctmh-pay`, `lctmh-audit`)
-   with `extraPortMappings` (`containerPort == hostPort == NodePort`, `listenAddress: 0.0.0.0`)
-   and strictly disjoint Pod/Service CIDRs; internal issuance/registration ports (`8090`,
-   `8091`, `8092`, `9001`, `8081`) are NEVER host-published.
-2. Strict IPv4 validation and idempotent CoreDNS `hosts { ... fallthrough }` patching
-   preserving `cluster.local` isolation and `host.docker.internal` entries.
-3. Parameterized multi-host Kubernetes manifests with startup-order-independent `/healthz`
-   liveness vs `/readyz` readiness probes, ConfigMap `lct-trust-anchors` hot-reload mounts,
-   TLS 1.3 `audit-collector`, and configurable SVID renewal TTL.
+   with dynamic per-machine NodePort allocation (`extraPortMappings`, `containerPort == hostPort`,
+   `listenAddress: 0.0.0.0`, automatic local conflict detection & free-port selection) and
+   disjoint Pod/Service CIDRs; internal ports (`8090`, `8091`, `8092`, `9001`, `8081`) are
+   NEVER host-published.
+2. Zero cross-domain IP/port/FQDN hardcoding: manifests contain ONLY local in-cluster service
+   names (`*.svc.cluster.local`), `ConfigMap/lct-node-locator` (populated by `locator-agent.py`),
+   `ConfigMap/lct-bootstrap-seeds`, `ConfigMap/lct-learned-descriptors`, and
+   `ConfigMap/lct-trust-anchors`.
+3. CoreDNS sanitization (`sanitize_coredns_corefile`) preserving `host.docker.internal` and
+   `kubernetes cluster.local` without any cross-domain `hosts` injection.
 4. Pure in-memory Domain CA root key generation streamed directly to `kubectl apply -f -`
    via stdin without touching host disk or logs.
 5. RFC 9110 HTTP `Date` clock-skew evaluation (`warn > 10s`, `fail > 25s`).
@@ -19,17 +21,18 @@ from __future__ import annotations
 
 import argparse
 import base64
+from dataclasses import dataclass
 import datetime as dt
 import email.utils
 import ipaddress
 import json
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import yaml
 
@@ -40,8 +43,29 @@ from lineage.federation.anchors import (
     format_domain_trust_anchor_line,
 )
 from lineage.identity.spiffe import TrustDomainCA
+from lineage.oauth_sts.keycloak_realm import (
+    DEFAULT_REALM_NAME,
+    KEYCLOAK_IMAGE,
+    generate_keycloak_realm_bundle,
+)
 
-FORBIDDEN_HOST_PORTS: Tuple[int, ...] = (8080, 8081, 8090, 8091, 8092, 8093, 8094, 8443, 8491, 8492, 9001)
+FORBIDDEN_HOST_PORTS: Tuple[int, ...] = (
+    8080,
+    8081,
+    8090,
+    8091,
+    8092,
+    8093,
+    8094,
+    8095,
+    8443,
+    8491,
+    8492,
+    9001,
+    19090,
+)
+NODEPORT_MIN = 30000
+NODEPORT_MAX = 32767
 ROLE_ORDER: Tuple[str, ...] = ("alpha", "beta", "pay", "audit")
 
 
@@ -55,8 +79,8 @@ class RoleSpec:
     ca_short_prefix: str
     pod_cidr: str
     service_cidr: str
-    host_ports: Tuple[int, ...]
-    ca_fed_nodeport: Optional[int]
+    slot_names: Tuple[str, ...]
+    default_base_port: int
 
 
 ROLE_SPECS: Dict[str, RoleSpec] = {
@@ -69,8 +93,15 @@ ROLE_SPECS: Dict[str, RoleSpec] = {
         ca_short_prefix="alpha",
         pod_cidr="10.241.0.0/16",
         service_cidr="10.97.0.0/16",
-        host_ports=(30094, 30491, 30492, 30441, 30990),
-        ca_fed_nodeport=30094,
+        slot_names=(
+            "ca_federation",
+            "directory_federation",
+            "revocation_federation",
+            "orchestrator-alpha",
+            "e2e_sync_hook",
+            "oauth_sts",
+        ),
+        default_base_port=30100,
     ),
     "beta": RoleSpec(
         role="beta",
@@ -81,8 +112,16 @@ ROLE_SPECS: Dict[str, RoleSpec] = {
         ca_short_prefix="beta",
         pod_cidr="10.242.0.0/16",
         service_cidr="10.98.0.0/16",
-        host_ports=(31094, 31491, 31492, 31441, 31442, 31443),
-        ca_fed_nodeport=31094,
+        slot_names=(
+            "ca_federation",
+            "directory_federation",
+            "revocation_federation",
+            "flight-specialist",
+            "hotel-specialist-primary",
+            "hotel-specialist-backup",
+            "oauth_sts",
+        ),
+        default_base_port=31100,
     ),
     "pay": RoleSpec(
         role="pay",
@@ -93,8 +132,16 @@ ROLE_SPECS: Dict[str, RoleSpec] = {
         ca_short_prefix="payment",
         pod_cidr="10.243.0.0/16",
         service_cidr="10.99.0.0/16",
-        host_ports=(32094, 32491, 32492, 32441, 32442, 32443),
-        ca_fed_nodeport=32094,
+        slot_names=(
+            "ca_federation",
+            "directory_federation",
+            "revocation_federation",
+            "settlement-converger",
+            "travel-ops-mcp",
+            "payment-vault-mcp",
+            "oauth_sts",
+        ),
+        default_base_port=32100,
     ),
     "audit": RoleSpec(
         role="audit",
@@ -105,46 +152,27 @@ ROLE_SPECS: Dict[str, RoleSpec] = {
         ca_short_prefix="audit",
         pod_cidr="10.244.0.0/16",
         service_cidr="10.100.0.0/16",
-        host_ports=(30893,),
-        ca_fed_nodeport=30893,
+        slot_names=(
+            "ca_federation",
+            "audit_collector",
+        ),
+        default_base_port=30800,
     ),
 }
 
-DOMAIN_FQDNS: Dict[str, Tuple[str, ...]] = {
-    "alpha": (
-        "alpha-ca.org-alpha.io",
-        "alpha-directory.org-alpha.io",
-        "alpha-revocation.org-alpha.io",
-        "orchestrator-alpha.org-alpha.io",
-        "e2e-user-gateway.org-alpha.io",
-    ),
-    "beta": (
-        "beta-ca.org-beta.io",
-        "beta-directory.org-beta.io",
-        "beta-revocation.org-beta.io",
-        "flight-specialist.org-beta.io",
-        "hotel-specialist-primary.org-beta.io",
-        "hotel-specialist-backup.org-beta.io",
-    ),
-    "pay": (
-        "payment-ca.org-payment.io",
-        "payment-directory.org-payment.io",
-        "payment-revocation.org-payment.io",
-        "settlement-converger.org-payment.io",
-        "travel-ops-mcp.org-payment.io",
-        "payment-vault-mcp.org-payment.io",
-    ),
-    "audit": ("audit-collector.org-audit.io",),
-}
-
-_ALL_LCT_FQDNS = frozenset(h for hosts in DOMAIN_FQDNS.values() for h in hosts)
 _STRICT_IPV4_RE = re.compile(r"^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$")
+_CROSS_DOMAIN_SUFFIXES = (
+    ".org-alpha.io",
+    ".org-beta.io",
+    ".org-payment.io",
+    ".org-audit.io",
+)
 
 
 def parse_roles_csv(roles_spec: str) -> Tuple[str, ...]:
     """Parse `--roles alpha,audit|beta|pay|all` into deduplicated canonical role names."""
     if not isinstance(roles_spec, str) or not roles_spec.strip():
-        raise ValueError("--roles must be a non-empty comma-separated list (e.g., alpha,audit)")
+        raise ValueError("--roles must be a non-empty comma-separated list (e.g., alpha)")
     raw_items = [r.strip().lower() for r in roles_spec.split(",") if r.strip()]
     if not raw_items:
         raise ValueError("--roles must contain at least one role")
@@ -182,20 +210,202 @@ def validate_ipv4_address(
         )
     if addr.is_loopback and not allow_loopback:
         raise ValueError(
-            f"Invalid {flag_name}={s!r}: loopback 127.0.0.0/8 resolves inside container netns, not host NIC; pass the machine's LAN/VPN IPv4"
+            f"Invalid {flag_name}={s!r}: loopback 127.0.0.0/8 resolves inside container netns, not host NIC; pass the machine's LAN IPv4"
         )
     return str(addr)
 
 
-def render_kind_cluster_config(role: str) -> str:
-    """Generate Kind `v1alpha4` YAML with exact `extraPortMappings` and disjoint CIDRs."""
+def is_host_tcp_port_free(port: int, bind_host: str = "0.0.0.0") -> bool:
+    """Return True if `bind_host:port` is currently free to bind on this machine."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((bind_host, int(port)))
+        return True
+    except OSError:
+        return False
+
+
+def parse_port_overrides(overrides: Optional[Sequence[str]]) -> Dict[str, int]:
+    """Parse repeatable `slot=port` or `role.slot=port` strings."""
+    result: Dict[str, int] = {}
+    for raw in overrides or ():
+        if not raw or not raw.strip():
+            continue
+        if "=" not in raw:
+            raise ValueError(
+                f"Invalid --port-override {raw!r}; expected '<slot>=<nodeport>' or '<role>.<slot>=<nodeport>'"
+            )
+        k, v = raw.split("=", 1)
+        key = k.strip()
+        try:
+            port_num = int(v.strip())
+        except ValueError as exc:
+            raise ValueError(f"Non-integer port in --port-override {raw!r}") from exc
+        if port_num < NODEPORT_MIN or port_num > NODEPORT_MAX or port_num in FORBIDDEN_HOST_PORTS:
+            raise ValueError(
+                f"Port {port_num} in --port-override {raw!r} must be within Kubernetes NodePort range [{NODEPORT_MIN}, {NODEPORT_MAX}] and not an internal port"
+            )
+        result[key] = port_num
+    return result
+
+
+def allocate_role_ports(
+    role: str,
+    *,
+    base_port: Optional[int] = None,
+    port_overrides: Optional[Mapping[str, int]] = None,
+    check_host_free: bool = False,
+    reserved_ports: Iterable[int] = (),
+) -> Dict[str, int]:
+    """Allocate per-machine local NodePorts for `role` without any global port convention.
+
+    - Supports explicit `--base-port` and per-slot `--port-override`.
+    - When `check_host_free=True`, automatically skips any TCP port already bound on the local
+      host and selects the next free NodePort in `[30000, 32767]`.
+    """
     if role not in ROLE_SPECS:
         raise ValueError(f"Unknown role: {role!r}")
     spec = ROLE_SPECS[role]
+    start_port = int(spec.default_base_port if base_port is None else base_port)
+    if start_port < NODEPORT_MIN or start_port > NODEPORT_MAX:
+        raise ValueError(
+            f"base_port {start_port} outside Kubernetes NodePort range [{NODEPORT_MIN}, {NODEPORT_MAX}]"
+        )
+
+    taken: Set[int] = set(int(p) for p in reserved_ports) | set(FORBIDDEN_HOST_PORTS)
+    overrides = dict(port_overrides or {})
+    allocated: Dict[str, int] = {}
+    cursor = start_port
+
+    for slot in spec.slot_names:
+        explicit = overrides.get(f"{role}.{slot}", overrides.get(slot))
+        if explicit is not None:
+            p = int(explicit)
+            if p < NODEPORT_MIN or p > NODEPORT_MAX or p in FORBIDDEN_HOST_PORTS:
+                raise ValueError(
+                    f"Invalid override port {p} for {role}.{slot}; must be in [{NODEPORT_MIN}, {NODEPORT_MAX}]"
+                )
+            if p in taken:
+                raise ValueError(f"Duplicate port {p} assigned to {role}.{slot}")
+            if check_host_free and not is_host_tcp_port_free(p):
+                raise ValueError(
+                    f"Explicitly requested port {p} for {role}.{slot} is already in use on this machine"
+                )
+            allocated[slot] = p
+            taken.add(p)
+            continue
+
+        chosen: Optional[int] = None
+        for offset in range(NODEPORT_MAX - NODEPORT_MIN + 1):
+            cand = NODEPORT_MIN + ((cursor - NODEPORT_MIN + offset) % (NODEPORT_MAX - NODEPORT_MIN + 1))
+            if cand in taken:
+                continue
+            if check_host_free and not is_host_tcp_port_free(cand):
+                continue
+            chosen = cand
+            cursor = cand + 1
+            break
+        if chosen is None:
+            raise RuntimeError(
+                f"Unable to find free NodePort in [{NODEPORT_MIN}, {NODEPORT_MAX}] for {role}.{slot}"
+            )
+        allocated[slot] = chosen
+        taken.add(chosen)
+
+    return allocated
+
+
+def read_cluster_role_ports(role: str) -> Optional[Dict[str, int]]:
+    """Read persisted local NodePort map from `Namespace/lineage-<role>` if cluster exists."""
+    if role not in ROLE_SPECS:
+        raise ValueError(f"Unknown role: {role!r}")
+    spec = ROLE_SPECS[role]
+    proc = subprocess.run(
+        [
+            "kubectl",
+            "--context",
+            spec.kube_context,
+            "get",
+            "namespace",
+            spec.namespace,
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    try:
+        ns_obj = json.loads(proc.stdout)
+        raw_json = (
+            ((ns_obj.get("metadata") or {}).get("annotations") or {}).get(
+                "lct.io/role-ports-json", ""
+            )
+        )
+        if raw_json:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, Mapping) and all(s in parsed for s in spec.slot_names):
+                return {str(k): int(v) for k, v in parsed.items()}
+    except Exception:
+        pass
+    return None
+
+
+def read_kind_node_published_ports(role: str) -> List[int]:
+    """Inspect Docker hostPort bindings on an existing `lctmh-<role>-control-plane` container."""
+    spec = ROLE_SPECS[role]
+    proc = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            f"{spec.cluster_name}-control-plane",
+            "--format",
+            "{{json .NetworkSettings.Ports}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return []
+    try:
+        ports_map = json.loads(proc.stdout)
+        out: List[int] = []
+        if isinstance(ports_map, Mapping):
+            for proto_key, bindings in ports_map.items():
+                if not str(proto_key).endswith("/tcp") or not isinstance(bindings, list):
+                    continue
+                cport = int(str(proto_key).split("/", 1)[0])
+                if NODEPORT_MIN <= cport <= NODEPORT_MAX:
+                    out.append(cport)
+        return sorted(set(out))
+    except Exception:
+        return []
+
+
+def render_kind_cluster_config(
+    role: str,
+    role_ports: Optional[Mapping[str, int]] = None,
+) -> str:
+    """Generate Kind `v1alpha4` YAML with local `extraPortMappings` and disjoint CIDRs."""
+    if role not in ROLE_SPECS:
+        raise ValueError(f"Unknown role: {role!r}")
+    spec = ROLE_SPECS[role]
+    ports_map = dict(role_ports) if role_ports is not None else allocate_role_ports(role)
     port_mappings = []
-    for p in spec.host_ports:
+    seen_ports: Set[int] = set()
+    for slot in spec.slot_names:
+        if slot not in ports_map:
+            raise ValueError(f"Missing allocated port for {role}.{slot}")
+        p = int(ports_map[slot])
         if p in FORBIDDEN_HOST_PORTS:
             raise AssertionError(f"Internal port {p} must never be host-published")
+        if p < NODEPORT_MIN or p > NODEPORT_MAX:
+            raise ValueError(f"NodePort {p} outside [{NODEPORT_MIN}, {NODEPORT_MAX}]")
+        if p in seen_ports:
+            raise ValueError(f"Duplicate NodePort {p} in role {role!r}")
+        seen_ports.add(p)
         port_mappings.append(
             {
                 "containerPort": p,
@@ -221,93 +431,53 @@ def render_kind_cluster_config(role: str) -> str:
     return yaml.safe_dump(doc, sort_keys=False)
 
 
-def build_fqdn_ip_map(
-    alpha_ip: str,
-    beta_ip: str,
-    pay_ip: str,
-    audit_ip: Optional[str] = None,
-) -> Dict[str, str]:
-    """Build validated `FQDN -> machine IPv4` mapping across all 4 autonomous domains."""
-    a_ip = validate_ipv4_address(alpha_ip, "--alpha-ip")
-    b_ip = validate_ipv4_address(beta_ip, "--beta-ip")
-    p_ip = validate_ipv4_address(pay_ip, "--pay-ip")
-    aud_ip = (
-        validate_ipv4_address(audit_ip, "--audit-ip")
-        if (audit_ip and audit_ip.strip())
-        else a_ip
-    )
-    mapping: Dict[str, str] = {}
-    for fqdn in DOMAIN_FQDNS["alpha"]:
-        mapping[fqdn] = a_ip
-    for fqdn in DOMAIN_FQDNS["beta"]:
-        mapping[fqdn] = b_ip
-    for fqdn in DOMAIN_FQDNS["pay"]:
-        mapping[fqdn] = p_ip
-    for fqdn in DOMAIN_FQDNS["audit"]:
-        mapping[fqdn] = aud_ip
-    return mapping
-
-
-def patch_coredns_corefile(
-    existing_corefile: str,
-    alpha_ip: str,
-    beta_ip: str,
-    pay_ip: str,
-    audit_ip: Optional[str] = None,
-) -> str:
-    """Idempotently inject/update LCT multi-host FQDN lines inside CoreDNS `hosts { ... }`.
-
-    Guarantees:
-    - At most ONE `hosts { ... }` plugin block in `.:53` (preventing CoreDNS duplicate
-      plugin errors when Kind pre-populates `host.docker.internal`).
-    - Any pre-existing non-LCT host entries (such as `host.docker.internal`) are preserved.
-    - `kubernetes cluster.local` remains untouched and isolated per cluster.
-    """
-    a_ip = validate_ipv4_address(alpha_ip, "--alpha-ip")
-    b_ip = validate_ipv4_address(beta_ip, "--beta-ip")
-    p_ip = validate_ipv4_address(pay_ip, "--pay-ip")
-    aud_ip = (
-        validate_ipv4_address(audit_ip, "--audit-ip")
-        if (audit_ip and audit_ip.strip())
-        else a_ip
-    )
+def sanitize_coredns_corefile(existing_corefile: str) -> str:
+    """Ensure CoreDNS contains ZERO cross-domain LCT `hosts` entries while preserving `host.docker.internal`."""
     if "kubernetes cluster.local" not in existing_corefile:
-        raise ValueError(f"Unexpected CoreDNS Corefile missing 'kubernetes cluster.local':\n{existing_corefile}")
+        raise ValueError(
+            f"Unexpected CoreDNS Corefile missing 'kubernetes cluster.local':\n{existing_corefile}"
+        )
+    hosts_match = re.search(
+        r"(^[ \t]*hosts\s*\{)([^}]*)(\})",
+        existing_corefile,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not hosts_match:
+        return existing_corefile
 
-    lct_lines = [
-        f"        {a_ip} {' '.join(DOMAIN_FQDNS['alpha'])}",
-        f"        {b_ip} {' '.join(DOMAIN_FQDNS['beta'])}",
-        f"        {p_ip} {' '.join(DOMAIN_FQDNS['pay'])}",
-        f"        {aud_ip} {' '.join(DOMAIN_FQDNS['audit'])}",
-    ]
+    preserved_lines: List[str] = []
+    for raw_ln in hosts_match.group(2).splitlines():
+        stripped = raw_ln.strip()
+        if not stripped or stripped == "fallthrough" or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) >= 2:
+            ip_tok = parts[0]
+            kept_names = [
+                n
+                for n in parts[1:]
+                if not any(
+                    n.lower() == sfx.lstrip(".") or n.lower().endswith(sfx)
+                    for sfx in _CROSS_DOMAIN_SUFFIXES
+                )
+            ]
+            if kept_names:
+                preserved_lines.append(f"        {ip_tok} {' '.join(kept_names)}")
 
-    hosts_match = re.search(r"(^[ \t]*hosts\s*\{)([^}]*)(\})", existing_corefile, flags=re.MULTILINE | re.DOTALL)
-    if hosts_match:
-        preserved_lines: List[str] = []
-        for raw_ln in hosts_match.group(2).splitlines():
-            stripped = raw_ln.strip()
-            if not stripped or stripped == "fallthrough" or stripped.startswith("#"):
-                continue
-            parts = stripped.split()
-            if len(parts) >= 2:
-                ip_tok = parts[0]
-                kept_names = [n for n in parts[1:] if n.lower() not in _ALL_LCT_FQDNS]
-                if kept_names:
-                    preserved_lines.append(f"        {ip_tok} {' '.join(kept_names)}")
-        merged_body = "\n".join([*preserved_lines, *lct_lines, "        fallthrough"])
-        new_block = f"    hosts {{\n{merged_body}\n    }}"
-        return (
+    if not preserved_lines:
+        # Remove empty hosts stanza cleanly
+        cleaned = (
             existing_corefile[: hosts_match.start()]
-            + new_block
             + existing_corefile[hosts_match.end() :]
         )
+        return re.sub(r"\n{3,}", "\n\n", cleaned)
 
-    new_hosts_block = "    hosts {\n" + "\n".join([*lct_lines, "        fallthrough"]) + "\n    }"
-    return re.sub(
-        r"([ \t]*kubernetes\s+cluster\.local)",
-        new_hosts_block + r"\n\1",
-        existing_corefile,
-        count=1,
+    merged_body = "\n".join([*preserved_lines, "        fallthrough"])
+    new_block = f"    hosts {{\n{merged_body}\n    }}"
+    return (
+        existing_corefile[: hosts_match.start()]
+        + new_block
+        + existing_corefile[hosts_match.end() :]
     )
 
 
@@ -438,6 +608,52 @@ def generate_domain_ca_secret_bundle(role: str) -> Tuple[List[Dict[str, Any]], s
     return [sec_manifest], spec.trust_domain, anchor_line
 
 
+def _identity_addressing_volumes(include_node_locator: bool = True) -> List[Dict[str, Any]]:
+    vols: List[Dict[str, Any]] = [
+        {
+            "name": "lct-trust-anchors",
+            "configMap": {"name": "lct-trust-anchors", "optional": True},
+        },
+        {
+            "name": "lct-bootstrap-seeds",
+            "configMap": {"name": "lct-bootstrap-seeds", "optional": True},
+        },
+        {
+            "name": "lct-learned-descriptors",
+            "configMap": {"name": "lct-learned-descriptors", "optional": True},
+        },
+    ]
+    if include_node_locator:
+        vols.append(
+            {
+                "name": "lct-node-locator",
+                "configMap": {"name": "lct-node-locator", "optional": True},
+            }
+        )
+    return vols
+
+
+def _identity_addressing_mounts(include_node_locator: bool = True) -> List[Dict[str, Any]]:
+    mounts: List[Dict[str, Any]] = [
+        {"name": "lct-trust-anchors", "mountPath": "/etc/lct-anchors", "readOnly": True},
+        {"name": "lct-bootstrap-seeds", "mountPath": "/etc/lct-seeds", "readOnly": True},
+        {
+            "name": "lct-learned-descriptors",
+            "mountPath": "/etc/lct-descriptors",
+            "readOnly": True,
+        },
+    ]
+    if include_node_locator:
+        mounts.append(
+            {
+                "name": "lct-node-locator",
+                "mountPath": "/etc/lct-node-locator",
+                "readOnly": True,
+            }
+        )
+    return mounts
+
+
 def _agent_or_tool_deployment_docs(
     *,
     namespace: str,
@@ -446,11 +662,8 @@ def _agent_or_tool_deployment_docs(
     image: str,
     app_role: str,
     local_ca_url: str,
-    peer_ca_urls: str,
     dir_url: str,
     rev_url: str,
-    audit_url: str,
-    public_origin: str,
     node_port: int,
     svid_ttl_seconds: int,
     require_pinned_anchors: bool,
@@ -458,39 +671,45 @@ def _agent_or_tool_deployment_docs(
     llm_model: Optional[str] = None,
     is_tool_server: bool = False,
     agent_skills: Optional[str] = None,
+    supported_tools: Optional[str] = None,
     agent_priority: Optional[int] = None,
     agent_display_name: Optional[str] = None,
     enable_fault_injection: bool = False,
     specialist_instance: Optional[str] = None,
-    travel_mcp_url: Optional[str] = None,
-    payment_mcp_url: Optional[str] = None,
+    delegation_mode: str = "dual",
+    local_sts_url: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     sa_doc = {
         "apiVersion": "v1",
         "kind": "ServiceAccount",
         "metadata": {"name": name, "namespace": namespace},
     }
-    app_env: List[Dict[str, str]] = []
+    app_env: List[Dict[str, str]] = [
+        {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+    ]
     if specialist_instance:
         app_env.append({"name": "SPECIALIST_INSTANCE", "value": specialist_instance})
     if llm_url:
         app_env.append({"name": "OLLAMA_BASE_URL", "value": llm_url})
     if llm_model:
         app_env.append({"name": "LLM_MODEL", "value": llm_model})
-    if travel_mcp_url:
-        app_env.append({"name": "TRAVEL_MCP_URL", "value": travel_mcp_url})
-    if payment_mcp_url:
-        app_env.append({"name": "PAYMENT_MCP_URL", "value": payment_mcp_url})
     if enable_fault_injection:
         app_env.append({"name": "LCT_ENABLE_FAULT_INJECTION", "value": "true"})
 
     sidecar_env: List[Dict[str, str]] = [
+        {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+        {"name": "DELEGATION_MODE", "value": delegation_mode},
+        {"name": "OAUTH_CREDENTIALS_FILE", "value": "/var/run/lct-oauth/credentials.json"},
+        {"name": "LCT_LOCATOR_SLOT", "value": name},
+        {"name": "LCT_NODE_LOCATOR_FILE", "value": "/etc/lct-node-locator/locator.json"},
+        {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
+        {
+            "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
+            "value": "/etc/lct-descriptors/descriptors.json",
+        },
         {"name": "LOCAL_CA_URL", "value": local_ca_url},
-        {"name": "PEER_CA_URLS", "value": peer_ca_urls},
         {"name": "DIRECTORY_URL", "value": dir_url},
         {"name": "REVOCATION_URL", "value": rev_url},
-        {"name": "AUDIT_COLLECTOR_URL", "value": audit_url},
-        {"name": "PUBLIC_ORIGIN", "value": public_origin},
         {"name": "SIDECAR_INBOUND_PORT", "value": "8443"},
         {"name": "LCT_MTLS_RAM_DIR", "value": "/var/run/lct-mtls-ram"},
         {"name": "LCT_TRUST_ANCHORS_DIR", "value": "/etc/lct-anchors"},
@@ -501,13 +720,19 @@ def _agent_or_tool_deployment_docs(
         {"name": "LCT_WAIT_FOR_PEERS_ON_BOOT", "value": "false"},
         {"name": "LCT_SVID_TTL_SECONDS", "value": str(int(svid_ttl_seconds))},
     ]
+    if local_sts_url:
+        sidecar_env.append({"name": "LOCAL_STS_URL", "value": local_sts_url})
     if is_tool_server:
         sidecar_env.append({"name": "IS_TOOL_SERVER", "value": "true"})
         sidecar_env.append({"name": "VERIFICATION_MODE", "value": "ADAPTIVE_RISK_ANCHORED"})
-    else:
-        sidecar_env.append({"name": "AGENT_SKILLS", "value": agent_skills or "agent.generic"})
-        sidecar_env.append({"name": "AGENT_PRIORITY", "value": str(agent_priority or 50)})
-        sidecar_env.append({"name": "AGENT_DISPLAY_NAME", "value": agent_display_name or name})
+    if agent_skills:
+        sidecar_env.append({"name": "AGENT_SKILLS", "value": agent_skills})
+    elif not is_tool_server:
+        sidecar_env.append({"name": "AGENT_SKILLS", "value": "agent.generic"})
+    if supported_tools:
+        sidecar_env.append({"name": "SUPPORTED_TOOLS", "value": supported_tools})
+    sidecar_env.append({"name": "AGENT_PRIORITY", "value": str(agent_priority or 50)})
+    sidecar_env.append({"name": "AGENT_DISPLAY_NAME", "value": agent_display_name or name})
     if enable_fault_injection:
         sidecar_env.append({"name": "LCT_ENABLE_FAULT_INJECTION", "value": "true"})
 
@@ -516,6 +741,7 @@ def _agent_or_tool_deployment_docs(
         "image": image,
         "imagePullPolicy": "Never",
         "args": ["--role", app_role],
+        "env": app_env,
         "volumeMounts": [
             {"name": "lct-loopback", "mountPath": "/var/run/lct-loopback", "readOnly": True}
         ],
@@ -524,16 +750,15 @@ def _agent_or_tool_deployment_docs(
                 "command": [
                     "/app/.venv/bin/python3",
                     "-c",
-                    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/healthz', timeout=2)",
+                    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/healthz', timeout=4)",
                 ]
             },
             "initialDelaySeconds": 15,
             "periodSeconds": 10,
-            "failureThreshold": 5,
+            "timeoutSeconds": 5,
+            "failureThreshold": 6,
         },
     }
-    if app_env:
-        app_container["env"] = app_env
 
     dep_doc = {
         "apiVersion": "apps/v1",
@@ -549,13 +774,19 @@ def _agent_or_tool_deployment_docs(
                 "spec": {
                     "serviceAccountName": name,
                     "automountServiceAccountToken": False,
+                    "securityContext": {"fsGroup": 2000},
                     "volumes": [
                         {"name": "lct-loopback", "emptyDir": {"medium": "Memory"}},
                         {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
                         {
-                            "name": "lct-trust-anchors",
-                            "configMap": {"name": "lct-trust-anchors", "optional": True},
+                            "name": "lct-oauth-credentials",
+                            "secret": {
+                                "secretName": "lct-oauth-credentials",
+                                "defaultMode": 0o440,
+                                "optional": True,
+                            },
                         },
+                        *_identity_addressing_volumes(include_node_locator=True),
                         {
                             "name": "lct-sa-token",
                             "projected": {
@@ -590,10 +821,11 @@ def _agent_or_tool_deployment_docs(
                                 {"name": "lct-loopback", "mountPath": "/var/run/lct-loopback"},
                                 {"name": "lct-mtls-ram", "mountPath": "/var/run/lct-mtls-ram"},
                                 {
-                                    "name": "lct-trust-anchors",
-                                    "mountPath": "/etc/lct-anchors",
+                                    "name": "lct-oauth-credentials",
+                                    "mountPath": "/var/run/lct-oauth",
                                     "readOnly": True,
                                 },
+                                *_identity_addressing_mounts(include_node_locator=True),
                                 {
                                     "name": "lct-sa-token",
                                     "mountPath": "/var/run/lct-sa",
@@ -605,23 +837,25 @@ def _agent_or_tool_deployment_docs(
                                     "command": [
                                         "/app/.venv/bin/python3",
                                         "-c",
-                                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)",
+                                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=4)",
                                     ]
                                 },
                                 "initialDelaySeconds": 15,
                                 "periodSeconds": 10,
-                                "failureThreshold": 5,
+                                "timeoutSeconds": 5,
+                                "failureThreshold": 6,
                             },
                             "readinessProbe": {
                                 "exec": {
                                     "command": [
                                         "/app/.venv/bin/python3",
                                         "-c",
-                                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/readyz', timeout=2)",
+                                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/readyz', timeout=4)",
                                     ]
                                 },
                                 "initialDelaySeconds": 2,
                                 "periodSeconds": 2,
+                                "timeoutSeconds": 5,
                             },
                         },
                     ],
@@ -641,7 +875,7 @@ def _agent_or_tool_deployment_docs(
                     "name": "lct-mtls",
                     "port": 8443,
                     "targetPort": 8443,
-                    "nodePort": node_port,
+                    "nodePort": int(node_port),
                 }
             ],
         },
@@ -649,19 +883,261 @@ def _agent_or_tool_deployment_docs(
     return [sa_doc, dep_doc, svc_doc]
 
 
+def _oauth_sts_docs(
+    *,
+    spec: RoleSpec,
+    image: str,
+    sts_nodeport: int,
+    sts_engine: str,
+    keycloak_image: str,
+    require_pinned_anchors: bool,
+) -> List[Dict[str, Any]]:
+    """Render Organization OAuth 2.0 / OIDC STS (`quay.io/keycloak/keycloak:26.5.2` or lightweight STS)."""
+    eng = (sts_engine or "lightweight").strip().lower()
+    if eng == "none":
+        return []
+    if eng not in ("keycloak", "lightweight"):
+        raise ValueError(f"Unsupported sts_engine: {sts_engine!r}")
+
+    ns = spec.namespace
+    td = spec.trust_domain
+    pfx = spec.ca_short_prefix
+    sts_name = f"{pfx}-sts"
+    local_ca_url = f"http://{pfx}-ca.{ns}.svc.cluster.local:8090"
+
+    sa_doc = {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {"name": sts_name, "namespace": ns},
+    }
+
+    if eng == "keycloak":
+        pod_spec: Dict[str, Any] = {
+            "serviceAccountName": sts_name,
+            "automountServiceAccountToken": False,
+            "securityContext": {"fsGroup": 2000},
+            "volumes": [
+                {
+                    "name": "keycloak-realm-import",
+                    "secret": {
+                        "secretName": "lct-keycloak-realm",
+                        "defaultMode": 0o440,
+                        "items": [{"key": "lct-realm.json", "path": "lct-realm.json"}],
+                    },
+                }
+            ],
+            "containers": [
+                {
+                    "name": sts_name,
+                    "image": keycloak_image,
+                    "imagePullPolicy": "IfNotPresent",
+                    "args": [
+                        "start-dev",
+                        "--import-realm",
+                        "--http-port=8095",
+                        "--features=token-exchange,token-exchange-standard:v2",
+                    ],
+                    "env": [
+                        {
+                            "name": "KC_BOOTSTRAP_ADMIN_USERNAME",
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": "lct-keycloak-realm",
+                                    "key": "admin_username",
+                                }
+                            },
+                        },
+                        {
+                            "name": "KC_BOOTSTRAP_ADMIN_PASSWORD",
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": "lct-keycloak-realm",
+                                    "key": "admin_password",
+                                }
+                            },
+                        },
+                        {"name": "JAVA_OPTS_APPEND", "value": "-Xms256m -Xmx768m"},
+                    ],
+                    "ports": [{"containerPort": 8095, "name": "http-sts"}],
+                    "volumeMounts": [
+                        {
+                            "name": "keycloak-realm-import",
+                            "mountPath": "/opt/keycloak/data/import",
+                            "readOnly": True,
+                        }
+                    ],
+                    "startupProbe": {
+                        "httpGet": {
+                            "path": f"/realms/{DEFAULT_REALM_NAME}/.well-known/openid-configuration",
+                            "port": 8095,
+                        },
+                        "initialDelaySeconds": 8,
+                        "periodSeconds": 5,
+                        "timeoutSeconds": 5,
+                        "failureThreshold": 48,
+                    },
+                    "readinessProbe": {
+                        "httpGet": {
+                            "path": f"/realms/{DEFAULT_REALM_NAME}/.well-known/openid-configuration",
+                            "port": 8095,
+                        },
+                        "initialDelaySeconds": 2,
+                        "periodSeconds": 3,
+                        "timeoutSeconds": 5,
+                        "failureThreshold": 6,
+                    },
+                    "livenessProbe": {
+                        "httpGet": {
+                            "path": f"/realms/{DEFAULT_REALM_NAME}/.well-known/openid-configuration",
+                            "port": 8095,
+                        },
+                        "initialDelaySeconds": 10,
+                        "periodSeconds": 10,
+                        "timeoutSeconds": 5,
+                        "failureThreshold": 6,
+                    },
+                }
+            ],
+        }
+    else:
+        pod_spec = {
+            "serviceAccountName": sts_name,
+            "automountServiceAccountToken": False,
+            "securityContext": {"fsGroup": 2000},
+            "volumes": [
+                {
+                    "name": "lct-oauth-credentials",
+                    "secret": {
+                        "secretName": "lct-oauth-credentials",
+                        "defaultMode": 0o440,
+                        "optional": True,
+                    },
+                },
+                *_identity_addressing_volumes(include_node_locator=False),
+            ],
+            "containers": [
+                {
+                    "name": sts_name,
+                    "image": image,
+                    "imagePullPolicy": "Never",
+                    "args": ["--role", "oauth-sts"],
+                    "env": [
+                        {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+                        {"name": "TRUST_DOMAIN", "value": td},
+                        {"name": "OAUTH_REALM", "value": DEFAULT_REALM_NAME},
+                        {"name": "OAUTH_ISSUER_ORIGIN", "value": f"http://{pfx}-oidc.lct.local"},
+                        {"name": "STS_PORT", "value": "8095"},
+                        {"name": "LOCAL_CA_URL", "value": local_ca_url},
+                        {
+                            "name": "OAUTH_CREDENTIALS_FILE",
+                            "value": "/var/run/lct-oauth/credentials.json",
+                        },
+                        {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
+                        {
+                            "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
+                            "value": "/etc/lct-descriptors/descriptors.json",
+                        },
+                        {"name": "LCT_TRUST_ANCHORS_DIR", "value": "/etc/lct-anchors"},
+                        {
+                            "name": "LCT_REQUIRE_PINNED_ANCHORS",
+                            "value": "true" if require_pinned_anchors else "false",
+                        },
+                        {"name": "LCT_WAIT_FOR_PEERS_ON_BOOT", "value": "false"},
+                    ],
+                    "ports": [{"containerPort": 8095, "name": "http-sts"}],
+                    "volumeMounts": [
+                        {
+                            "name": "lct-oauth-credentials",
+                            "mountPath": "/var/run/lct-oauth",
+                            "readOnly": True,
+                        },
+                        *_identity_addressing_mounts(include_node_locator=False),
+                    ],
+                    "readinessProbe": {
+                        "httpGet": {
+                            "path": f"/realms/{DEFAULT_REALM_NAME}/.well-known/openid-configuration",
+                            "port": 8095,
+                        },
+                        "initialDelaySeconds": 1,
+                        "periodSeconds": 2,
+                        "timeoutSeconds": 5,
+                    },
+                    "livenessProbe": {
+                        "httpGet": {"path": "/healthz", "port": 8095},
+                        "initialDelaySeconds": 10,
+                        "periodSeconds": 10,
+                        "timeoutSeconds": 5,
+                        "failureThreshold": 6,
+                    },
+                }
+            ],
+        }
+
+    dep_doc = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": sts_name,
+            "namespace": ns,
+            "labels": {"lct.io/sts-engine": eng},
+        },
+        "spec": {
+            "replicas": 1,
+            "strategy": {"type": "Recreate"},
+            "selector": {"matchLabels": {"app": sts_name}},
+            "template": {
+                "metadata": {
+                    "labels": {
+                        "app": sts_name,
+                        "lct.io/trust-domain": td,
+                        "lct.io/sts-engine": eng,
+                    }
+                },
+                "spec": pod_spec,
+            },
+        },
+    }
+    svc_internal = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": sts_name, "namespace": ns},
+        "spec": {
+            "type": "ClusterIP",
+            "selector": {"app": sts_name},
+            "ports": [{"name": "http-sts", "port": 8095, "targetPort": 8095}],
+        },
+    }
+    svc_external = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": f"{sts_name}-federation", "namespace": ns},
+        "spec": {
+            "type": "NodePort",
+            "selector": {"app": sts_name},
+            "ports": [
+                {
+                    "name": "http-sts",
+                    "port": 8095,
+                    "targetPort": 8095,
+                    "nodePort": int(sts_nodeport),
+                }
+            ],
+        },
+    }
+    return [sa_doc, dep_doc, svc_internal, svc_external]
+
+
 def _domain_control_plane_docs(
     *,
     spec: RoleSpec,
     image: str,
-    peer_ca_urls: str,
-    peer_dir_urls: str,
-    peer_rev_urls: str,
-    audit_url: str,
+    ca_fed_nodeport: int,
     dir_fed_nodeport: int,
     rev_fed_nodeport: int,
     svid_ttl_seconds: int,
     require_pinned_anchors: bool,
     authorized_gateway_sa: Optional[str] = None,
+    sts_enabled: bool = True,
 ) -> List[Dict[str, Any]]:
     ns = spec.namespace
     td = spec.trust_domain
@@ -673,11 +1149,17 @@ def _domain_control_plane_docs(
     local_rev_url = f"http://{rev_name}.{ns}.svc.cluster.local:8092"
 
     ca_env = [
+        {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+        {"name": "LCT_NODE_LOCATOR_FILE", "value": "/etc/lct-node-locator/locator.json"},
+        {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
+        {
+            "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
+            "value": "/etc/lct-descriptors/descriptors.json",
+        },
         {"name": "TRUST_DOMAIN", "value": td},
         {"name": "ALLOWED_K8S_NAMESPACE", "value": ns},
         {"name": "CA_FEDERATION_PORT", "value": "8094"},
         {"name": "CA_KEY_MATERIAL_DIR", "value": "/var/run/lct-ca-keys"},
-        {"name": "AUDIT_COLLECTOR_URL", "value": audit_url},
         {"name": "LCT_TRUST_ANCHORS_DIR", "value": "/etc/lct-anchors"},
         {
             "name": "LCT_REQUIRE_PINNED_ANCHORS",
@@ -687,6 +1169,17 @@ def _domain_control_plane_docs(
     ]
     if authorized_gateway_sa:
         ca_env.append({"name": "AUTHORIZED_GATEWAY_SA", "value": authorized_gateway_sa})
+    if sts_enabled:
+        local_sts_origin = f"http://{pfx}-sts.{ns}.svc.cluster.local:8095"
+        ca_env.append({"name": "LOCAL_STS_URL", "value": local_sts_origin})
+        ca_env.append({"name": "OAUTH_REALM", "value": DEFAULT_REALM_NAME})
+        if spec.role == "alpha":
+            ca_env.append(
+                {
+                    "name": "OIDC_JWKS_URL",
+                    "value": f"{local_sts_origin}/realms/{DEFAULT_REALM_NAME}/protocol/openid-connect/certs",
+                }
+            )
 
     docs: List[Dict[str, Any]] = [
         {
@@ -715,10 +1208,7 @@ def _domain_control_plane_docs(
                                     "defaultMode": 0o440,
                                 },
                             },
-                            {
-                                "name": "lct-trust-anchors",
-                                "configMap": {"name": "lct-trust-anchors", "optional": True},
-                            },
+                            *_identity_addressing_volumes(include_node_locator=True),
                             {
                                 "name": "lct-sa-token",
                                 "projected": {
@@ -756,11 +1246,7 @@ def _domain_control_plane_docs(
                                         "mountPath": "/var/run/lct-ca-keys",
                                         "readOnly": True,
                                     },
-                                    {
-                                        "name": "lct-trust-anchors",
-                                        "mountPath": "/etc/lct-anchors",
-                                        "readOnly": True,
-                                    },
+                                    *_identity_addressing_mounts(include_node_locator=True),
                                     {
                                         "name": "lct-sa-token",
                                         "mountPath": "/var/run/lct-sa",
@@ -769,13 +1255,16 @@ def _domain_control_plane_docs(
                                 ],
                                 "livenessProbe": {
                                     "httpGet": {"path": "/healthz", "port": 8090},
-                                    "initialDelaySeconds": 2,
-                                    "periodSeconds": 5,
+                                    "initialDelaySeconds": 15,
+                                    "periodSeconds": 10,
+                                    "timeoutSeconds": 5,
+                                    "failureThreshold": 6,
                                 },
                                 "readinessProbe": {
                                     "httpGet": {"path": "/healthz", "port": 8090},
                                     "initialDelaySeconds": 1,
                                     "periodSeconds": 2,
+                                    "timeoutSeconds": 5,
                                 },
                             }
                         ],
@@ -805,7 +1294,7 @@ def _domain_control_plane_docs(
                         "name": "ca-fed-ro",
                         "port": 8094,
                         "targetPort": 8094,
-                        "nodePort": int(spec.ca_fed_nodeport or 30094),
+                        "nodePort": int(ca_fed_nodeport),
                     }
                 ],
             },
@@ -830,10 +1319,7 @@ def _domain_control_plane_docs(
                         "automountServiceAccountToken": False,
                         "volumes": [
                             {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
-                            {
-                                "name": "lct-trust-anchors",
-                                "configMap": {"name": "lct-trust-anchors", "optional": True},
-                            },
+                            *_identity_addressing_volumes(include_node_locator=False),
                             {
                                 "name": "lct-sa-token",
                                 "projected": {
@@ -862,9 +1348,13 @@ def _domain_control_plane_docs(
                                 "imagePullPolicy": "Never",
                                 "args": ["--role", "domain-revocation"],
                                 "env": [
+                                    {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+                                    {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
+                                    {
+                                        "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
+                                        "value": "/etc/lct-descriptors/descriptors.json",
+                                    },
                                     {"name": "LOCAL_CA_URL", "value": local_ca_url},
-                                    {"name": "PEER_CA_URLS", "value": peer_ca_urls},
-                                    {"name": "PEER_REVOCATION_URLS", "value": peer_rev_urls},
                                     {"name": "REVOCATION_FEDERATION_PORT", "value": "8492"},
                                     {"name": "LCT_MTLS_RAM_DIR", "value": "/var/run/lct-mtls-ram"},
                                     {"name": "LCT_TRUST_ANCHORS_DIR", "value": "/etc/lct-anchors"},
@@ -873,31 +1363,36 @@ def _domain_control_plane_docs(
                                         "value": "true" if require_pinned_anchors else "false",
                                     },
                                     {"name": "LCT_WAIT_FOR_PEERS_ON_BOOT", "value": "false"},
-                                    {"name": "LCT_SVID_TTL_SECONDS", "value": str(int(svid_ttl_seconds))},
+                                    {
+                                        "name": "LCT_SVID_TTL_SECONDS",
+                                        "value": str(int(svid_ttl_seconds)),
+                                    },
                                 ],
                                 "ports": [
                                     {"containerPort": 8092, "name": "rev-internal"},
                                     {"containerPort": 8492, "name": "rev-fed-mtls"},
                                 ],
                                 "volumeMounts": [
-                                    {"name": "lct-sa-token", "mountPath": "/var/run/lct-sa", "readOnly": True},
-                                    {"name": "lct-mtls-ram", "mountPath": "/var/run/lct-mtls-ram"},
                                     {
-                                        "name": "lct-trust-anchors",
-                                        "mountPath": "/etc/lct-anchors",
+                                        "name": "lct-sa-token",
+                                        "mountPath": "/var/run/lct-sa",
                                         "readOnly": True,
                                     },
+                                    {"name": "lct-mtls-ram", "mountPath": "/var/run/lct-mtls-ram"},
+                                    *_identity_addressing_mounts(include_node_locator=False),
                                 ],
                                 "livenessProbe": {
                                     "httpGet": {"path": "/healthz", "port": 8092},
                                     "initialDelaySeconds": 15,
                                     "periodSeconds": 10,
-                                    "failureThreshold": 5,
+                                    "timeoutSeconds": 5,
+                                    "failureThreshold": 6,
                                 },
                                 "readinessProbe": {
                                     "httpGet": {"path": "/readyz", "port": 8092},
                                     "initialDelaySeconds": 1,
                                     "periodSeconds": 2,
+                                    "timeoutSeconds": 5,
                                 },
                             }
                         ],
@@ -928,7 +1423,7 @@ def _domain_control_plane_docs(
                         "name": "rev-fed-mtls",
                         "port": 8492,
                         "targetPort": 8492,
-                        "nodePort": rev_fed_nodeport,
+                        "nodePort": int(rev_fed_nodeport),
                     }
                 ],
             },
@@ -953,10 +1448,7 @@ def _domain_control_plane_docs(
                         "automountServiceAccountToken": False,
                         "volumes": [
                             {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
-                            {
-                                "name": "lct-trust-anchors",
-                                "configMap": {"name": "lct-trust-anchors", "optional": True},
-                            },
+                            *_identity_addressing_volumes(include_node_locator=False),
                             {
                                 "name": "lct-sa-token",
                                 "projected": {
@@ -985,9 +1477,13 @@ def _domain_control_plane_docs(
                                 "imagePullPolicy": "Never",
                                 "args": ["--role", "domain-directory"],
                                 "env": [
+                                    {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+                                    {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
+                                    {
+                                        "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
+                                        "value": "/etc/lct-descriptors/descriptors.json",
+                                    },
                                     {"name": "LOCAL_CA_URL", "value": local_ca_url},
-                                    {"name": "PEER_CA_URLS", "value": peer_ca_urls},
-                                    {"name": "PEER_DIRECTORY_URLS", "value": peer_dir_urls},
                                     {"name": "REVOCATION_URL", "value": local_rev_url},
                                     {"name": "DIRECTORY_FEDERATION_PORT", "value": "8491"},
                                     {"name": "LCT_MTLS_RAM_DIR", "value": "/var/run/lct-mtls-ram"},
@@ -997,31 +1493,36 @@ def _domain_control_plane_docs(
                                         "value": "true" if require_pinned_anchors else "false",
                                     },
                                     {"name": "LCT_WAIT_FOR_PEERS_ON_BOOT", "value": "false"},
-                                    {"name": "LCT_SVID_TTL_SECONDS", "value": str(int(svid_ttl_seconds))},
+                                    {
+                                        "name": "LCT_SVID_TTL_SECONDS",
+                                        "value": str(int(svid_ttl_seconds)),
+                                    },
                                 ],
                                 "ports": [
                                     {"containerPort": 8091, "name": "dir-internal"},
                                     {"containerPort": 8491, "name": "dir-fed-mtls"},
                                 ],
                                 "volumeMounts": [
-                                    {"name": "lct-sa-token", "mountPath": "/var/run/lct-sa", "readOnly": True},
-                                    {"name": "lct-mtls-ram", "mountPath": "/var/run/lct-mtls-ram"},
                                     {
-                                        "name": "lct-trust-anchors",
-                                        "mountPath": "/etc/lct-anchors",
+                                        "name": "lct-sa-token",
+                                        "mountPath": "/var/run/lct-sa",
                                         "readOnly": True,
                                     },
+                                    {"name": "lct-mtls-ram", "mountPath": "/var/run/lct-mtls-ram"},
+                                    *_identity_addressing_mounts(include_node_locator=False),
                                 ],
                                 "livenessProbe": {
                                     "httpGet": {"path": "/healthz", "port": 8091},
                                     "initialDelaySeconds": 15,
                                     "periodSeconds": 10,
-                                    "failureThreshold": 5,
+                                    "timeoutSeconds": 5,
+                                    "failureThreshold": 6,
                                 },
                                 "readinessProbe": {
                                     "httpGet": {"path": "/readyz", "port": 8091},
                                     "initialDelaySeconds": 1,
                                     "periodSeconds": 2,
+                                    "timeoutSeconds": 5,
                                 },
                             }
                         ],
@@ -1052,7 +1553,7 @@ def _domain_control_plane_docs(
                         "name": "dir-fed-mtls",
                         "port": 8491,
                         "targetPort": 8491,
-                        "nodePort": dir_fed_nodeport,
+                        "nodePort": int(dir_fed_nodeport),
                     }
                 ],
             },
@@ -1061,8 +1562,12 @@ def _domain_control_plane_docs(
     return docs
 
 
-def render_e2e_sync_service_manifest(namespace: str = "lineage-alpha") -> Dict[str, Any]:
-    """Render the transient NodePort `30990` Service created ONLY around Scenario 3B."""
+def render_e2e_sync_service_manifest(
+    namespace: str = "lineage-alpha",
+    node_port: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Render the transient NodePort Service created ONLY around Scenario 3B."""
+    eff_port = int(node_port) if node_port is not None else allocate_role_ports("alpha")["e2e_sync_hook"]
     return {
         "apiVersion": "v1",
         "kind": "Service",
@@ -1075,7 +1580,7 @@ def render_e2e_sync_service_manifest(namespace: str = "lineage-alpha") -> Dict[s
                     "name": "sync-hook",
                     "port": 19090,
                     "targetPort": 19090,
-                    "nodePort": 30990,
+                    "nodePort": eff_port,
                 }
             ],
         },
@@ -1084,41 +1589,79 @@ def render_e2e_sync_service_manifest(namespace: str = "lineage-alpha") -> Dict[s
 
 def render_role_k8s_manifests(
     role: str,
-    image: str = "lineage-lct:m6",
+    image: str = "lineage-lct:m7",
     llm_url: str = "http://host.docker.internal:11434/v1",
     llm_model: str = "qwen2.5:3b",
     svid_ttl_seconds: int = 1800,
     require_pinned_anchors: bool = True,
     initial_anchors: Optional[Mapping[str, str]] = None,
     include_namespace_and_configmap: bool = True,
+    role_ports: Optional[Mapping[str, int]] = None,
+    initial_seeds: Sequence[str] = (),
+    initial_locator_json: Optional[str] = None,
+    sts_engine: str = "lightweight",
+    keycloak_image: str = KEYCLOAK_IMAGE,
+    delegation_mode: str = "dual",
 ) -> str:
-    """Render complete multi-document YAML manifest for a single multi-host role."""
+    """Render complete multi-document YAML manifest for a single multi-host role (zero peer IPs/ports/FQDNs)."""
     if role not in ROLE_SPECS:
         raise ValueError(f"Unknown role: {role!r}")
     spec = ROLE_SPECS[role]
     ns = spec.namespace
-    audit_https_url = "https://audit-collector.org-audit.io:30893"
-    travel_mcp_https = "https://travel-ops-mcp.org-payment.io:32442/mcp"
-    payment_mcp_https = "https://payment-vault-mcp.org-payment.io:32443/mcp"
+    ports = dict(role_ports) if role_ports is not None else allocate_role_ports(role)
+    eff_sts_engine = (sts_engine or "lightweight").strip().lower()
+    if eff_sts_engine not in ("keycloak", "lightweight", "none"):
+        raise ValueError(f"Unsupported sts_engine: {sts_engine!r}")
+    sts_enabled = eff_sts_engine != "none"
 
-    docs: List[Dict[str, Any]] = []
-    if include_namespace_and_configmap:
-        docs.append(
-            {
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": {
-                    "name": ns,
-                    "labels": {"lct.io/trust-domain": spec.trust_domain},
+    docs: List[Dict[str, Any]] = [
+        {
+            "apiVersion": "v1",
+            "kind": "Namespace",
+            "metadata": {
+                "name": ns,
+                "labels": {"lct.io/trust-domain": spec.trust_domain},
+                "annotations": {
+                    "lct.io/role-ports-json": json.dumps(ports, sort_keys=True),
                 },
-            }
-        )
+            },
+        }
+    ]
+    if include_namespace_and_configmap:
         docs.append(
             {
                 "apiVersion": "v1",
                 "kind": "ConfigMap",
                 "metadata": {"name": "lct-trust-anchors", "namespace": ns},
                 "data": dict(initial_anchors or {}),
+            }
+        )
+        docs.append(
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": "lct-bootstrap-seeds", "namespace": ns},
+                "data": {"seeds": "\n".join(s for s in initial_seeds if s)},
+            }
+        )
+        docs.append(
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": "lct-node-locator", "namespace": ns},
+                "data": (
+                    {"locator.json": initial_locator_json}
+                    if initial_locator_json
+                    else {}
+                ),
+            }
+        )
+        docs.append(
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": "lct-learned-descriptors", "namespace": ns},
+                "data": {},
             }
         )
 
@@ -1158,6 +1701,7 @@ def render_role_k8s_manifests(
                                             "defaultMode": 0o440,
                                         },
                                     },
+                                    *_identity_addressing_volumes(include_node_locator=True),
                                 ],
                                 "containers": [
                                     {
@@ -1166,6 +1710,15 @@ def render_role_k8s_manifests(
                                         "imagePullPolicy": "Never",
                                         "args": ["--role", "audit-tls-ca"],
                                         "env": [
+                                            {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+                                            {
+                                                "name": "LCT_NODE_LOCATOR_FILE",
+                                                "value": "/etc/lct-node-locator/locator.json",
+                                            },
+                                            {
+                                                "name": "CA_FEDERATION_PORT",
+                                                "value": "8094",
+                                            },
                                             {
                                                 "name": "CA_KEY_MATERIAL_DIR",
                                                 "value": "/var/run/lct-audit-ca-keys",
@@ -1174,8 +1727,19 @@ def render_role_k8s_manifests(
                                                 "name": "AUDIT_CSR_TOKEN_FILE",
                                                 "value": "/var/run/lct-audit-csr/csr_token",
                                             },
+                                            {
+                                                "name": "LCT_TRUST_ANCHORS_DIR",
+                                                "value": "/etc/lct-anchors",
+                                            },
+                                            {
+                                                "name": "LCT_REQUIRE_PINNED_ANCHORS",
+                                                "value": "true" if require_pinned_anchors else "false",
+                                            },
                                         ],
-                                        "ports": [{"containerPort": 8090, "name": "ca-internal"}],
+                                        "ports": [
+                                            {"containerPort": 8090, "name": "ca-internal"},
+                                            {"containerPort": 8094, "name": "ca-fed-ro"},
+                                        ],
                                         "volumeMounts": [
                                             {
                                                 "name": "audit-ca-keys",
@@ -1187,16 +1751,20 @@ def render_role_k8s_manifests(
                                                 "mountPath": "/var/run/lct-audit-csr",
                                                 "readOnly": True,
                                             },
+                                            *_identity_addressing_mounts(include_node_locator=True),
                                         ],
                                         "livenessProbe": {
                                             "httpGet": {"path": "/healthz", "port": 8090},
-                                            "initialDelaySeconds": 1,
-                                            "periodSeconds": 5,
+                                            "initialDelaySeconds": 15,
+                                            "periodSeconds": 10,
+                                            "timeoutSeconds": 5,
+                                            "failureThreshold": 6,
                                         },
                                         "readinessProbe": {
                                             "httpGet": {"path": "/healthz", "port": 8090},
                                             "initialDelaySeconds": 1,
                                             "periodSeconds": 2,
+                                            "timeoutSeconds": 5,
                                         },
                                     }
                                 ],
@@ -1212,6 +1780,23 @@ def render_role_k8s_manifests(
                         "type": "ClusterIP",
                         "selector": {"app": "audit-ca"},
                         "ports": [{"name": "ca-internal", "port": 8090, "targetPort": 8090}],
+                    },
+                },
+                {
+                    "apiVersion": "v1",
+                    "kind": "Service",
+                    "metadata": {"name": "audit-ca-federation", "namespace": ns},
+                    "spec": {
+                        "type": "NodePort",
+                        "selector": {"app": "audit-ca"},
+                        "ports": [
+                            {
+                                "name": "ca-fed-ro",
+                                "port": 8094,
+                                "targetPort": 8094,
+                                "nodePort": int(ports["ca_federation"]),
+                            }
+                        ],
                     },
                 },
                 # Keyless `audit-collector`: ZERO CA keys and ZERO K8s SA tokens!
@@ -1235,13 +1820,7 @@ def render_role_k8s_manifests(
                                 "securityContext": {"fsGroup": 2000},
                                 "volumes": [
                                     {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
-                                    {
-                                        "name": "lct-trust-anchors",
-                                        "configMap": {
-                                            "name": "lct-trust-anchors",
-                                            "optional": True,
-                                        },
-                                    },
+                                    *_identity_addressing_volumes(include_node_locator=False),
                                     {
                                         "name": "audit-csr-auth",
                                         "secret": {
@@ -1257,13 +1836,11 @@ def render_role_k8s_manifests(
                                         "imagePullPolicy": "Never",
                                         "args": ["--role", "federated-audit-collector"],
                                         "env": [
+                                            {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+                                            {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
                                             {
-                                                "name": "PEER_CA_URLS",
-                                                "value": (
-                                                    "org-alpha.io=http://alpha-ca.org-alpha.io:30094,"
-                                                    "org-beta.io=http://beta-ca.org-beta.io:31094,"
-                                                    "org-payment.io=http://payment-ca.org-payment.io:32094"
-                                                ),
+                                                "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
+                                                "value": "/etc/lct-descriptors/descriptors.json",
                                             },
                                             {
                                                 "name": "AUDIT_TLS_CA_URL",
@@ -1297,11 +1874,7 @@ def render_role_k8s_manifests(
                                                 "name": "lct-mtls-ram",
                                                 "mountPath": "/var/run/lct-mtls-ram",
                                             },
-                                            {
-                                                "name": "lct-trust-anchors",
-                                                "mountPath": "/etc/lct-anchors",
-                                                "readOnly": True,
-                                            },
+                                            *_identity_addressing_mounts(include_node_locator=False),
                                             {
                                                 "name": "audit-csr-auth",
                                                 "mountPath": "/var/run/lct-audit-csr",
@@ -1316,7 +1889,8 @@ def render_role_k8s_manifests(
                                             },
                                             "initialDelaySeconds": 15,
                                             "periodSeconds": 10,
-                                            "failureThreshold": 5,
+                                            "timeoutSeconds": 5,
+                                            "failureThreshold": 6,
                                         },
                                         "readinessProbe": {
                                             "httpGet": {
@@ -1326,6 +1900,7 @@ def render_role_k8s_manifests(
                                             },
                                             "initialDelaySeconds": 2,
                                             "periodSeconds": 2,
+                                            "timeoutSeconds": 5,
                                         },
                                     }
                                 ],
@@ -1346,7 +1921,7 @@ def render_role_k8s_manifests(
                                 "name": "https-audit",
                                 "port": 8093,
                                 "targetPort": 8093,
-                                "nodePort": 30893,
+                                "nodePort": int(ports["audit_collector"]),
                             }
                         ],
                     },
@@ -1356,25 +1931,33 @@ def render_role_k8s_manifests(
         return yaml.safe_dump_all(docs, sort_keys=False)
 
     if role == "alpha":
-        peer_ca = "org-beta.io=http://beta-ca.org-beta.io:31094,org-payment.io=http://payment-ca.org-payment.io:32094"
-        peer_dir = "org-beta.io=https://beta-directory.org-beta.io:31491,org-payment.io=https://payment-directory.org-payment.io:32491"
-        peer_rev = "org-beta.io=https://beta-revocation.org-beta.io:31492,org-payment.io=https://payment-revocation.org-payment.io:32492"
         local_ca = f"http://alpha-ca.{ns}.svc.cluster.local:8090"
         local_dir = f"http://alpha-directory.{ns}.svc.cluster.local:8091"
         local_rev = f"http://alpha-revocation.{ns}.svc.cluster.local:8092"
+        local_sts = (
+            f"http://alpha-sts.{ns}.svc.cluster.local:8095" if sts_enabled else None
+        )
+        docs.extend(
+            _oauth_sts_docs(
+                spec=spec,
+                image=image,
+                sts_nodeport=ports["oauth_sts"],
+                sts_engine=eff_sts_engine,
+                keycloak_image=keycloak_image,
+                require_pinned_anchors=require_pinned_anchors,
+            )
+        )
         docs.extend(
             _domain_control_plane_docs(
                 spec=spec,
                 image=image,
-                peer_ca_urls=peer_ca,
-                peer_dir_urls=peer_dir,
-                peer_rev_urls=peer_rev,
-                audit_url=audit_https_url,
-                dir_fed_nodeport=30491,
-                rev_fed_nodeport=30492,
+                ca_fed_nodeport=ports["ca_federation"],
+                dir_fed_nodeport=ports["directory_federation"],
+                rev_fed_nodeport=ports["revocation_federation"],
                 svid_ttl_seconds=svid_ttl_seconds,
                 require_pinned_anchors=require_pinned_anchors,
                 authorized_gateway_sa="e2e-user-gateway",
+                sts_enabled=sts_enabled,
             )
         )
         docs.extend(
@@ -1385,12 +1968,9 @@ def render_role_k8s_manifests(
                 image=image,
                 app_role="app-orchestrator",
                 local_ca_url=local_ca,
-                peer_ca_urls=peer_ca,
                 dir_url=local_dir,
                 rev_url=local_rev,
-                audit_url=audit_https_url,
-                public_origin="https://orchestrator-alpha.org-alpha.io:30441",
-                node_port=30441,
+                node_port=ports["orchestrator-alpha"],
                 svid_ttl_seconds=svid_ttl_seconds,
                 require_pinned_anchors=require_pinned_anchors,
                 llm_url=llm_url,
@@ -1399,9 +1979,56 @@ def render_role_k8s_manifests(
                 agent_priority=10,
                 agent_display_name="Orchestrator Alpha",
                 enable_fault_injection=True,
+                delegation_mode=delegation_mode,
+                local_sts_url=local_sts,
             )
         )
-        # User / Operator CLI Gateway
+        gw_env: List[Dict[str, str]] = [
+            {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+            {"name": "DELEGATION_MODE", "value": delegation_mode},
+            {"name": "OAUTH_REALM", "value": DEFAULT_REALM_NAME},
+            {
+                "name": "OAUTH_CREDENTIALS_FILE",
+                "value": "/var/run/lct-oauth/credentials.json",
+            },
+            {"name": "LCT_LOCATOR_SLOT", "value": "e2e_sync_hook"},
+            {
+                "name": "LCT_NODE_LOCATOR_FILE",
+                "value": "/etc/lct-node-locator/locator.json",
+            },
+            {
+                "name": "LCT_SEEDS_DIR",
+                "value": "/etc/lct-seeds",
+            },
+            {
+                "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
+                "value": "/etc/lct-descriptors/descriptors.json",
+            },
+            {"name": "OLLAMA_BASE_URL", "value": llm_url},
+            {"name": "LLM_MODEL", "value": llm_model},
+            {
+                "name": "LCT_MTLS_RAM_DIR",
+                "value": "/var/run/lct-mtls-ram",
+            },
+            {
+                "name": "LCT_TRUST_ANCHORS_DIR",
+                "value": "/etc/lct-anchors",
+            },
+            {
+                "name": "LCT_REQUIRE_PINNED_ANCHORS",
+                "value": ("true" if require_pinned_anchors else "false"),
+            },
+            {
+                "name": "LCT_SVID_TTL_SECONDS",
+                "value": str(int(svid_ttl_seconds)),
+            },
+            {"name": "ALPHA_CA_URL", "value": local_ca},
+            {"name": "ALPHA_DIR_URL", "value": local_dir},
+            {"name": "ALPHA_REV_URL", "value": local_rev},
+        ]
+        if local_sts:
+            gw_env.append({"name": "LOCAL_STS_URL", "value": local_sts})
+        # User / Operator CLI Gateway (identity-addressed: ZERO peer URL constants!)
         docs.extend(
             [
                 {
@@ -1426,15 +2053,18 @@ def render_role_k8s_manifests(
                             "spec": {
                                 "serviceAccountName": "e2e-user-gateway",
                                 "automountServiceAccountToken": False,
+                                "securityContext": {"fsGroup": 2000},
                                 "volumes": [
                                     {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
                                     {
-                                        "name": "lct-trust-anchors",
-                                        "configMap": {
-                                            "name": "lct-trust-anchors",
+                                        "name": "lct-oauth-credentials",
+                                        "secret": {
+                                            "secretName": "lct-oauth-credentials",
+                                            "defaultMode": 0o440,
                                             "optional": True,
                                         },
                                     },
+                                    *_identity_addressing_volumes(include_node_locator=True),
                                     {
                                         "name": "lct-sa-token",
                                         "projected": {
@@ -1464,84 +2094,7 @@ def render_role_k8s_manifests(
                                         "image": image,
                                         "imagePullPolicy": "Never",
                                         "command": ["/bin/sh", "-c", "sleep 86400"],
-                                        "env": [
-                                            {"name": "OLLAMA_BASE_URL", "value": llm_url},
-                                            {"name": "LLM_MODEL", "value": llm_model},
-                                            {
-                                                "name": "LCT_MTLS_RAM_DIR",
-                                                "value": "/var/run/lct-mtls-ram",
-                                            },
-                                            {
-                                                "name": "LCT_TRUST_ANCHORS_DIR",
-                                                "value": "/etc/lct-anchors",
-                                            },
-                                            {
-                                                "name": "LCT_REQUIRE_PINNED_ANCHORS",
-                                                "value": (
-                                                    "true" if require_pinned_anchors else "false"
-                                                ),
-                                            },
-                                            {
-                                                "name": "LCT_SVID_TTL_SECONDS",
-                                                "value": str(int(svid_ttl_seconds)),
-                                            },
-                                            {"name": "ALPHA_CA_URL", "value": local_ca},
-                                            {
-                                                "name": "BETA_CA_URL",
-                                                "value": "http://beta-ca.org-beta.io:31094",
-                                            },
-                                            {
-                                                "name": "PAYMENT_CA_URL",
-                                                "value": "http://payment-ca.org-payment.io:32094",
-                                            },
-                                            {"name": "PEER_CA_URLS", "value": peer_ca},
-                                            {"name": "ALPHA_DIR_URL", "value": local_dir},
-                                            {"name": "ALPHA_REV_URL", "value": local_rev},
-                                            {
-                                                "name": "BETA_REV_FED_URL",
-                                                "value": "https://beta-revocation.org-beta.io:31492",
-                                            },
-                                            {
-                                                "name": "PAYMENT_REV_FED_URL",
-                                                "value": "https://payment-revocation.org-payment.io:32492",
-                                            },
-                                            {
-                                                "name": "AUDIT_COLLECTOR_URL",
-                                                "value": audit_https_url,
-                                            },
-                                            {
-                                                "name": "ORCH_URL",
-                                                "value": "https://orchestrator-alpha.org-alpha.io:30441",
-                                            },
-                                            {
-                                                "name": "FLIGHT_URL",
-                                                "value": "https://flight-specialist.org-beta.io:31441",
-                                            },
-                                            {
-                                                "name": "HOTEL_PRIMARY_URL",
-                                                "value": "https://hotel-specialist-primary.org-beta.io:31442",
-                                            },
-                                            {
-                                                "name": "HOTEL_BACKUP_URL",
-                                                "value": "https://hotel-specialist-backup.org-beta.io:31443",
-                                            },
-                                            {
-                                                "name": "CONVERGER_URL",
-                                                "value": "https://settlement-converger.org-payment.io:32441",
-                                            },
-                                            {
-                                                "name": "TRAVEL_MCP_SVC_URL",
-                                                "value": travel_mcp_https,
-                                            },
-                                            {
-                                                "name": "PAYMENT_MCP_SVC_URL",
-                                                "value": payment_mcp_https,
-                                            },
-                                            {
-                                                "name": "SYNC_HOOK_URL",
-                                                "value": "http://e2e-user-gateway.org-alpha.io:30990/sync",
-                                            },
-                                        ],
+                                        "env": gw_env,
                                         "ports": [{"containerPort": 19090, "name": "sync-hook"}],
                                         "volumeMounts": [
                                             {
@@ -1554,10 +2107,11 @@ def render_role_k8s_manifests(
                                                 "mountPath": "/var/run/lct-mtls-ram",
                                             },
                                             {
-                                                "name": "lct-trust-anchors",
-                                                "mountPath": "/etc/lct-anchors",
+                                                "name": "lct-oauth-credentials",
+                                                "mountPath": "/var/run/lct-oauth",
                                                 "readOnly": True,
                                             },
+                                            *_identity_addressing_mounts(include_node_locator=True),
                                         ],
                                     }
                                 ],
@@ -1570,24 +2124,32 @@ def render_role_k8s_manifests(
         return yaml.safe_dump_all(docs, sort_keys=False)
 
     if role == "beta":
-        peer_ca = "org-alpha.io=http://alpha-ca.org-alpha.io:30094,org-payment.io=http://payment-ca.org-payment.io:32094"
-        peer_dir = "org-alpha.io=https://alpha-directory.org-alpha.io:30491,org-payment.io=https://payment-directory.org-payment.io:32491"
-        peer_rev = "org-alpha.io=https://alpha-revocation.org-alpha.io:30492,org-payment.io=https://payment-revocation.org-payment.io:32492"
         local_ca = f"http://beta-ca.{ns}.svc.cluster.local:8090"
         local_dir = f"http://beta-directory.{ns}.svc.cluster.local:8091"
         local_rev = f"http://beta-revocation.{ns}.svc.cluster.local:8092"
+        local_sts = (
+            f"http://beta-sts.{ns}.svc.cluster.local:8095" if sts_enabled else None
+        )
+        docs.extend(
+            _oauth_sts_docs(
+                spec=spec,
+                image=image,
+                sts_nodeport=ports["oauth_sts"],
+                sts_engine=eff_sts_engine,
+                keycloak_image=keycloak_image,
+                require_pinned_anchors=require_pinned_anchors,
+            )
+        )
         docs.extend(
             _domain_control_plane_docs(
                 spec=spec,
                 image=image,
-                peer_ca_urls=peer_ca,
-                peer_dir_urls=peer_dir,
-                peer_rev_urls=peer_rev,
-                audit_url=audit_https_url,
-                dir_fed_nodeport=31491,
-                rev_fed_nodeport=31492,
+                ca_fed_nodeport=ports["ca_federation"],
+                dir_fed_nodeport=ports["directory_federation"],
+                rev_fed_nodeport=ports["revocation_federation"],
                 svid_ttl_seconds=svid_ttl_seconds,
                 require_pinned_anchors=require_pinned_anchors,
+                sts_enabled=sts_enabled,
             )
         )
         docs.extend(
@@ -1598,12 +2160,9 @@ def render_role_k8s_manifests(
                 image=image,
                 app_role="app-flight",
                 local_ca_url=local_ca,
-                peer_ca_urls=peer_ca,
                 dir_url=local_dir,
                 rev_url=local_rev,
-                audit_url=audit_https_url,
-                public_origin="https://flight-specialist.org-beta.io:31441",
-                node_port=31441,
+                node_port=ports["flight-specialist"],
                 svid_ttl_seconds=svid_ttl_seconds,
                 require_pinned_anchors=require_pinned_anchors,
                 llm_url=llm_url,
@@ -1611,7 +2170,9 @@ def render_role_k8s_manifests(
                 agent_skills="travel.flight",
                 agent_priority=10,
                 agent_display_name="Flight Specialist B1",
-                travel_mcp_url=travel_mcp_https,
+                enable_fault_injection=True,
+                delegation_mode=delegation_mode,
+                local_sts_url=local_sts,
             )
         )
         docs.extend(
@@ -1622,12 +2183,9 @@ def render_role_k8s_manifests(
                 image=image,
                 app_role="app-hotel",
                 local_ca_url=local_ca,
-                peer_ca_urls=peer_ca,
                 dir_url=local_dir,
                 rev_url=local_rev,
-                audit_url=audit_https_url,
-                public_origin="https://hotel-specialist-primary.org-beta.io:31442",
-                node_port=31442,
+                node_port=ports["hotel-specialist-primary"],
                 svid_ttl_seconds=svid_ttl_seconds,
                 require_pinned_anchors=require_pinned_anchors,
                 llm_url=llm_url,
@@ -1637,7 +2195,8 @@ def render_role_k8s_manifests(
                 agent_display_name="Hotel Specialist Primary B2",
                 enable_fault_injection=True,
                 specialist_instance="primary",
-                travel_mcp_url=travel_mcp_https,
+                delegation_mode=delegation_mode,
+                local_sts_url=local_sts,
             )
         )
         docs.extend(
@@ -1648,12 +2207,9 @@ def render_role_k8s_manifests(
                 image=image,
                 app_role="app-hotel",
                 local_ca_url=local_ca,
-                peer_ca_urls=peer_ca,
                 dir_url=local_dir,
                 rev_url=local_rev,
-                audit_url=audit_https_url,
-                public_origin="https://hotel-specialist-backup.org-beta.io:31443",
-                node_port=31443,
+                node_port=ports["hotel-specialist-backup"],
                 svid_ttl_seconds=svid_ttl_seconds,
                 require_pinned_anchors=require_pinned_anchors,
                 llm_url=llm_url,
@@ -1663,30 +2219,39 @@ def render_role_k8s_manifests(
                 agent_display_name="Hotel Specialist Backup B2-Sub",
                 enable_fault_injection=True,
                 specialist_instance="backup",
-                travel_mcp_url=travel_mcp_https,
+                delegation_mode=delegation_mode,
+                local_sts_url=local_sts,
             )
         )
         return yaml.safe_dump_all(docs, sort_keys=False)
 
     # role == "pay"
-    peer_ca = "org-alpha.io=http://alpha-ca.org-alpha.io:30094,org-beta.io=http://beta-ca.org-beta.io:31094"
-    peer_dir = "org-alpha.io=https://alpha-directory.org-alpha.io:30491,org-beta.io=https://beta-directory.org-beta.io:31491"
-    peer_rev = "org-alpha.io=https://alpha-revocation.org-alpha.io:30492,org-beta.io=https://beta-revocation.org-beta.io:31492"
     local_ca = f"http://payment-ca.{ns}.svc.cluster.local:8090"
     local_dir = f"http://payment-directory.{ns}.svc.cluster.local:8091"
     local_rev = f"http://payment-revocation.{ns}.svc.cluster.local:8092"
+    local_sts = (
+        f"http://payment-sts.{ns}.svc.cluster.local:8095" if sts_enabled else None
+    )
+    docs.extend(
+        _oauth_sts_docs(
+            spec=spec,
+            image=image,
+            sts_nodeport=ports["oauth_sts"],
+            sts_engine=eff_sts_engine,
+            keycloak_image=keycloak_image,
+            require_pinned_anchors=require_pinned_anchors,
+        )
+    )
     docs.extend(
         _domain_control_plane_docs(
             spec=spec,
             image=image,
-            peer_ca_urls=peer_ca,
-            peer_dir_urls=peer_dir,
-            peer_rev_urls=peer_rev,
-            audit_url=audit_https_url,
-            dir_fed_nodeport=32491,
-            rev_fed_nodeport=32492,
+            ca_fed_nodeport=ports["ca_federation"],
+            dir_fed_nodeport=ports["directory_federation"],
+            rev_fed_nodeport=ports["revocation_federation"],
             svid_ttl_seconds=svid_ttl_seconds,
             require_pinned_anchors=require_pinned_anchors,
+            sts_enabled=sts_enabled,
         )
     )
     docs.extend(
@@ -1697,12 +2262,9 @@ def render_role_k8s_manifests(
             image=image,
             app_role="app-converger",
             local_ca_url=local_ca,
-            peer_ca_urls=peer_ca,
             dir_url=local_dir,
             rev_url=local_rev,
-            audit_url=audit_https_url,
-            public_origin="https://settlement-converger.org-payment.io:32441",
-            node_port=32441,
+            node_port=ports["settlement-converger"],
             svid_ttl_seconds=svid_ttl_seconds,
             require_pinned_anchors=require_pinned_anchors,
             llm_url=llm_url,
@@ -1711,7 +2273,8 @@ def render_role_k8s_manifests(
             agent_priority=10,
             agent_display_name="Settlement Converger C",
             enable_fault_injection=True,
-            payment_mcp_url=payment_mcp_https,
+            delegation_mode=delegation_mode,
+            local_sts_url=local_sts,
         )
     )
     docs.extend(
@@ -1722,15 +2285,18 @@ def render_role_k8s_manifests(
             image=image,
             app_role="app-travel-mcp",
             local_ca_url=local_ca,
-            peer_ca_urls=peer_ca,
             dir_url=local_dir,
             rev_url=local_rev,
-            audit_url=audit_https_url,
-            public_origin="https://travel-ops-mcp.org-payment.io:32442",
-            node_port=32442,
+            node_port=ports["travel-ops-mcp"],
             svid_ttl_seconds=svid_ttl_seconds,
             require_pinned_anchors=require_pinned_anchors,
             is_tool_server=True,
+            agent_skills="mcp.travel-ops",
+            supported_tools="book_flight,book_hotel,query_flight,query_hotel",
+            agent_priority=10,
+            agent_display_name="Travel Ops MCP Server",
+            delegation_mode=delegation_mode,
+            local_sts_url=local_sts,
         )
     )
     docs.extend(
@@ -1741,27 +2307,24 @@ def render_role_k8s_manifests(
             image=image,
             app_role="app-payment-mcp",
             local_ca_url=local_ca,
-            peer_ca_urls=peer_ca,
             dir_url=local_dir,
             rev_url=local_rev,
-            audit_url=audit_https_url,
-            public_origin="https://payment-vault-mcp.org-payment.io:32443",
-            node_port=32443,
+            node_port=ports["payment-vault-mcp"],
             svid_ttl_seconds=svid_ttl_seconds,
             require_pinned_anchors=require_pinned_anchors,
             is_tool_server=True,
+            agent_skills="mcp.payment-vault",
+            supported_tools="execute_settlement,audit_ledger",
+            agent_priority=10,
+            agent_display_name="Payment Vault MCP Server",
+            delegation_mode=delegation_mode,
+            local_sts_url=local_sts,
         )
     )
     return yaml.safe_dump_all(docs, sort_keys=False)
 
 
-def _apply_coredns_in_cluster(
-    kube_context: str,
-    alpha_ip: str,
-    beta_ip: str,
-    pay_ip: str,
-    audit_ip: Optional[str] = None,
-) -> None:
+def _sanitize_coredns_in_cluster(kube_context: str) -> None:
     raw = subprocess.check_output(
         [
             "kubectl",
@@ -1778,18 +2341,15 @@ def _apply_coredns_in_cluster(
         text=True,
     )
     cm = json.loads(raw)
-    updated_corefile = patch_coredns_corefile(
-        cm["data"]["Corefile"],
-        alpha_ip=alpha_ip,
-        beta_ip=beta_ip,
-        pay_ip=pay_ip,
-        audit_ip=audit_ip,
-    )
+    orig_cf = cm["data"]["Corefile"]
+    cleaned_cf = sanitize_coredns_corefile(orig_cf)
+    if cleaned_cf == orig_cf:
+        return
     patched = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {"name": "coredns", "namespace": "kube-system"},
-        "data": {"Corefile": updated_corefile},
+        "data": {"Corefile": cleaned_cf},
     }
     subprocess.run(
         ["kubectl", "--context", kube_context, "apply", "-f", "-"],
@@ -1873,7 +2433,6 @@ def _ensure_in_memory_ca_secret(role: str, regenerate: bool = False) -> str:
             existing_anchor = ann.get("lct.io/trust-anchor")
             if existing_anchor:
                 return format_domain_trust_anchor_line(spec.trust_domain, existing_anchor)
-            # Recompute public anchor in memory from existing Secret
             b64_data = existing_obj.get("data") or {}
             root_pem = base64.b64decode(b64_data["x509_root_cert.pem"]).decode("utf-8")
             if role == "audit":
@@ -1905,6 +2464,125 @@ def _ensure_in_memory_ca_secret(role: str, regenerate: bool = False) -> str:
     return anchor_line
 
 
+def _read_existing_oauth_creds_from_cluster(role: str) -> Optional[Dict[str, Any]]:
+    spec = ROLE_SPECS[role]
+    probe = subprocess.run(
+        [
+            "kubectl",
+            "--context",
+            spec.kube_context,
+            "-n",
+            spec.namespace,
+            "get",
+            "secret",
+            "lct-oauth-credentials",
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        return None
+    try:
+        sec_obj = json.loads(probe.stdout)
+        raw_b64 = (sec_obj.get("data") or {}).get("credentials.json")
+        if not raw_b64:
+            return None
+        return json.loads(base64.b64decode(raw_b64).decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _ensure_in_memory_oauth_secret(
+    role: str,
+    sts_engine: str = "lightweight",
+    regenerate: bool = False,
+    import_creds_json: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create or reuse in-memory OAuth 2.0 / Keycloak realm K8s Secrets (never written to host disk)."""
+    if role == "audit":
+        return {"role": role, "oauth_secret": "skipped_for_audit"}
+    spec = ROLE_SPECS[role]
+    eng = (sts_engine or "lightweight").strip().lower()
+    if eng == "none":
+        return {"role": role, "oauth_secret": "disabled"}
+
+    existing_creds = None if regenerate else _read_existing_oauth_creds_from_cluster(role)
+    seed_creds: Optional[Dict[str, Any]] = None
+    if import_creds_json:
+        seed_creds = json.loads(import_creds_json)
+    elif existing_creds is not None:
+        seed_creds = existing_creds
+    elif role in ("beta", "pay"):
+        # If `alpha` is co-located on this host (e.g., 4-cluster rehearsal), share client secrets in RAM
+        seed_creds = _read_existing_oauth_creds_from_cluster("alpha")
+
+    need_kc_realm = eng == "keycloak"
+    kc_exists = False
+    if need_kc_realm and not regenerate:
+        p_kc = subprocess.run(
+            [
+                "kubectl",
+                "--context",
+                spec.kube_context,
+                "-n",
+                spec.namespace,
+                "get",
+                "secret",
+                "lct-keycloak-realm",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        kc_exists = p_kc.returncode == 0
+
+    if existing_creds is not None and not import_creds_json and (not need_kc_realm or kc_exists):
+        return {"role": role, "sts_engine": eng, "status": "reused"}
+
+    bundle = generate_keycloak_realm_bundle(
+        realm_name=str((seed_creds or {}).get("realm") or DEFAULT_REALM_NAME),
+        explicit_user_passwords=(seed_creds or {}).get("users"),
+        explicit_client_secrets=(seed_creds or {}).get("clients"),
+    )
+
+    creds_sec = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "lct-oauth-credentials", "namespace": spec.namespace},
+        "type": "Opaque",
+        "stringData": {"credentials.json": bundle.runtime_credentials_json()},
+    }
+    subprocess.run(
+        ["kubectl", "--context", spec.kube_context, "apply", "-f", "-"],
+        input=json.dumps(creds_sec),
+        text=True,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+    if need_kc_realm and (regenerate or not kc_exists or import_creds_json):
+        kc_sec = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": "lct-keycloak-realm", "namespace": spec.namespace},
+            "type": "Opaque",
+            "stringData": {
+                "lct-realm.json": bundle.realm_json(),
+                "admin_username": bundle.admin_username,
+                "admin_password": bundle.admin_password,
+            },
+        }
+        subprocess.run(
+            ["kubectl", "--context", spec.kube_context, "apply", "-f", "-"],
+            input=json.dumps(kc_sec),
+            text=True,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+    return {"role": role, "sts_engine": eng, "status": "applied"}
+
+
 def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="LCT Multi-Host Config & Bootstrap Utility")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1912,40 +2590,45 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     p_roles = sub.add_parser("parse-roles")
     p_roles.add_argument("--roles", required=True)
 
-    p_ip = sub.add_parser("validate-ips")
-    p_ip.add_argument("--alpha-ip", required=True)
-    p_ip.add_argument("--beta-ip", required=True)
-    p_ip.add_argument("--pay-ip", required=True)
-    p_ip.add_argument("--audit-ip", default="")
+    p_alloc = sub.add_parser("allocate-ports")
+    p_alloc.add_argument("--roles", required=True)
+    p_alloc.add_argument("--base-port", type=int, default=None)
+    p_alloc.add_argument("--port-override", action="append", default=[])
+    p_alloc.add_argument("--check-host-free", action="store_true")
 
     p_kind = sub.add_parser("kind-config")
     p_kind.add_argument("--role", required=True)
+    p_kind.add_argument("--ports-json", default="")
 
-    p_ports = sub.add_parser("role-ports")
-    p_ports.add_argument("--roles", required=True)
-
-    p_dns = sub.add_parser("patch-coredns")
+    p_dns = sub.add_parser("sanitize-coredns")
     p_dns.add_argument("--roles", required=True)
-    p_dns.add_argument("--alpha-ip", required=True)
-    p_dns.add_argument("--beta-ip", required=True)
-    p_dns.add_argument("--pay-ip", required=True)
-    p_dns.add_argument("--audit-ip", default="")
 
     p_ca = sub.add_parser("ensure-ca-secret")
     p_ca.add_argument("--role", required=True)
     p_ca.add_argument("--regenerate", action="store_true")
 
+    p_oauth = sub.add_parser("ensure-oauth-secret")
+    p_oauth.add_argument("--role", required=True)
+    p_oauth.add_argument("--sts-engine", default="lightweight")
+    p_oauth.add_argument("--regenerate", action="store_true")
+    p_oauth.add_argument("--oauth-creds-file", default="")
+
     p_man = sub.add_parser("render-manifest")
     p_man.add_argument("--role", required=True)
-    p_man.add_argument("--image", default="lineage-lct:m6")
+    p_man.add_argument("--image", default="lineage-lct:m7")
     p_man.add_argument("--llm-url", default="http://host.docker.internal:11434/v1")
     p_man.add_argument("--llm-model", default="qwen2.5:3b")
     p_man.add_argument("--svid-ttl", type=int, default=1800)
     p_man.add_argument("--no-require-pins", action="store_true")
+    p_man.add_argument("--ports-json", default="")
+    p_man.add_argument("--seed", action="append", default=[])
+    p_man.add_argument("--sts-engine", default="lightweight")
+    p_man.add_argument("--keycloak-image", default=KEYCLOAK_IMAGE)
+    p_man.add_argument("--delegation-mode", default="dual")
     p_man.add_argument(
         "--skip-configmap",
         action="store_true",
-        help="Do not overwrite existing lct-trust-anchors ConfigMap on re-apply",
+        help="Do not overwrite existing ConfigMaps on re-apply",
     )
 
     p_skew = sub.add_parser("check-skew")
@@ -1958,47 +2641,64 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
         print(" ".join(parse_roles_csv(args.roles)))
         return 0
 
-    if args.cmd == "validate-ips":
-        a = validate_ipv4_address(args.alpha_ip, "--alpha-ip")
-        b = validate_ipv4_address(args.beta_ip, "--beta-ip")
-        p = validate_ipv4_address(args.pay_ip, "--pay-ip")
-        aud = (
-            validate_ipv4_address(args.audit_ip, "--audit-ip")
-            if args.audit_ip.strip()
-            else a
-        )
-        print(json.dumps({"alpha_ip": a, "beta_ip": b, "pay_ip": p, "audit_ip": aud}))
+    if args.cmd == "allocate-ports":
+        roles = parse_roles_csv(args.roles)
+        ovr = parse_port_overrides(args.port_override)
+        reserved: Set[int] = set()
+        out_map: Dict[str, Dict[str, int]] = {}
+        for idx, r in enumerate(roles):
+            existing = read_cluster_role_ports(r)
+            if existing is not None:
+                out_map[r] = existing
+                reserved.update(existing.values())
+                continue
+            r_base = (args.base_port + idx * 50) if args.base_port is not None else None
+            r_ports = allocate_role_ports(
+                r,
+                base_port=r_base,
+                port_overrides=ovr,
+                check_host_free=args.check_host_free,
+                reserved_ports=reserved,
+            )
+            out_map[r] = r_ports
+            reserved.update(r_ports.values())
+        print(json.dumps(out_map, sort_keys=True))
         return 0
 
     if args.cmd == "kind-config":
-        sys.stdout.write(render_kind_cluster_config(args.role))
+        rp = json.loads(args.ports_json) if args.ports_json.strip() else None
+        sys.stdout.write(render_kind_cluster_config(args.role, role_ports=rp))
         return 0
 
-    if args.cmd == "role-ports":
-        roles = parse_roles_csv(args.roles)
-        ports: List[int] = []
-        for r in roles:
-            ports.extend(ROLE_SPECS[r].host_ports)
-        print(" ".join(str(p) for p in ports))
-        return 0
-
-    if args.cmd == "patch-coredns":
+    if args.cmd == "sanitize-coredns":
         roles = parse_roles_csv(args.roles)
         for r in roles:
-            _apply_coredns_in_cluster(
-                ROLE_SPECS[r].kube_context,
-                alpha_ip=args.alpha_ip,
-                beta_ip=args.beta_ip,
-                pay_ip=args.pay_ip,
-                audit_ip=args.audit_ip or None,
-            )
+            _sanitize_coredns_in_cluster(ROLE_SPECS[r].kube_context)
         return 0
 
     if args.cmd == "ensure-ca-secret":
         print(_ensure_in_memory_ca_secret(args.role, regenerate=args.regenerate))
         return 0
 
+    if args.cmd == "ensure-oauth-secret":
+        imp_json: Optional[str] = None
+        if args.oauth_creds_file:
+            with open(args.oauth_creds_file, "r", encoding="utf-8") as fh:
+                imp_json = fh.read()
+        res_oauth = _ensure_in_memory_oauth_secret(
+            role=args.role,
+            sts_engine=args.sts_engine,
+            regenerate=args.regenerate,
+            import_creds_json=imp_json,
+        )
+        print(json.dumps(res_oauth))
+        return 0
+
     if args.cmd == "render-manifest":
+        from lineage.common.locators import normalize_seed_endpoint
+
+        rp = json.loads(args.ports_json) if args.ports_json.strip() else read_cluster_role_ports(args.role)
+        seeds = [normalize_seed_endpoint(s) for s in (args.seed or []) if s and s.strip()]
         sys.stdout.write(
             render_role_k8s_manifests(
                 role=args.role,
@@ -2008,6 +2708,11 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
                 svid_ttl_seconds=args.svid_ttl,
                 require_pinned_anchors=(not args.no_require_pins),
                 include_namespace_and_configmap=(not args.skip_configmap),
+                role_ports=rp,
+                initial_seeds=seeds,
+                sts_engine=args.sts_engine,
+                keycloak_image=args.keycloak_image,
+                delegation_mode=args.delegation_mode,
             )
         )
         return 0
@@ -2015,10 +2720,12 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     if args.cmd == "check-skew":
         import httpx
 
-        verify_arg: Any = False if args.url.startswith("https://") else True
+        clean_u = args.url.strip().rstrip("/")
+        if not clean_u.startswith("http://"):
+            clean_u = f"http://{clean_u}"
         try:
-            with httpx.Client(verify=verify_arg, timeout=args.timeout, trust_env=False) as cli:
-                r = cli.get(f"{args.url.rstrip('/')}/healthz")
+            with httpx.Client(verify=True, timeout=args.timeout, trust_env=False) as cli:
+                r = cli.get(f"{clean_u}/healthz")
         except Exception as exc:
             print(json.dumps({"status": "UNREACHABLE", "ok": True, "detail": str(exc)}))
             return 3

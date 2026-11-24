@@ -9,7 +9,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass
-from typing import Any, Callable, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import httpx
 
@@ -381,6 +381,7 @@ class AuditCollectorService:
         ssl_context: Optional[ssl.SSLContext] = None,
         ssl_context_provider: Optional[Callable[[], ssl.SSLContext]] = None,
         public_bundle_provider: Optional[Callable[[], Dict[str, Any]]] = None,
+        descriptors_provider: Optional[Callable[[], Dict[str, Any]]] = None,
         readiness_check: Optional[Callable[[], Tuple[bool, Dict[str, Any]]]] = None,
         max_ingest_age_seconds: float = 3600.0,
         max_future_skew_seconds: float = 30.0,
@@ -399,6 +400,7 @@ class AuditCollectorService:
         self.trust_resolver = trust_resolver
         self._authorized_auditors: FrozenSet[str] = frozenset(str(s) for s in authorized_auditors if s)
         self._public_bundle_provider = public_bundle_provider
+        self._descriptors_provider = descriptors_provider
         self._readiness_check = readiness_check
         self.max_ingest_age_seconds = float(max_ingest_age_seconds)
         self.max_future_skew_seconds = float(max_future_skew_seconds)
@@ -645,6 +647,11 @@ class AuditCollectorService:
                 return 404, {"error": "bundle_not_configured"}, {}
             return 200, self._public_bundle_provider(), {}
 
+        if req.method == "GET" and req.path == "/v1/federation/descriptors":
+            if self._descriptors_provider is None:
+                return 200, {"trust_domain": "org-audit.io", "descriptors": []}, {}
+            return 200, self._descriptors_provider(), {}
+
         if req.method == "POST" and req.path == "/v1/audit/append":
             body = req.json()
             entry_raw = body.get("entry", body)
@@ -681,42 +688,92 @@ class AuditCollectorClient:
 
     def __init__(
         self,
-        collector_url: str,
+        collector_url: str = "",
         timeout: float = 3.0,
         signer: Optional[WorkloadIdentity | TrustDomainCA] = None,
         ssl_context: Optional[ssl.SSLContext] = None,
         ssl_context_provider: Optional[Callable[[], Optional[ssl.SSLContext]]] = None,
+        locator_provider: Optional[Callable[[], Sequence[Any]]] = None,
+        ssl_context_for_locator: Optional[Callable[[Any], Optional[ssl.SSLContext]]] = None,
     ) -> None:
-        self.collector_url = collector_url.rstrip("/")
+        self.collector_url = (collector_url or "").strip().rstrip("/")
         self.timeout = timeout
         self.signer = signer
         self.ssl_context = ssl_context
         self.ssl_context_provider = ssl_context_provider
+        self.locator_provider = locator_provider
+        self.ssl_context_for_locator = ssl_context_for_locator
 
-    def verify_kwarg(self) -> Any:
+    def verify_kwarg(self, target_url: Optional[str] = None, locator: Any = None) -> Any:
+        if locator is not None and self.ssl_context_for_locator is not None:
+            ctx_loc = self.ssl_context_for_locator(locator)
+            if ctx_loc is not None:
+                return ctx_loc
+            raise RuntimeError(
+                f"TLS trust anchor / SPIFFE pin for audit locator {getattr(locator, 'origin_url', locator)!r} is not yet verified"
+            )
         if self.ssl_context_provider is not None:
             ctx = self.ssl_context_provider()
             if ctx is not None:
                 return ctx
-            if self.collector_url.startswith("https://"):
+            eff_url = target_url if target_url is not None else self.collector_url
+            if eff_url.startswith("https://"):
                 raise RuntimeError(
-                    f"TLS trust anchor for audit collector {self.collector_url!r} is not yet verified"
+                    f"TLS trust anchor for audit collector {eff_url!r} is not yet verified"
                 )
         if self.ssl_context is not None:
             return self.ssl_context
         return True
 
+    def _candidate_targets(self) -> List[Tuple[str, Any]]:
+        targets: List[Tuple[str, Any]] = []
+        if self.locator_provider is not None:
+            for loc in self.locator_provider() or ():
+                orig = str(getattr(loc, "origin_url", "")).rstrip("/")
+                if orig:
+                    targets.append((orig, loc))
+        if self.collector_url and all(u != self.collector_url for u, _ in targets):
+            targets.append((self.collector_url, None))
+        if not targets:
+            raise RuntimeError(
+                "No verified audit-collector locator or URL is currently available"
+            )
+        return targets
+
     def healthz(self) -> httpx.Response:
-        with httpx.Client(verify=self.verify_kwarg(), timeout=self.timeout) as client:
-            return client.get(f"{self.collector_url}/healthz")
+        last_exc: Optional[Exception] = None
+        for base_url, loc in self._candidate_targets():
+            try:
+                with httpx.Client(
+                    verify=self.verify_kwarg(base_url, loc),
+                    timeout=self.timeout,
+                    trust_env=False,
+                ) as client:
+                    return client.get(f"{base_url}/healthz")
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
 
     def ship(self, entry: AuditEntry) -> None:
-        with httpx.Client(verify=self.verify_kwarg(), timeout=self.timeout) as client:
-            resp = client.post(
-                f"{self.collector_url}/v1/audit/append",
-                json={"entry": entry.to_dict()},
-            )
-        resp.raise_for_status()
+        last_exc: Optional[Exception] = None
+        for base_url, loc in self._candidate_targets():
+            try:
+                with httpx.Client(
+                    verify=self.verify_kwarg(base_url, loc),
+                    timeout=self.timeout,
+                    trust_env=False,
+                ) as client:
+                    resp = client.post(
+                        f"{base_url}/v1/audit/append",
+                        json={"entry": entry.to_dict()},
+                    )
+                resp.raise_for_status()
+                return
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
 
     def fetch_entries(
         self,
@@ -724,38 +781,50 @@ class AuditCollectorClient:
         signer: Optional[WorkloadIdentity | TrustDomainCA] = None,
     ) -> List[AuditEntry]:
         params = {"task_id": task_id} if task_id else None
-        headers: Dict[str, str] = {}
         active_signer = signer or self.signer
-        if active_signer is not None:
-            query_claims = {
-                "jti": f"audq-{uuid.uuid4().hex}",
-                "iat": time.time(),
-                "task_id": task_id or "",
-            }
-            if isinstance(active_signer, TrustDomainCA):
-                q_jws = jws_sign_compact(
-                    payload=query_claims,
-                    keypair=active_signer.active_keypair,
-                    typ="lct-audit-query+jwt",
-                )
-                headers["X-LCT-Audit-Mode"] = "domain_authority"
-                headers["X-LCT-Audit-Domain"] = active_signer.trust_domain
-                headers["X-LCT-Audit-Auth"] = q_jws
-            else:
-                q_jws = jws_sign_compact(
-                    payload=query_claims,
-                    keypair=active_signer.keypair,
-                    typ="lct-audit-query+jwt",
-                )
-                headers["X-LCT-Audit-Mode"] = "workload"
-                headers["X-LCT-Audit-SVID"] = active_signer.workload_svid
-                headers["X-LCT-Audit-Auth"] = q_jws
+        last_exc: Optional[Exception] = None
+        for base_url, loc in self._candidate_targets():
+            headers: Dict[str, str] = {}
+            if active_signer is not None:
+                # Mint fresh jti per candidate attempt so locator failover never trips anti-replay!
+                query_claims = {
+                    "jti": f"audq-{uuid.uuid4().hex}",
+                    "iat": time.time(),
+                    "task_id": task_id or "",
+                }
+                if isinstance(active_signer, TrustDomainCA):
+                    q_jws = jws_sign_compact(
+                        payload=query_claims,
+                        keypair=active_signer.active_keypair,
+                        typ="lct-audit-query+jwt",
+                    )
+                    headers["X-LCT-Audit-Mode"] = "domain_authority"
+                    headers["X-LCT-Audit-Domain"] = active_signer.trust_domain
+                    headers["X-LCT-Audit-Auth"] = q_jws
+                else:
+                    q_jws = jws_sign_compact(
+                        payload=query_claims,
+                        keypair=active_signer.keypair,
+                        typ="lct-audit-query+jwt",
+                    )
+                    headers["X-LCT-Audit-Mode"] = "workload"
+                    headers["X-LCT-Audit-SVID"] = active_signer.workload_svid
+                    headers["X-LCT-Audit-Auth"] = q_jws
 
-        with httpx.Client(verify=self.verify_kwarg(), timeout=self.timeout) as client:
-            resp = client.get(
-                f"{self.collector_url}/v1/audit/entries",
-                params=params,
-                headers=headers,
-            )
-        resp.raise_for_status()
-        return [AuditEntry.from_dict(e) for e in resp.json().get("entries", [])]
+            try:
+                with httpx.Client(
+                    verify=self.verify_kwarg(base_url, loc),
+                    timeout=self.timeout,
+                    trust_env=False,
+                ) as client:
+                    resp = client.get(
+                        f"{base_url}/v1/audit/entries",
+                        params=params,
+                        headers=headers,
+                    )
+                resp.raise_for_status()
+                return [AuditEntry.from_dict(e) for e in resp.json().get("entries", [])]
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Unified Multi-Host Operator Entrypoint (`lineage/scripts/multihost.sh`)
+# Unified Identity-Addressed Multi-Host Operator Entrypoint (`lineage/scripts/multihost.sh`)
 #
 # Subcommands:
 #   preflight       -> lineage/multihost/preflight.sh
 #   deploy          -> lineage/multihost/deploy-role.sh
-#   update-peer-ips -> lineage/multihost/deploy-role.sh update-peer-ips
 #   fault           -> lineage/multihost/fault.sh
 #   teardown        -> lineage/multihost/teardown.sh
-#   status|trust|send|cancel|audit|e2e -> lineage/multihost/lct_multihost_cli.py
+#   locator-agent   -> lineage/multihost/locator-agent.py
+#   status|locator|seeds|trust|send|cancel|audit|e2e|update-peer-ips
+#                   -> lineage/multihost/lct_multihost_cli.py
 # =============================================================================
 set -euo pipefail
 
@@ -43,17 +44,21 @@ Usage:
   bash lineage/scripts/multihost.sh <subcommand> [args...]
 
 Subcommands:
-  preflight         Run host port, LLM, peer TCP, and clock-skew preflight checks
-  deploy            Build image, create lctmh-* role cluster(s), and print trust anchors
-  update-peer-ips   Re-patch CoreDNS peer machine IPs without redeploying workloads
-  fault             Inject/heal faults (--kill/--restore hotel-primary, --partition/--heal)
-  teardown          Delete only local lctmh-* clusters
-  status            Inspect per-domain health, resolved machine IPs, and AgentCards
-  trust             Manage SSH-style SHA-256 domain trust anchors (show / add / fetch)
+  preflight         Run host LAN IP, local port, LLM, and seed clock-skew preflight checks
+  deploy            Build image, create lctmh-* role cluster(s), start locator-agent, and print anchors
+  locator           Inspect own + learned signed domain descriptors and workload locators (`locator show`)
+  seeds             Manage untrusted bootstrap seed endpoints (`seeds list|add|remove <ip:port>`)
+  trust             Manage SSH-style SHA-256 domain trust anchors (`show|add|remove|import|fetch`)
+  status            Inspect per-domain health and per-hop identity -> locator resolution
   send              Send real A2A v1.0 message (--text "..." [--stream]) across Alpha->Beta->Pay
   cancel            Invoke A2A CancelTask and verify cross-machine revocation propagation
   audit             Fetch and reconstruct cryptographic CausalChainAuditor report
+  fault             Inject/heal faults (--kill/--restore hotel-primary, --partition/--heal)
   e2e               Run scenarios 1, 2A, 2B, 3A, 3B, 4, 5, 6 (auto-fault local or operator prompt)
+  compare           Run 6-dimension empirical comparison (oauth_centralized vs oauth_federated vs lct)
+  oauth             Export/import OAuth 2.0 client credentials across machines (`export-creds`, `import-creds`)
+  locator-agent     Manage host-side self-locating daemon directly (`--detect-only`, `--set-role-ip`, `--stop`)
+  teardown          Delete local lctmh-* clusters and stop locator-agent
 EOF
   exit 0
 fi
@@ -68,16 +73,17 @@ case "${SUB}" in
   deploy)
     exec bash "${MH_DIR}/deploy-role.sh" "$@"
     ;;
-  update-peer-ips)
-    exec bash "${MH_DIR}/deploy-role.sh" update-peer-ips "$@"
-    ;;
   fault)
     exec bash "${MH_DIR}/fault.sh" "$@"
     ;;
   teardown)
     exec bash "${MH_DIR}/teardown.sh" "$@"
     ;;
-  status|trust|send|cancel|audit|e2e)
+  locator-agent)
+    PY_BIN="$(resolve_python)"
+    exec "${PY_BIN}" "${MH_DIR}/locator-agent.py" "$@"
+    ;;
+  status|locator|seeds|trust|send|cancel|audit|e2e|compare|oauth|update-peer-ips)
     PY_BIN="$(resolve_python)"
     exec "${PY_BIN}" "${MH_DIR}/lct_multihost_cli.py" "${SUB}" "$@"
     ;;

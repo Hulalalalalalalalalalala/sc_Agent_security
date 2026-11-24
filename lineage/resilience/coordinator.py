@@ -139,29 +139,19 @@ class ResilientDelegationCoordinator:
             except ValueError as exc:
                 raise ResilienceError(f"Invalid delegation task_path {task_path!r}: {exc}") from exc
             clean_tp = tp_path + (f"?{tp_query}" if tp_query else "")
-            cand_base = validate_clean_endpoint_url(candidate.endpoint, "candidate.endpoint")
-            target_url = f"{cand_base.rstrip('/')}{clean_tp}"
-            sp_b = urlsplit(cand_base)
-            sp_t = urlsplit(target_url)
-            if (sp_t.scheme, sp_t.hostname, sp_t.port) != (
-                sp_b.scheme,
-                sp_b.hostname,
-                sp_b.port,
-            ):
-                raise ResilienceError(f"Target URL origin mismatch: {target_url!r}")
-            dpop = create_dpop_proof(
-                signer=self.identity,
-                htm="POST",
-                htu=target_url,
-                access_token=compact_tok,
-            )
+            cand_origins = [
+                validate_clean_endpoint_url(orig, "candidate.endpoint")
+                for orig in candidate.candidate_origins()
+            ]
+            primary_target_url = f"{cand_origins[0].rstrip('/')}{clean_tp}"
+            sp_primary = urlsplit(primary_target_url)
 
             resolved_cand_ip: Optional[str] = None
             try:
-                if sp_t.hostname:
+                if sp_primary.hostname:
                     infos = socket.getaddrinfo(
-                        sp_t.hostname,
-                        sp_t.port or (443 if sp_t.scheme == "https" else 80),
+                        sp_primary.hostname,
+                        sp_primary.port or (443 if sp_primary.scheme == "https" else 80),
                         socket.AF_INET,
                     )
                     if infos:
@@ -184,7 +174,7 @@ class ResilientDelegationCoordinator:
                     action_detail={
                         "delegate_spiffe_id": candidate.spiffe_id,
                         "skill": required_skill,
-                        "target_url": target_url,
+                        "target_url": primary_target_url,
                         "resolved_peer_ip": resolved_cand_ip,
                     },
                     decision="ALLOW",
@@ -196,61 +186,94 @@ class ResilientDelegationCoordinator:
                     candidate.spiffe_id
                 ) or FailureEvidence(
                     failed_spiffe_id=candidate.spiffe_id,
-                    failed_endpoint=target_url,
+                    failed_endpoint=primary_target_url,
                     fault_type=FaultType.POLICY_BYZANTINE,
                     error_detail="Circuit breaker already open",
                     attempt_count=1,
                     observed_at=time.time(),
                 )
             else:
-                req_hdrs = {
-                    "Authorization": f"DPoP {compact_tok}",
-                    "DPoP": dpop,
-                }
-                if extra_headers:
-                    req_hdrs.update({str(k): str(v) for k, v in extra_headers.items()})
-                try:
-                    with httpx.Client(
-                        verify=self._verify_kwarg(
-                            target_url=target_url,
-                            expected_spiffe_id=candidate.spiffe_id,
-                        ),
-                        timeout=timeout_seconds,
-                        follow_redirects=False,
-                    ) as client:
-                        resp = client.post(
-                            target_url,
-                            json=dict(task_payload),
-                            headers=req_hdrs,
-                        )
-                    if 200 <= resp.status_code < 300:
-                        self.detector.record_success(candidate.spiffe_id)
-                        return resp.json(), child_token, receipts
+                eff_attempt_timeout = (
+                    max(timeout_seconds, 30.0)
+                    if (attempt_idx > 0 and timeout_seconds >= 2.5)
+                    else timeout_seconds
+                )
+                for loc_idx, cand_base in enumerate(cand_origins):
+                    target_url = f"{cand_base.rstrip('/')}{clean_tp}"
+                    sp_b = urlsplit(cand_base)
+                    sp_t = urlsplit(target_url)
+                    if (sp_t.scheme, sp_t.hostname, sp_t.port) != (
+                        sp_b.scheme,
+                        sp_b.hostname,
+                        sp_b.port,
+                    ):
+                        raise ResilienceError(f"Target URL origin mismatch: {target_url!r}")
+                    dpop = create_dpop_proof(
+                        signer=self.identity,
+                        htm="POST",
+                        htu=target_url,
+                        access_token=compact_tok,
+                    )
+                    req_hdrs = {
+                        "Authorization": f"DPoP {compact_tok}",
+                        "DPoP": dpop,
+                    }
+                    if extra_headers:
+                        req_hdrs.update({str(k): str(v) for k, v in extra_headers.items()})
+                    eff_http_to = (
+                        httpx.Timeout(connect=2.5, read=eff_attempt_timeout, write=10.0, pool=5.0)
+                        if loc_idx + 1 < len(cand_origins)
+                        else eff_attempt_timeout
+                    )
+                    try:
+                        with httpx.Client(
+                            verify=self._verify_kwarg(
+                                target_url=target_url,
+                                expected_spiffe_id=candidate.spiffe_id,
+                            ),
+                            timeout=eff_http_to,
+                            follow_redirects=False,
+                            trust_env=False,
+                        ) as client:
+                            resp = client.post(
+                                target_url,
+                                json=dict(task_payload),
+                                headers=req_hdrs,
+                            )
+                        if 200 <= resp.status_code < 300:
+                            self.detector.record_success(candidate.spiffe_id)
+                            return resp.json(), child_token, receipts
 
-                    # Record single genuine HTTP failure against detector (NO artificial while loop!)
-                    evidence = self.detector.classify_http_failure(
-                        spiffe_id=candidate.spiffe_id,
-                        endpoint=target_url,
-                        status_code=resp.status_code,
-                        body_text=resp.text,
-                    )
-                    if evidence is None:
-                        # Single transient 401/403 below `policy_breaker_threshold`:
-                        # prune ONLY this task branch without tripping global quarantine!
-                        evidence = FailureEvidence(
-                            failed_spiffe_id=candidate.spiffe_id,
-                            failed_endpoint=target_url,
-                            fault_type=FaultType.CRASH,
-                            error_detail=f"Transient HTTP {resp.status_code} (below policy breaker threshold): {resp.text[:160]}",
-                            attempt_count=1,
-                            observed_at=time.time(),
+                        # Record single genuine HTTP failure against detector (NO artificial while loop!)
+                        evidence = self.detector.classify_http_failure(
+                            spiffe_id=candidate.spiffe_id,
+                            endpoint=target_url,
+                            status_code=resp.status_code,
+                            body_text=resp.text,
                         )
-                except Exception as exc:
-                    evidence = self.detector.classify_exception(
-                        spiffe_id=candidate.spiffe_id,
-                        endpoint=target_url,
-                        exc=exc,
-                    )
+                        if evidence is None:
+                            evidence = FailureEvidence(
+                                failed_spiffe_id=candidate.spiffe_id,
+                                failed_endpoint=target_url,
+                                fault_type=FaultType.CRASH,
+                                error_detail=f"Transient HTTP {resp.status_code} (below policy breaker threshold): {resp.text[:160]}",
+                                attempt_count=1,
+                                observed_at=time.time(),
+                            )
+                        break
+                    except Exception as exc:
+                        if (
+                            loc_idx + 1 < len(cand_origins)
+                            and isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+                        ):
+                            # Transport unreachable on this locator; try next signed locator of same candidate
+                            continue
+                        evidence = self.detector.classify_exception(
+                            spiffe_id=candidate.spiffe_id,
+                            endpoint=target_url,
+                            exc=exc,
+                        )
+                        break
 
             assert evidence is not None
 
@@ -388,26 +411,27 @@ class ResilientDelegationCoordinator:
         direct_parent_id = direct_hop.issuer_spiffe_id
 
         attested_bases: List[str] = []
+        parent_card = self.directory_client.get_agent(direct_parent_id)
+        if parent_card is not None:
+            for cand_ret in parent_card.candidate_return_origins():
+                try:
+                    clean_ret = validate_clean_endpoint_url(
+                        cand_ret, "parent_card.return_endpoint"
+                    )
+                    if clean_ret not in attested_bases:
+                        attested_bases.append(clean_ret)
+                except TokenError:
+                    pass
+
         if direct_hop.issuer_return_endpoint:
             try:
-                attested_bases.append(
-                    validate_clean_endpoint_url(
-                        direct_hop.issuer_return_endpoint, "issuer_return_endpoint"
-                    )
+                hop_ret = validate_clean_endpoint_url(
+                    direct_hop.issuer_return_endpoint, "issuer_return_endpoint"
                 )
+                if hop_ret not in attested_bases:
+                    attested_bases.append(hop_ret)
             except TokenError as exc:
                 raise ResilienceError(f"Invalid hop issuer_return_endpoint: {exc}") from exc
-
-        parent_card = self.directory_client.get_agent(direct_parent_id)
-        if parent_card and parent_card.return_endpoint:
-            try:
-                card_ret = validate_clean_endpoint_url(
-                    parent_card.return_endpoint, "parent_card.return_endpoint"
-                )
-                if card_ret not in attested_bases:
-                    attested_bases.append(card_ret)
-            except TokenError:
-                pass
 
         if direct_parent_return_url is not None and str(direct_parent_return_url).strip():
             try:
@@ -421,85 +445,89 @@ class ResilientDelegationCoordinator:
                     "Untrusted direct_parent_return_url override blocked: does not match "
                     "cryptographically attested hop or AgentCard return_endpoint"
                 )
-            parent_base: Optional[str] = clean_override
+            parent_bases: List[str] = [clean_override]
         else:
-            parent_base = attested_bases[0] if attested_bases else None
+            parent_bases = list(attested_bases)
 
         compact_tok = child_token.encode_compact()
         skipped_ids: List[str] = []
         primary_evidence: Optional[FailureEvidence] = None
 
-        # 1. Try direct parent first (unless safe local unreachable simulation is requested,
-        # which synthesizes local FailureEvidence WITHOUT sending any token over the network!)
+        # 1. Try direct parent first across all attested locators
         if simulate_direct_parent_unreachable:
             primary_evidence = FailureEvidence(
                 failed_spiffe_id=direct_parent_id,
-                failed_endpoint=parent_base or "simulated://direct-parent-unreachable",
+                failed_endpoint=parent_bases[0] if parent_bases else "simulated://direct-parent-unreachable",
                 fault_type=FaultType.CRASH,
                 error_detail="simulated_direct_parent_unreachable",
                 attempt_count=1,
                 observed_at=time.time(),
             )
-        elif parent_base:
-            base_sp = urlsplit(parent_base)
-            direct_url = f"{parent_base.rstrip('/')}/v1/task-result"
-            dir_sp = urlsplit(direct_url)
-            if (dir_sp.scheme, dir_sp.hostname, dir_sp.port) != (
-                base_sp.scheme,
-                base_sp.hostname,
-                base_sp.port,
-            ):
-                raise ResilienceError(f"Direct return URL origin mismatch: {direct_url!r}")
-            dpop = create_dpop_proof(
-                signer=self.identity,
-                htm="POST",
-                htu=direct_url,
-                access_token=compact_tok,
-            )
-            try:
-                with httpx.Client(
-                    verify=self._verify_kwarg(
-                        target_url=direct_url,
-                        expected_spiffe_id=direct_parent_id,
-                    ),
-                    timeout=timeout_seconds,
-                    follow_redirects=False,
-                ) as client:
-                    resp = client.post(
-                        direct_url,
-                        json={"task_id": child_token.task_id, "result": dict(result_payload)},
-                        headers={
-                            "Authorization": f"DPoP {compact_tok}",
-                            "DPoP": dpop,
-                        },
-                    )
-                if 200 <= resp.status_code < 300:
-                    return {
-                        "delivery_mode": "DIRECT_PARENT",
-                        "delivered_to": direct_parent_id,
-                        "response": resp.json(),
-                    }
-                primary_evidence = self.detector.classify_http_failure(
-                    spiffe_id=direct_parent_id,
-                    endpoint=direct_url,
-                    status_code=resp.status_code,
-                    body_text=resp.text,
+        elif parent_bases:
+            for p_idx, parent_base in enumerate(parent_bases):
+                base_sp = urlsplit(parent_base)
+                direct_url = f"{parent_base.rstrip('/')}/v1/task-result"
+                dir_sp = urlsplit(direct_url)
+                if (dir_sp.scheme, dir_sp.hostname, dir_sp.port) != (
+                    base_sp.scheme,
+                    base_sp.hostname,
+                    base_sp.port,
+                ):
+                    raise ResilienceError(f"Direct return URL origin mismatch: {direct_url!r}")
+                dpop = create_dpop_proof(
+                    signer=self.identity,
+                    htm="POST",
+                    htu=direct_url,
+                    access_token=compact_tok,
                 )
-                if primary_evidence is None:
-                    primary_evidence = FailureEvidence(
-                        failed_spiffe_id=direct_parent_id,
-                        failed_endpoint=direct_url,
-                        fault_type=FaultType.CRASH,
-                        error_detail=f"HTTP {resp.status_code}: {resp.text[:160]}",
-                        attempt_count=1,
-                        observed_at=time.time(),
+                try:
+                    with httpx.Client(
+                        verify=self._verify_kwarg(
+                            target_url=direct_url,
+                            expected_spiffe_id=direct_parent_id,
+                        ),
+                        timeout=timeout_seconds,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        resp = client.post(
+                            direct_url,
+                            json={"task_id": child_token.task_id, "result": dict(result_payload)},
+                            headers={
+                                "Authorization": f"DPoP {compact_tok}",
+                                "DPoP": dpop,
+                            },
+                        )
+                    if 200 <= resp.status_code < 300:
+                        return {
+                            "delivery_mode": "DIRECT_PARENT",
+                            "delivered_to": direct_parent_id,
+                            "response": resp.json(),
+                        }
+                    primary_evidence = self.detector.classify_http_failure(
+                        spiffe_id=direct_parent_id,
+                        endpoint=direct_url,
+                        status_code=resp.status_code,
+                        body_text=resp.text,
                     )
-            except Exception as exc:
-                primary_evidence = self.detector.classify_exception(
-                    spiffe_id=direct_parent_id,
-                    endpoint=direct_url,
-                    exc=exc,
-                )
+                    if primary_evidence is None:
+                        primary_evidence = FailureEvidence(
+                            failed_spiffe_id=direct_parent_id,
+                            failed_endpoint=direct_url,
+                            fault_type=FaultType.CRASH,
+                            error_detail=f"HTTP {resp.status_code}: {resp.text[:160]}",
+                            attempt_count=1,
+                            observed_at=time.time(),
+                        )
+                    break
+                except Exception as exc:
+                    if p_idx + 1 < len(parent_bases):
+                        continue
+                    primary_evidence = self.detector.classify_exception(
+                        spiffe_id=direct_parent_id,
+                        endpoint=direct_url,
+                        exc=exc,
+                    )
         else:
             primary_evidence = FailureEvidence(
                 failed_spiffe_id=direct_parent_id,
@@ -522,22 +550,22 @@ class ResilientDelegationCoordinator:
             )
 
         for anc_spiffe_id in upstream_candidates:
-            anc_endpoint: Optional[str] = None
+            anc_endpoints: List[str] = []
+            anc_card = self.directory_client.get_agent(anc_spiffe_id)
+            if anc_card is not None:
+                for orig in anc_card.candidate_return_origins():
+                    if orig and orig not in anc_endpoints:
+                        anc_endpoints.append(orig)
             if anc_spiffe_id in child_token.root.ancestor_keys:
-                anc_endpoint = child_token.root.ancestor_keys[anc_spiffe_id].get(
-                    "return_endpoint"
-                )
-            if not anc_endpoint:
-                for h in child_token.hops:
-                    if h.issuer_spiffe_id == anc_spiffe_id and h.issuer_return_endpoint:
-                        anc_endpoint = h.issuer_return_endpoint
-                        break
-            if not anc_endpoint:
-                anc_card = self.directory_client.get_agent(anc_spiffe_id)
-                if anc_card:
-                    anc_endpoint = anc_card.return_endpoint
+                ak_ret = child_token.root.ancestor_keys[anc_spiffe_id].get("return_endpoint")
+                if ak_ret and ak_ret not in anc_endpoints:
+                    anc_endpoints.append(str(ak_ret))
+            for h in child_token.hops:
+                if h.issuer_spiffe_id == anc_spiffe_id and h.issuer_return_endpoint:
+                    if h.issuer_return_endpoint not in anc_endpoints:
+                        anc_endpoints.append(h.issuer_return_endpoint)
 
-            if not anc_endpoint:
+            if not anc_endpoints:
                 skipped_ids.append(anc_spiffe_id)
                 continue
 
@@ -548,14 +576,6 @@ class ResilientDelegationCoordinator:
                 target_ancestor_spiffe_id=anc_spiffe_id,
                 failure_evidence=primary_evidence,
                 result_payload=result_payload,
-            )
-
-            skip_url = f"{anc_endpoint.rstrip('/')}/v1/skip-level-return"
-            skip_dpop = create_dpop_proof(
-                signer=self.identity,
-                htm="POST",
-                htu=skip_url,
-                access_token=compact_tok,
             )
 
             if self.audit_emitter is not None:
@@ -578,33 +598,42 @@ class ResilientDelegationCoordinator:
                     receipt_payload=skip_receipt.to_dict(),
                 )
 
-            try:
-                with httpx.Client(
-                    verify=self._verify_kwarg(
-                        target_url=skip_url,
-                        expected_spiffe_id=anc_spiffe_id,
-                    ),
-                    timeout=timeout_seconds,
-                    follow_redirects=False,
-                ) as client:
-                    resp = client.post(
-                        skip_url,
-                        json={"skip_level_receipt": skip_receipt.to_dict()},
-                        headers={
-                            "Authorization": f"DPoP {compact_tok}",
-                            "DPoP": skip_dpop,
-                        },
-                    )
-                if 200 <= resp.status_code < 300:
-                    return {
-                        "delivery_mode": "SKIP_LEVEL_RETURN",
-                        "delivered_to": anc_spiffe_id,
-                        "skipped_ancestors": list(skipped_ids),
-                        "receipt": skip_receipt.to_dict(),
-                        "response": resp.json(),
-                    }
-            except Exception:
-                pass
+            for anc_endpoint in anc_endpoints:
+                skip_url = f"{anc_endpoint.rstrip('/')}/v1/skip-level-return"
+                skip_dpop = create_dpop_proof(
+                    signer=self.identity,
+                    htm="POST",
+                    htu=skip_url,
+                    access_token=compact_tok,
+                )
+                try:
+                    with httpx.Client(
+                        verify=self._verify_kwarg(
+                            target_url=skip_url,
+                            expected_spiffe_id=anc_spiffe_id,
+                        ),
+                        timeout=timeout_seconds,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        resp = client.post(
+                            skip_url,
+                            json={"skip_level_receipt": skip_receipt.to_dict()},
+                            headers={
+                                "Authorization": f"DPoP {compact_tok}",
+                                "DPoP": skip_dpop,
+                            },
+                        )
+                    if 200 <= resp.status_code < 300:
+                        return {
+                            "delivery_mode": "SKIP_LEVEL_RETURN",
+                            "delivered_to": anc_spiffe_id,
+                            "skipped_ancestors": list(skipped_ids),
+                            "receipt": skip_receipt.to_dict(),
+                            "response": resp.json(),
+                        }
+                except Exception:
+                    continue
 
             skipped_ids.append(anc_spiffe_id)
 
@@ -631,6 +660,19 @@ def _resolve_trusted_skipped_endpoints(
         if clean not in urls:
             urls.append(clean)
 
+    if directory_client is not None:
+        try:
+            card = directory_client.get_agent(skipped_spiffe_id)
+            if card is not None:
+                for orig in card.candidate_origins():
+                    _add_clean(orig, "AgentCard.locator")
+                for ret_orig in card.candidate_return_origins():
+                    _add_clean(ret_orig, "AgentCard.return_locator")
+        except ResilienceError:
+            raise
+        except Exception:
+            pass
+
     anc_info = token.root.ancestor_keys.get(skipped_spiffe_id)
     if isinstance(anc_info, Mapping) and anc_info.get("return_endpoint"):
         _add_clean(str(anc_info["return_endpoint"]), "ancestor_keys.return_endpoint")
@@ -638,17 +680,6 @@ def _resolve_trusted_skipped_endpoints(
     for hop in token.hops:
         if hop.issuer_spiffe_id == skipped_spiffe_id and hop.issuer_return_endpoint:
             _add_clean(hop.issuer_return_endpoint, "hop.issuer_return_endpoint")
-
-    if directory_client is not None:
-        try:
-            card = directory_client.get_agent(skipped_spiffe_id)
-            if card is not None:
-                _add_clean(card.endpoint, "AgentCard.endpoint")
-                _add_clean(card.return_endpoint, "AgentCard.return_endpoint")
-        except ResilienceError:
-            raise
-        except Exception:
-            pass
     return urls
 
 
@@ -760,6 +791,7 @@ def verify_and_accept_skip_level_request(
                     verify=probe_verify,
                     timeout=liveness_probe_timeout,
                     follow_redirects=False,
+                    trust_env=False,
                 ) as client:
                     probe_resp = client.get(probe_url)
                 if 200 <= probe_resp.status_code < 300:

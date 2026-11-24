@@ -47,6 +47,19 @@ class MTLSError(Exception):
     """Raised on X.509-SVID issuance, domain pinning, or mTLS verification failure."""
 
 
+def _is_ip_literal(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    cleaned = host.strip().strip("[]")
+    if not cleaned:
+        return False
+    try:
+        ipaddress.ip_address(cleaned)
+        return True
+    except ValueError:
+        return False
+
+
 def _extract_spiffe_uris_from_cert(cert: x509.Certificate) -> List[str]:
     try:
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
@@ -348,7 +361,7 @@ class X509FederationTrustStore:
         self._domain_pems: Dict[str, str] = {}
         self._domain_dns_subtrees: Dict[str, Tuple[str, ...]] = {}
         self._version: int = 0
-        self._server_verify_ctx_cache: Dict[Tuple[str, bool, int], ssl.SSLContext] = {}
+        self._server_verify_ctx_cache: Dict[Tuple[str, bool, Optional[str], int], ssl.SSLContext] = {}
 
     @property
     def version(self) -> int:
@@ -477,15 +490,30 @@ class X509FederationTrustStore:
                 self._server_verify_ctx_cache.clear()
 
     def build_server_verify_ssl_context(
-        self, expected_trust_domain: str, check_hostname: bool = True
+        self,
+        expected_trust_domain: str,
+        check_hostname: bool = True,
+        expected_spiffe_id: Optional[str] = None,
     ) -> ssl.SSLContext:
         """Build a TLS 1.3 client `SSLContext` authenticating server cert against `expected_trust_domain`
         (without presenting a client cert — used for keyless TLS 1.3 `audit-collector` transport).
         """
         norm_td = expected_trust_domain.strip().lower()
+        norm_spiffe: Optional[str] = None
+        if expected_spiffe_id:
+            parsed_sp = SpiffeId.parse(expected_spiffe_id)
+            if parsed_sp.trust_domain != norm_td:
+                raise MTLSError(
+                    f"expected_spiffe_id {parsed_sp.uri!r} mismatches expected_trust_domain {norm_td!r}"
+                )
+            norm_spiffe = parsed_sp.uri
+        if not check_hostname and not norm_spiffe:
+            raise MTLSError(
+                "TLS check_hostname=False is strictly forbidden without explicit expected_spiffe_id pinning"
+            )
         with self._lock:
             ver = self._version
-            cache_key = (norm_td, bool(check_hostname), ver)
+            cache_key = (norm_td, bool(check_hostname), norm_spiffe, ver)
             cached = self._server_verify_ctx_cache.get(cache_key)
             if cached is not None:
                 return cached
@@ -503,6 +531,7 @@ class X509FederationTrustStore:
             self,
             required_eku=ExtendedKeyUsageOID.SERVER_AUTH,
             pinned_trust_domain=norm_td,
+            pinned_spiffe_id=norm_spiffe,
             is_client=True,
         )
         with self._lock:
@@ -736,6 +765,40 @@ def _attach_peer_verification_hooks(
     ctx.sslsocket_class = _VerifiedSSLSocket
     ctx.sslobject_class = _VerifiedSSLObject
 
+    if is_client:
+        orig_wrap_socket = ctx.wrap_socket
+        orig_wrap_bio = ctx.wrap_bio
+
+        def _wrap_socket_no_ip_sni(sock: object, *args: object, **kwargs: object) -> object:
+            sh = kwargs.get("server_hostname")
+            if isinstance(sh, str) and _is_ip_literal(sh) and not ctx.check_hostname:
+                kwargs = dict(kwargs)
+                kwargs["server_hostname"] = None
+            return orig_wrap_socket(sock, *args, **kwargs)  # type: ignore[arg-type]
+
+        def _wrap_bio_no_ip_sni(
+            incoming: object,
+            outgoing: object,
+            server_side: bool = False,
+            server_hostname: Optional[str] = None,
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            eff_sh = server_hostname
+            if isinstance(eff_sh, str) and _is_ip_literal(eff_sh) and not ctx.check_hostname:
+                eff_sh = None
+            return orig_wrap_bio(
+                incoming,  # type: ignore[arg-type]
+                outgoing,  # type: ignore[arg-type]
+                server_side=server_side,
+                server_hostname=eff_sh,
+                *args,
+                **kwargs,
+            )
+
+        ctx.wrap_socket = _wrap_socket_no_ip_sni  # type: ignore[method-assign]
+        ctx.wrap_bio = _wrap_bio_no_ip_sni  # type: ignore[method-assign]
+
 
 @dataclass
 class WorkloadMTLSBundle:
@@ -839,6 +902,10 @@ class WorkloadMTLSBundle:
             norm_spiffe = parsed_sp.uri
             if expected_trust_domain is None:
                 expected_trust_domain = parsed_sp.trust_domain
+        if not check_hostname and not norm_spiffe:
+            raise MTLSError(
+                "TLS check_hostname=False is strictly forbidden without explicit expected_spiffe_id pinning"
+            )
         norm_td = expected_trust_domain.strip().lower() if expected_trust_domain else None
 
         cache_key = (bool(check_hostname), norm_td, norm_spiffe)
@@ -888,12 +955,25 @@ class WorkloadMTLSBundle:
         eff_td = expected_trust_domain
         if eff_td is None and expected_spiffe_id:
             eff_td = SpiffeId.parse(expected_spiffe_id).trust_domain
-        if eff_td is None and target_url:
-            eff_td = self.trust_store.infer_trust_domain_from_hostname(
-                urlsplit(target_url).hostname
-            )
+        target_host = urlsplit(target_url).hostname if target_url else None
+        if eff_td is None and target_host:
+            eff_td = self.trust_store.infer_trust_domain_from_hostname(target_host)
+        eff_check_hostname = bool(check_hostname)
+        if target_host and _is_ip_literal(target_host):
+            if expected_spiffe_id:
+                # Identity-addressed IP locator: disable DNS hostname check, strip IP SNI, and pin strictly to expected_spiffe_id
+                eff_check_hostname = False
+            else:
+                try:
+                    is_lo = ipaddress.ip_address(target_host).is_loopback
+                except ValueError:
+                    is_lo = False
+                if not is_lo:
+                    raise MTLSError(
+                        f"Cross-machine IP-literal TLS target {target_url!r} requires explicit expected_spiffe_id pinning"
+                    )
         return self.build_client_ssl_context(
-            check_hostname=check_hostname,
+            check_hostname=eff_check_hostname,
             expected_trust_domain=eff_td,
             expected_spiffe_id=expected_spiffe_id,
         )

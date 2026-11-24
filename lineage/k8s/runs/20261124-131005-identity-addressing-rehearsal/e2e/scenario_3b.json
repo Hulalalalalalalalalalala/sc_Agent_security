@@ -1,0 +1,35 @@
+{
+  "scenario": "3b_authenticated_skip_level_return_over_mtls_on_real_k8s_pod_kill",
+  "status": "PASS",
+  "task_id": "task-k8s-s3b-20261124-133906",
+  "receipt_id": "skip-f09a81d66e9c4625a571e7ab9b1e012d",
+  "child_spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/settlement-converger",
+  "skipped_ancestors": [
+    "spiffe://org-beta.io/ns/lineage-beta/sa/hotel-specialist-primary"
+  ],
+  "target_ancestor_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/orchestrator-alpha",
+  "result_sha256": "F7t374FA0hxB5Nau5SvdjzGZLIKgLuUjArYzpgD1ujE",
+  "leaf_result_payload": {
+    "leaf_agent": "settlement-converger",
+    "city": "Tokyo",
+    "audit_record": {
+      "audit_receipt_id": "AUD-37595496",
+      "city": "Tokyo",
+      "summary_ref": "TRIPOFFICE-ALICE-TOKYO",
+      "task_id": "task-k8s-s3b-20261124-133906",
+      "sub": "user:alice@org-alpha.io",
+      "lineage_decision": "ALLOW"
+    },
+    "llm_trace": {
+      "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+      "model": "qwen2.5:3b",
+      "completion_id": "chatcmpl-431",
+      "system_fingerprint": "fp_ollama",
+      "prompt_tokens": 47,
+      "completion_tokens": 21,
+      "total_tokens": 68,
+      "latency_ms": 336.79,
+      "raw_content": "{\n  \"audit_tag\": \"TRIPOFFICE-ALICE-TOKYO\"\n}"
+    }
+  }
+}
