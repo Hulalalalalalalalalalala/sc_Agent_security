@@ -39,6 +39,7 @@ from lineage.federation.sync import (
     bootstrap_autonomous_workload,
     parse_domain_url_map,
 )
+from lineage.federation.user_gateway import DomainUserGatewayService
 
 __all__ = [
     "ALLOWED_TRANSPORTS",
@@ -46,6 +47,7 @@ __all__ = [
     "DEFAULT_ALLOWED_LOCATOR_CIDRS",
     "DescriptorVerificationError",
     "DomainDescriptorStore",
+    "DomainUserGatewayService",
     "FederationBundleSyncer",
     "FederationSecurityError",
     "LocatorError",

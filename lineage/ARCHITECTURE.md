@@ -189,3 +189,20 @@ Milestone 9（`lineage/workspace_agents/`、`lineage/audit/distributed.py`、`li
 5. **真实 `qwen2.5:3b` 黄页动态意图路由与 24 节点分布式扩展性基准（`lineage/scale/`）**：
    - `WorkspaceIntentRouter` 实时读取公共黄页可用 `AgentCard` 技能目录并调用 `Ollama qwen2.5:3b` 动态规划跨组织协作分支与子预算，同时在代码层强制与父级 `PermissionLattice` 求交钳制，彻底免疫提示词注入提权；
    - `python3 -m lineage.scale.distributed_benchmark --tiers 4,12,24` 在 `4 / 12 / 24` 个真实 HTTP/Sidecar 对等节点（横跨 4 个自治信任域、`1` 个不可信公共黄页、`0` 个中心审计收集器）上实测对比 `oauth_centralized`、`oauth_federated` 与 `lct` 多跳延迟、在线 STS RPC 次数（`N=24` 时 OAuth `19` 次 vs. LCT **`0` 次**）、全域级联撤销收敛时间以及 `DistributedAuditor` 定向 BFS 拉取延迟与 `100.0%` DAG 重构准确率（详见 [`scale/latest_scale_report.md`](./scale/latest_scale_report.md)）。
+
+---
+
+## 9. 十二场景三大行业多主体协作扩展套件（Platform v2.1 — Milestone 10）
+
+Milestone 10（`lineage/federation/user_gateway.py`、`lineage/workspace_agents/peer_apps.py`、`lineage/k8s/workspace_e2e.py`）在 Platform v2 基础上补齐了面向**金融风控（Financial Risk Control）**、**企业法务与采购（Enterprise Legal & Procurement）**、**医疗隐私聚合（Healthcare Federated Data Aggregation）**的全部 12 个多主体交互场景（`S1`–`S12`）：
+
+1. **单域主权 OIDC IdP 边界与对称 `beta-user-gateway` 入口**：
+   - 各信任域严格执行**单域主权 IdP 信任边界**（`alpha-ca` / `e2e-user-gateway` 仅信任 `alpha-sts` 签发的 `@org-alpha.io` 主体 `alice`；`beta-ca` / `beta-user-gateway` 仅信任 `beta-sts` 签发的 `@org-beta.io` 主体 `bob`、`dave`；`payment-ca` 仅信任 `payment-sts` 签发的 `@org-payment.io` 主体 `carol`），`OIDCTokenVerifier` 按 `(issuer -> JWKS)` 严格分桶绑定签名公钥并拦截跨组织 IdP 越权；
+   - `lineage-beta` 部署独立最小权限入口网关 `DomainUserGatewayService`（`ServiceAccount: beta-user-gateway`，通过 `SignedDomainDescriptor.locators["user_gateway"]` 动态签名通告），入站强制校验双向 mTLS 1.3 客户端证书、`authorized_caller_spiffe_ids` 白名单、本机 `sender_jkt` 绑定与 `@org-beta.io` 主权 OIDC 令牌，严格维持任何 `assistant-*` 绝不进入 `AUTHORIZED_GATEWAY_SA` 的最小权限边界。
+2. **对称三域 `CONSENT_ISSUER_POLICY`、职责分离（SoD）与签名合规证明（`lct-compliance-attestation+jwt`）**：
+   - `alpha`、`beta`、`pay` 三域对称配置 `CONSENT_ISSUER_POLICY` 与 `OWNER_PROTECTED_TOOLS`，`_consent_wallet` 按 `(sub, key, task_id)` 严格隔离且仅资源拥有者可调用同意吊销，支持双向 Ping-Pong 联合变更（`S2` `commit_joint_change` 及任一主体单方撤回同意即 `403 LINEAGE_REVOKED` 联动熔断）、多轮法务红线转委托与离线 `PermissionLattice` 必填约束参数校验（`S3` `commit_negotiated_contract`）；
+   - `S5` 发布审批要求 `[user:alice@org-alpha.io, user:carol@org-payment.io]` 异域职责分离 `CoAuthorizedToken` **同时**附带精确白名单扫描器 `spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave` 工作负载 SVID 签名的 `lct-compliance-attestation+jwt`（绑定 `task_id`、`release_id`、`artifact_sha256`、`scan_passed=True` 与 `JTIReplayCache` 防重放），阻断单人自批、伪造跨同名 SA 扫描器身份与跨版本重放。
+3. **医疗差分隐私签名摘要聚合（`lct-cohort-digest+jwt`）、4 跳间接提示词注入精准熔断与对称异域首跳审计（`S6`–`S8`）**：
+   - `S6` 仅放行各机构工作负载 SVID 签名的带噪差分隐私摘要 `lct-cohort-digest+jwt`（`cohort_aggregate_stats`）汇聚至 `federated_cohort_aggregate`（强制验签 `>= 2` 个不同机构 SPIFFE ID 及双阶段 `JTIReplayCache` 防重放），在权限格、保护资源集与 CA 同意签发策略三层彻底封禁 `export_raw_patient_records`，并由 `task_id` 绑定阻断跨研究项目重放；
+   - `S7` 在 4 跳审计链遭遇恶意文档间接提示词注入时，先拦截未授权高危动作，再由上游对第 2 跳子树执行级联吊销，使攻击者在吊销前预先签出缓存的第 3 跳子令牌立即失效（`403 LINEAGE_REVOKED`）；
+   - `S8` 从 `org-beta`（Bob）对称发起跨三域任务，实测拦截被盗令牌跨身份重放（`403` DPoP `cnf.jkt` 失配 + mTLS 通道绑定拦截）与共享金库跨租户读取，并由 `org-beta` 视角启动 `DistributedAuditor` 完成 `100%` 因果图重构。

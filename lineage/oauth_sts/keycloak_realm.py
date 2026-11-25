@@ -24,6 +24,7 @@ DEFAULT_REALM_NAME: str = "lct"
 
 STANDARD_OAUTH_CLIENT_IDS: Tuple[str, ...] = (
     "lct-gateway",
+    "beta-user-gateway",
     "orchestrator-alpha",
     "flight-specialist",
     "hotel-specialist-primary",
@@ -42,6 +43,7 @@ STANDARD_OAUTH_CLIENT_IDS: Tuple[str, ...] = (
 
 SPIFFE_SUFFIX_TO_CLIENT_ID: Dict[str, str] = {
     "/sa/e2e-user-gateway": "lct-gateway",
+    "/sa/beta-user-gateway": "beta-user-gateway",
     "/sa/orchestrator-alpha": "orchestrator-alpha",
     "/sa/flight-specialist": "flight-specialist",
     "/sa/hotel-specialist-primary": "hotel-specialist-primary",
@@ -56,6 +58,13 @@ SPIFFE_SUFFIX_TO_CLIENT_ID: Dict[str, str] = {
     "/sa/assistant-carol": "assistant-carol",
     "/sa/assistant-carol-standby": "assistant-carol-standby",
     "/sa/assistant-vault": "assistant-vault",
+}
+
+DEFAULT_USER_HOME_DOMAINS: Dict[str, str] = {
+    "alice": "org-alpha.io",
+    "bob": "org-beta.io",
+    "dave": "org-beta.io",
+    "carol": "org-payment.io",
 }
 
 DEFAULT_FLAT_OAUTH_SCOPES: Tuple[str, ...] = ("travel:book", "travel:pay")
@@ -114,11 +123,12 @@ def _audience_mapper(target_client_id: str) -> Dict[str, Any]:
 
 def generate_keycloak_realm_bundle(
     realm_name: str = DEFAULT_REALM_NAME,
-    users: Iterable[str] = ("alice", "bob", "carol"),
+    users: Iterable[str] = ("alice", "bob", "dave", "carol"),
     client_ids: Iterable[str] = STANDARD_OAUTH_CLIENT_IDS,
     explicit_user_passwords: Optional[Mapping[str, str]] = None,
     explicit_client_secrets: Optional[Mapping[str, str]] = None,
     access_token_lifespan_sec: int = 900,
+    realm_trust_domain: Optional[str] = None,
 ) -> GeneratedRealmBundle:
     """Build a valid Keycloak 26.5.2 realm import payload with fresh random secrets."""
     c_ids = list(dict.fromkeys(str(c).strip() for c in client_ids if str(c).strip()))
@@ -162,6 +172,20 @@ def generate_keycloak_realm_bundle(
             "userinfo.token.claim": "true",
         },
     }
+    lct_sub_mapper: Dict[str, Any] = {
+        "name": "lct-sub-attribute-mapper",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-usermodel-attribute-mapper",
+        "consentRequired": False,
+        "config": {
+            "user.attribute": "lct_sub",
+            "claim.name": "lct_sub",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+        },
+    }
 
     client_scopes: List[Dict[str, Any]] = [
         {
@@ -178,7 +202,7 @@ def generate_keycloak_realm_bundle(
 
     kc_clients: List[Dict[str, Any]] = []
     for cid in c_ids:
-        mappers = [sub_mapper, username_mapper] + [
+        mappers = [sub_mapper, username_mapper, lct_sub_mapper] + [
             _audience_mapper(other) for other in c_ids
         ]
         kc_clients.append(
@@ -204,24 +228,32 @@ def generate_keycloak_realm_bundle(
             }
         )
 
-    kc_users: List[Dict[str, Any]] = [
-        {
-            "username": uname,
-            "enabled": True,
-            "emailVerified": True,
-            "firstName": uname.capitalize(),
-            "lastName": "User",
-            "email": f"{uname}@org-alpha.io",
-            "credentials": [
-                {
-                    "type": "password",
-                    "value": user_pw_map[uname],
-                    "temporary": False,
-                }
-            ],
-        }
-        for uname in u_names
-    ]
+    kc_users: List[Dict[str, Any]] = []
+    clean_realm_td = realm_trust_domain.strip().lower() if realm_trust_domain else None
+    for uname in u_names:
+        home_td = DEFAULT_USER_HOME_DOMAINS.get(uname, clean_realm_td or "org-alpha.io")
+        if clean_realm_td and home_td != clean_realm_td:
+            continue
+        kc_users.append(
+            {
+                "username": uname,
+                "enabled": True,
+                "emailVerified": True,
+                "firstName": uname.capitalize(),
+                "lastName": "User",
+                "email": f"{uname}@{home_td}",
+                "attributes": {
+                    "lct_sub": [f"user:{uname}@{home_td}"],
+                },
+                "credentials": [
+                    {
+                        "type": "password",
+                        "value": user_pw_map[uname],
+                        "temporary": False,
+                    }
+                ],
+            }
+        )
 
     realm_doc: Dict[str, Any] = {
         "realm": realm_name,

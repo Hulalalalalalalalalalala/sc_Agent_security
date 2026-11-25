@@ -96,6 +96,14 @@ class RiskClassifier:
                 "hr_salary_read",
                 "calendar_write",
                 "procure_vendor_quote",
+                "commit_joint_change",
+                "commit_negotiated_contract",
+                "sign_release",
+                "federated_cohort_aggregate",
+                "record_compliance_note",
+                "export_raw_patient_records",
+                "alice_private_roadmap",
+                "pricing_floor_read",
             }
         )
     )
@@ -748,7 +756,8 @@ class LeafVerifier:
                     )
                     dpop_jti = str(dpop_info["jti"])
                 except DPoPError as exc:
-                    return _finish(False, 401, "DENY", "DPOP_FAILED", str(exc), **base_meta)
+                    dpop_st = 403 if "sender key thumbprint mismatch" in str(exc) else 401
+                    return _finish(False, dpop_st, "DENY", "DPOP_FAILED", str(exc), **base_meta)
 
             base_meta["dpop_jti"] = dpop_jti
 
@@ -892,7 +901,8 @@ class LeafVerifier:
                     )
                     dpop_jti = str(dpop_info["jti"])
                 except DPoPError as exc:
-                    return _finish(False, 401, "DENY", "DPOP_FAILED", str(exc), **co_meta)
+                    dpop_st = 403 if "sender key thumbprint mismatch" in str(exc) else 401
+                    return _finish(False, dpop_st, "DENY", "DPOP_FAILED", str(exc), **co_meta)
 
             co_meta["dpop_jti"] = dpop_jti
 
@@ -1062,7 +1072,8 @@ class LeafVerifier:
                 )
                 dpop_jti = str(dpop_info["jti"])
             except DPoPError as exc:
-                return _finish(False, 401, "DENY", "DPOP_FAILED", str(exc), **mp_meta)
+                dpop_st = 403 if "sender key thumbprint mismatch" in str(exc) else 401
+                return _finish(False, dpop_st, "DENY", "DPOP_FAILED", str(exc), **mp_meta)
 
         mp_meta["dpop_jti"] = dpop_jti
 

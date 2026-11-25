@@ -9,6 +9,7 @@ from lineage.oauth_sts.client import (
 from lineage.oauth_sts.keycloak_realm import (
     DEFAULT_FLAT_OAUTH_SCOPES,
     DEFAULT_REALM_NAME,
+    DEFAULT_USER_HOME_DOMAINS,
     KEYCLOAK_IMAGE,
     STANDARD_OAUTH_CLIENT_IDS,
     GeneratedRealmBundle,
@@ -30,6 +31,7 @@ __all__ = [
     "CLIENT_ASSERTION_JWT_SPIFFE",
     "DEFAULT_FLAT_OAUTH_SCOPES",
     "DEFAULT_REALM_NAME",
+    "DEFAULT_USER_HOME_DOMAINS",
     "GRANT_TOKEN_EXCHANGE",
     "GeneratedRealmBundle",
     "KEYCLOAK_IMAGE",

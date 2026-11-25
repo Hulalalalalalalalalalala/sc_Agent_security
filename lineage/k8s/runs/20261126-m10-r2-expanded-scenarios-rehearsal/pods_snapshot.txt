@@ -1,0 +1,52 @@
+=== kind-lctmh-alpha ===
+NAMESPACE            NAME                                                READY   STATUS    RESTARTS   AGE   IP            NODE                        NOMINATED NODE   READINESS GATES
+kube-system          coredns-7d764666f9-987bj                            1/1     Running   0          31m   10.241.0.3    lctmh-alpha-control-plane   <none>           <none>
+kube-system          coredns-7d764666f9-qhncs                            1/1     Running   0          31m   10.241.0.2    lctmh-alpha-control-plane   <none>           <none>
+kube-system          etcd-lctmh-alpha-control-plane                      1/1     Running   0          31m   172.19.0.2    lctmh-alpha-control-plane   <none>           <none>
+kube-system          kindnet-ljns8                                       1/1     Running   0          31m   172.19.0.2    lctmh-alpha-control-plane   <none>           <none>
+kube-system          kube-apiserver-lctmh-alpha-control-plane            1/1     Running   0          31m   172.19.0.2    lctmh-alpha-control-plane   <none>           <none>
+kube-system          kube-controller-manager-lctmh-alpha-control-plane   1/1     Running   0          31m   172.19.0.2    lctmh-alpha-control-plane   <none>           <none>
+kube-system          kube-proxy-p4nh9                                    1/1     Running   0          31m   172.19.0.2    lctmh-alpha-control-plane   <none>           <none>
+kube-system          kube-scheduler-lctmh-alpha-control-plane            1/1     Running   0          31m   172.19.0.2    lctmh-alpha-control-plane   <none>           <none>
+lineage-alpha        alpha-ca-55d875f5c4-456cd                           1/1     Running   0          10m   10.241.0.16   lctmh-alpha-control-plane   <none>           <none>
+lineage-alpha        alpha-directory-59cdc448df-8skb7                    1/1     Running   0          10m   10.241.0.17   lctmh-alpha-control-plane   <none>           <none>
+lineage-alpha        alpha-revocation-69669c985f-88md5                   1/1     Running   0          10m   10.241.0.18   lctmh-alpha-control-plane   <none>           <none>
+lineage-alpha        alpha-sts-66dfdc88cb-w9495                          1/1     Running   0          30m   10.241.0.5    lctmh-alpha-control-plane   <none>           <none>
+lineage-alpha        assistant-alice-8bcd777c9-7zzkc                     2/2     Running   0          10m   10.241.0.19   lctmh-alpha-control-plane   <none>           <none>
+lineage-alpha        e2e-user-gateway-557b76b7dd-gvf8f                   1/1     Running   0          10m   10.241.0.20   lctmh-alpha-control-plane   <none>           <none>
+local-path-storage   local-path-provisioner-67b8995b4b-624bl             1/1     Running   0          31m   10.241.0.4    lctmh-alpha-control-plane   <none>           <none>
+=== kind-lctmh-beta ===
+NAMESPACE            NAME                                               READY   STATUS    RESTARTS   AGE   IP            NODE                       NOMINATED NODE   READINESS GATES
+kube-system          coredns-7d764666f9-lxsgz                           1/1     Running   0          30m   10.242.0.3    lctmh-beta-control-plane   <none>           <none>
+kube-system          coredns-7d764666f9-tpjgq                           1/1     Running   0          30m   10.242.0.2    lctmh-beta-control-plane   <none>           <none>
+kube-system          etcd-lctmh-beta-control-plane                      1/1     Running   0          31m   172.19.0.3    lctmh-beta-control-plane   <none>           <none>
+kube-system          kindnet-f8fgn                                      1/1     Running   0          30m   172.19.0.3    lctmh-beta-control-plane   <none>           <none>
+kube-system          kube-apiserver-lctmh-beta-control-plane            1/1     Running   0          31m   172.19.0.3    lctmh-beta-control-plane   <none>           <none>
+kube-system          kube-controller-manager-lctmh-beta-control-plane   1/1     Running   0          31m   172.19.0.3    lctmh-beta-control-plane   <none>           <none>
+kube-system          kube-proxy-9nj2x                                   1/1     Running   0          30m   172.19.0.3    lctmh-beta-control-plane   <none>           <none>
+kube-system          kube-scheduler-lctmh-beta-control-plane            1/1     Running   0          31m   172.19.0.3    lctmh-beta-control-plane   <none>           <none>
+lineage-beta         assistant-bob-69496767bf-pqmpj                     2/2     Running   0          53s   10.242.0.27   lctmh-beta-control-plane   <none>           <none>
+lineage-beta         assistant-bob-standby-d49fd49f8-g4257              2/2     Running   0          10m   10.242.0.21   lctmh-beta-control-plane   <none>           <none>
+lineage-beta         assistant-dave-78b699bc78-6vr4t                    2/2     Running   0          10m   10.242.0.22   lctmh-beta-control-plane   <none>           <none>
+lineage-beta         beta-ca-777c594b4b-84xm7                           1/1     Running   0          10m   10.242.0.23   lctmh-beta-control-plane   <none>           <none>
+lineage-beta         beta-revocation-b57745f49-tc5bx                    1/1     Running   0          10m   10.242.0.24   lctmh-beta-control-plane   <none>           <none>
+lineage-beta         beta-sts-86698bc8f6-vfpgn                          1/1     Running   0          10m   10.242.0.26   lctmh-beta-control-plane   <none>           <none>
+lineage-beta         beta-user-gateway-5b95b89ccf-4n7bw                 1/1     Running   0          10m   10.242.0.25   lctmh-beta-control-plane   <none>           <none>
+local-path-storage   local-path-provisioner-67b8995b4b-88q9g            1/1     Running   0          30m   10.242.0.4    lctmh-beta-control-plane   <none>           <none>
+=== kind-lctmh-pay ===
+NAMESPACE            NAME                                              READY   STATUS    RESTARTS   AGE   IP            NODE                      NOMINATED NODE   READINESS GATES
+kube-system          coredns-7d764666f9-tj7b4                          1/1     Running   0          30m   10.243.0.4    lctmh-pay-control-plane   <none>           <none>
+kube-system          coredns-7d764666f9-v5tjj                          1/1     Running   0          30m   10.243.0.8    lctmh-pay-control-plane   <none>           <none>
+kube-system          etcd-lctmh-pay-control-plane                      1/1     Running   0          30m   172.19.0.4    lctmh-pay-control-plane   <none>           <none>
+kube-system          kindnet-ppwdk                                     1/1     Running   0          30m   172.19.0.4    lctmh-pay-control-plane   <none>           <none>
+kube-system          kube-apiserver-lctmh-pay-control-plane            1/1     Running   0          30m   172.19.0.4    lctmh-pay-control-plane   <none>           <none>
+kube-system          kube-controller-manager-lctmh-pay-control-plane   1/1     Running   0          30m   172.19.0.4    lctmh-pay-control-plane   <none>           <none>
+kube-system          kube-proxy-5ckg9                                  1/1     Running   0          30m   172.19.0.4    lctmh-pay-control-plane   <none>           <none>
+kube-system          kube-scheduler-lctmh-pay-control-plane            1/1     Running   0          30m   172.19.0.4    lctmh-pay-control-plane   <none>           <none>
+lineage-pay          assistant-carol-54fb545db5-ps6g9                  2/2     Running   0          10m   10.243.0.17   lctmh-pay-control-plane   <none>           <none>
+lineage-pay          assistant-carol-standby-86bfb49c9c-rh6dz          2/2     Running   0          10m   10.243.0.18   lctmh-pay-control-plane   <none>           <none>
+lineage-pay          assistant-vault-7d98bbc98-92gbg                   2/2     Running   0          10m   10.243.0.19   lctmh-pay-control-plane   <none>           <none>
+lineage-pay          payment-ca-6877974687-rqgz4                       1/1     Running   0          10m   10.243.0.20   lctmh-pay-control-plane   <none>           <none>
+lineage-pay          payment-revocation-7dd668d67f-d2fbg               1/1     Running   0          10m   10.243.0.21   lctmh-pay-control-plane   <none>           <none>
+lineage-pay          payment-sts-896f657db-j6d64                       1/1     Running   0          10m   10.243.0.22   lctmh-pay-control-plane   <none>           <none>
+local-path-storage   local-path-provisioner-67b8995b4b-fnmd4           1/1     Running   0          30m   10.243.0.3    lctmh-pay-control-plane   <none>           <none>

@@ -94,9 +94,9 @@ See [`multihost/MULTIHOST_GUIDE.md`](./multihost/MULTIHOST_GUIDE.md) for Windows
 
 ---
 
-## 5. Platform v2: Symmetric Peer-to-Peer Workspace Assistants & 24-Node Scale Benchmark (Milestone 9)
+## 5. Platform v2 / v2.1: Symmetric Peer-to-Peer Workspace Assistants, 12-Scenario Vertical Suite & 24-Node Scale Benchmark (Milestones 9–10)
 
-Platform v2 (`--topology workspace --registry-mode centralized|federated`) deploys symmetric autonomous peer assistants (`assistant-alice`, `assistant-bob` + standby + `assistant-dave`, `assistant-carol` + standby + `assistant-vault`) backed by **1 Untrusted Public Yellow Pages** (`0` private keys, `0` auth state, `0` audit logs) and **0 Central Audit Collectors** (`LocalAuditStore` per node + stateless on-demand `DistributedAuditor` targeted BFS pull):
+Platform v2.1 (`--topology workspace --registry-mode centralized|federated`) deploys symmetric autonomous peer assistants (`assistant-alice`, `assistant-bob` + standby + `assistant-dave` + `beta-user-gateway`, `assistant-carol` + standby + `assistant-vault`) backed by **1 Untrusted Public Yellow Pages** (`0` private keys, `0` auth state, `0` audit logs), multi-org OIDC principal mapping (`user:alice@org-alpha.io`, `user:bob@org-beta.io`, `user:carol@org-payment.io`), and **0 Central Audit Collectors** (`LocalAuditStore` per node + stateless on-demand `DistributedAuditor` targeted BFS pull):
 
 ```bash
 # 1. Deploy 3-domain symmetric workspace peers (alpha + beta + pay; zero audit cluster needed!)
@@ -106,8 +106,8 @@ bash lineage/scripts/multihost.sh deploy \
   --registry-mode centralized \
   --wait-all-ready
 
-# 2. Run all 5 Platform v2 scenarios (LLM Yellow-Pages routing, CoAuthorizedToken lctco1.,
-#    TaskCheckpoint + ContinuationToken, post-commit idempotent failover, & DistributedAuditor)
+# 2. Run all 11 live E2E phases (covering all 12 catalog scenarios across Financial Risk Control,
+#    Enterprise Legal & Procurement, and Healthcare Federated Cohort Aggregation)
 bash lineage/scripts/multihost.sh workspace-demo
 
 # 3. Query any task's causal DAG on-demand via stateless DistributedAuditor (0 central collector)

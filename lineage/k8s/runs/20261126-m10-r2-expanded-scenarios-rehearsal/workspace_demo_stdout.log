@@ -1,0 +1,47 @@
+[workspace-demo] Scenario 1: Real qwen2.5:3b Yellow-Pages Intent Routing + P2P 1->N Fan-Out + N->1 Vault Convergence...
+[workspace-demo] Scenario 1: PASS
+[workspace-demo] Scenario 2: Cross-Principal Isolation (403) + Dual-Principal CoAuthorizedToken ([alice, bob] -> 200)...
+[workspace-demo] Scenario 2: PASS
+[workspace-demo] Scenario 3: Short-TTL Task Expiry -> TaskCheckpoint -> Budget-Clamped ContinuationToken + DAG Stitch...
+[workspace-demo] Scenario 3: PASS
+[workspace-demo] Scenario 4A: Post-Commit Timeout Drop + Standby Epoch=1 Idempotency (1x Charge) + Zombie Primary 403...
+[workspace-demo] Scenario 4A: PASS
+[workspace-demo] Scenario 4B: 3-Tier Alice -> Bob -> Dave Upward Skip-Level Return...
+[fault] Terminating assistant-bob in kind-lctmh-beta (lineage-beta)...
+[fault] assistant-bob is now offline (replicas=0).
+[fault] Restoring assistant-bob in kind-lctmh-beta (lineage-beta) to replicas=1...
+[fault] assistant-bob is Ready (2/2 Running).
+[workspace-demo] Scenario 4B: PASS
+[workspace-demo] Scenario 5: Single-Branch Degradation + OAuth vs LCT Compare + Stateless DistributedAuditor BFS Pull...
+[workspace-demo] Scenario 5: PASS
+[workspace-demo] Scenario 6 (Catalog S2 - Financial Risk): Bidirectional A<->B Ping-Pong + Joint Vault Change + Dual-Domain Revocation Interlock...
+[workspace-demo] Scenario 6: PASS
+[workspace-demo] Scenario 7 (Catalog S3 - Legal/Procurement): Multi-Round Redline Sub-Delegation + Lattice Numeric/Whitelist Guardrails...
+[workspace-demo] Scenario 7: PASS
+[workspace-demo] Scenario 8 (Catalog S5 - Compliance/Release SoD): 4-Hop Signed Scanner Attestation + Carol OIDC Approval ([alice, carol])...
+[workspace-demo] Scenario 8: PASS
+[workspace-demo] Scenario 9 (Catalog S6 - Healthcare/Risk Cohort): Multi-Owner DP Cohort Stats + Raw Export Deny + Cross-Task Replay Block...
+[workspace-demo] Scenario 9: PASS
+[workspace-demo] Scenario 10 (Catalog S7 - Prompt Injection & Cascade): 4-Hop Injection Offline Block + Cascading Subtree Revocation of Pre-Minted Hop-3...
+[workspace-demo] Scenario 10: PASS
+[workspace-demo] Scenario 11 (Catalog S8 - Symmetric Beta Entry & Token Theft): beta-user-gateway + Stolen-Token Replay (403) + Cross-Tenant Isolation...
+[workspace-demo] Scenario 11: PASS
+{
+  "run_id": "m10-r2-verified",
+  "overall_status": "PASS",
+  "central_audit_collector_deployed": false,
+  "scenarios": [
+    "1_intent_fanout_converge",
+    "2_cross_principal_and_coauth",
+    "3_expiry_checkpoint_continuation",
+    "4a_post_commit_idempotent_failover",
+    "4b_skip_level_return",
+    "5_degradation_compare_and_audit",
+    "6_bidirectional_fin_pingpong",
+    "7_legal_redline_negotiation",
+    "8_supply_chain_sod",
+    "9_federated_medical_cohort",
+    "10_prompt_injection_cascading_revocation",
+    "11_symmetric_beta_entry_and_token_theft"
+  ]
+}

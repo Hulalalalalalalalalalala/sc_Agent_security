@@ -1,0 +1,419 @@
+{
+  "run_id": "m10-rehearsal",
+  "platform": "v2-symmetric-workspace-assistants",
+  "central_audit_collector_deployed": false,
+  "scenarios": {
+    "1_intent_fanout_converge": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s1-collab",
+      "e2e_latency_ms": 6533.28,
+      "sse_states": [
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED"
+      ],
+      "sse_artifacts": [
+        "alice-intent-plan"
+      ],
+      "yellow_pages_peers": {
+        "alice": "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+        "bob": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+        "carol": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+        "vault": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+      },
+      "intent_plan": {
+        "project_code": "PRJ-ATLAS",
+        "summary": "Joint Project PRJ-ATLAS: Tech review with Alice, Procurement with Carol, and Bob's commercial vendor engagement. Escrow lock to finalize.",
+        "branches": [
+          {
+            "logical_branch_id": "TechReviewBob",
+            "required_skill": "workspace.tech_review",
+            "allocated_budget_usd": 175.0,
+            "project_code": "PRJ-ATLAS",
+            "attenuated_permissions": {
+              "tools": [
+                "query_operation_status",
+                "reserve_cloud_budget"
+              ],
+              "methods": [
+                "initialize",
+                "tools/call",
+                "tools/list"
+              ],
+              "max_amount": 175.0,
+              "numeric_bounds": {},
+              "allowed_scopes": null,
+              "allowed_targets": [
+                "cloud-infra-escrow"
+              ],
+              "param_whitelist": {
+                "project_code": [
+                  "PRJ-ATLAS"
+                ]
+              },
+              "max_calls": 4
+            }
+          },
+          {
+            "logical_branch_id": "BizProcurementCarol",
+            "required_skill": "workspace.biz_procurement",
+            "allocated_budget_usd": 525.0,
+            "project_code": "PRJ-ATLAS",
+            "attenuated_permissions": {
+              "tools": [
+                "procure_vendor_quote",
+                "query_operation_status"
+              ],
+              "methods": [
+                "initialize",
+                "tools/call",
+                "tools/list"
+              ],
+              "max_amount": 525.0,
+              "numeric_bounds": {},
+              "allowed_scopes": null,
+              "allowed_targets": [
+                "vendor-procurement-escrow"
+              ],
+              "param_whitelist": {
+                "project_code": [
+                  "PRJ-ATLAS"
+                ]
+              },
+              "max_calls": 4
+            }
+          }
+        ],
+        "requires_vault_convergence": true,
+        "available_peer_skills": [
+          "workspace.alice_private",
+          "workspace.biz_procurement",
+          "workspace.bob_private",
+          "workspace.carol_private",
+          "workspace.deep_analysis",
+          "workspace.tech_review",
+          "workspace.vault_converge"
+        ],
+        "llm_trace": {
+          "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+          "model": "qwen2.5:3b",
+          "completion_id": "chatcmpl-331",
+          "system_fingerprint": "fp_ollama",
+          "prompt_tokens": 143,
+          "completion_tokens": 107,
+          "total_tokens": 250,
+          "latency_ms": 2801.54,
+          "raw_content": "{\n  \"project_code\": \"PRJ-ATLAS\",\n  \"selected_skills\": [\n    \"workspace.tech_review\",\n    \"workspace.biz_procurement\",\n    \"workspace.carol_private\"\n  ],\n  \"tech_budget_usd\": 5000,\n  \"procurement_budget_usd\": 15000,\n  \"summary\": \"Joint Project PRJ-ATLAS: Tech review with Alice, Procurement with Carol, and Bob's commercial vendor engagement. Escrow lock to finalize.\"\n}"
+        }
+      },
+      "completed_vault_locks": 2,
+      "distributed_audit": {
+        "nodes_queried": 7,
+        "total_entries": 24,
+        "pull_latency_ms": 263.93,
+        "reconstructed_complete": true
+      }
+    },
+    "2_cross_principal_and_coauth": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s2-coauth",
+      "unilateral_foreign_probes": {
+        "hr_salary_read": {
+          "http_status": 403,
+          "error": "CROSS_PRINCIPAL_DENIED"
+        },
+        "calendar_write": {
+          "http_status": 403,
+          "error": "CROSS_PRINCIPAL_DENIED"
+        },
+        "calendar_free_busy": {
+          "http_status": 403,
+          "error": "CROSS_PRINCIPAL_DENIED"
+        }
+      },
+      "dual_mode_oauth_cross_principal_http": 403,
+      "dual_mode_oauth_cross_principal_error": "CROSS_PRINCIPAL_DENIED",
+      "missing_bob_oidc_consent_http": 401,
+      "owner_only_consent_refusal_http": 403,
+      "co_authorized_calendar_free_busy": {
+        "owner": "user:bob@org-beta.io",
+        "tool": "calendar_free_busy",
+        "authorization_mode": "CO_AUTHORIZED",
+        "co_authorized_principals": [
+          "user:alice@org-alpha.io",
+          "user:bob@org-beta.io"
+        ],
+        "desensitized": true,
+        "slots": [
+          {
+            "window": "2026-12-01T09:00Z/10:30Z",
+            "status": "BUSY"
+          },
+          {
+            "window": "2026-12-01T10:30Z/12:00Z",
+            "status": "FREE"
+          },
+          {
+            "window": "2026-12-01T14:00Z/16:00Z",
+            "status": "FREE"
+          }
+        ]
+      },
+      "resilience_classifications": [
+        "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+      ],
+      "assistant_bob_sa_mint_root_http": 403
+    },
+    "3_expiry_checkpoint_continuation": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s3-cont",
+      "phase1_expired_status": 401,
+      "checkpoint_id": "ckpt-315015dfcc1d464d",
+      "consumed_before_expiry_usd": 280.0,
+      "remaining_budget_usd": 320.0,
+      "inflation_attempt_http": 403,
+      "inflation_attempt_error": "CONTINUATION_BUDGET_EXCEEDED",
+      "continuation_replay_http": 409,
+      "continuation_replay_error": "CONTINUATION_REPLAY_REJECTED",
+      "resumed_vault_locks": 2,
+      "resilience_classifications": [
+        "VERIFIED_TASK_CONTINUATION"
+      ]
+    },
+    "4a_post_commit_idempotent_failover": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s4a-idem",
+      "bob_failover_epoch": 1,
+      "carol_failover_epoch": 1,
+      "standby_idempotent_replay": true,
+      "vault_charge_count_for_branch": 1,
+      "conflicting_idempotency_replay_http": 409,
+      "conflicting_idempotency_replay_error": "IDEMPOTENCY_PARAMETER_MISMATCH",
+      "zombie_primary_wakeup_status": 403,
+      "resilience_classifications": [
+        "VERIFIED_FAILOVER_GRAFT",
+        "VERIFIED_FAILOVER_GRAFT"
+      ]
+    },
+    "4b_skip_level_return": {
+      "status": "PASS",
+      "alive_task_id": "ws-m10-rehearsal-s4b-alive",
+      "alive_delivery_mode": "DIRECT_PARENT",
+      "skip_task_id": "ws-m10-rehearsal-s4b-skip",
+      "skip_level_results_delivered_to_alice": 1,
+      "real_pod_kill_used": true
+    },
+    "5_degradation_compare_and_audit": {
+      "status": "PASS",
+      "degraded_task_id": "ws-m10-rehearsal-s5-degrade",
+      "degraded_lock_outcomes": {
+        "cloud-infra-escrow": 200,
+        "vendor-procurement-escrow": 403
+      },
+      "protocol_comparison": {
+        "oauth_centralized": {
+          "e2e_latency_ms": 4473.88,
+          "online_sts_rpcs": 6,
+          "overprivilege_probe_http": 200
+        },
+        "oauth_federated": {
+          "e2e_latency_ms": 4643.62,
+          "online_sts_rpcs": 6,
+          "overprivilege_probe_http": 200
+        },
+        "lct": {
+          "online_sts_rpcs": 0,
+          "overprivilege_probe_http": 403,
+          "overprivilege_error": "LATTICE_PERMISSION_DENIED"
+        }
+      },
+      "local_audit_endpoint_security": {
+        "unauthenticated_http": 401,
+        "valid_signed_query_http": 200,
+        "replayed_query_http": 403
+      },
+      "distributed_audit": {
+        "mode": "decentralized_on_demand_bfs",
+        "task_id": "ws-m10-rehearsal-s5-degrade",
+        "nodes_queried": [
+          "ca:org-alpha.io",
+          "ca:org-beta.io",
+          "ca:org-payment.io",
+          "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+          "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+          "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+          "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+        ],
+        "nodes_queried_count": 7,
+        "unreachable_nodes": {},
+        "total_entries": 25,
+        "pull_latency_ms": 221.89,
+        "stream_integrity_ok": true,
+        "reconstructed_complete": true,
+        "resilience_classifications": [
+          "SMOOTH_DAG_DEGRADATION_ON_REVOCATION"
+        ],
+        "reconstruction": {
+          "task_id": "ws-m10-rehearsal-s5-degrade",
+          "sub": "user:alice@org-alpha.io",
+          "root_block_hash": "qYC8l57gIq0AyGezCKiCktawxKGGQJgej6hjM7qhq3I",
+          "reconstructed_complete": true,
+          "lineage_paths_observed": [
+            "/ws-m10-rehearsal-s5-degrade/AssistantAlice",
+            "/ws-m10-rehearsal-s5-degrade/AssistantAlice/VaultLockTrigger",
+            "/ws-m10-rehearsal-s5-degrade/AssistantAlice/assistant-bob",
+            "/ws-m10-rehearsal-s5-degrade/AssistantAlice/assistant-bob/VaultConverge",
+            "/ws-m10-rehearsal-s5-degrade/AssistantAlice/assistant-carol",
+            "/ws-m10-rehearsal-s5-degrade/AssistantAlice/assistant-carol/VaultConverge"
+          ],
+          "verified_hops": 10,
+          "tool_invocations_verified": 3,
+          "resilience_classifications": [
+            "SMOOTH_DAG_DEGRADATION_ON_REVOCATION"
+          ],
+          "anomalies": []
+        },
+        "anomalies": []
+      }
+    },
+    "6_bidirectional_fin_pingpong": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s6-fin-pingpong",
+      "reverse_task_id": "ws-m10-rehearsal-s6-fin-pingpong-rev-b2a",
+      "round1_a_to_b_unilateral_http": 403,
+      "round1_a_to_b_coauth_http": 200,
+      "round2_dual_oauth_b_to_a_http": 403,
+      "round2_b_to_a_unilateral_http": 403,
+      "round2_b_to_a_roadmap_refusal_http": 403,
+      "round2_b_to_a_reverse_coauth_principals": [
+        "user:bob@org-beta.io",
+        "user:alice@org-alpha.io"
+      ],
+      "round3_unilateral_commit_http": 403,
+      "round3_coauth_commit_http": 200,
+      "round3_idempotency_conflict_http": 409,
+      "round3_post_bob_revocation_http": 403,
+      "distributed_audit_complete": true
+    },
+    "7_legal_redline_negotiation": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s7-legal-nda",
+      "dave_pricing_floor_probe_http": 403,
+      "unilateral_commit_http": 403,
+      "over_budget_165_usd_http": 403,
+      "weak_warranty_12m_http": 403,
+      "compliant_coauth_commit_http": 200,
+      "committed_contract": {
+        "operation": "commit_negotiated_contract",
+        "contract_id": "NDA-2026-99",
+        "warranty_tier": "24M",
+        "unit_price_usd": 115.0,
+        "max_penalty_pct": 8.0,
+        "co_authorized_principals": [
+          "user:alice@org-alpha.io",
+          "user:bob@org-beta.io"
+        ],
+        "task_id": "ws-m10-rehearsal-s7-legal-nda",
+        "lineage_path": "/ws-m10-rehearsal-s7-legal-nda/BuyerAlice|/ws-m10-rehearsal-s7-legal-nda/OwnerConsent",
+        "lineage_decision": "ALLOW_CO_AUTHORIZED",
+        "receipt_id": "RCPT-D99074CF09",
+        "idempotency_key": "2736cd95ac74250b02191cf5ff2d6757a5e4be2a68c6727e4e3c1cd708354432",
+        "idempotent_replay": false,
+        "charge_count": 1,
+        "replay_count": 0
+      },
+      "distributed_audit_complete": true
+    },
+    "8_supply_chain_sod": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s8-sod-release",
+      "scanner_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
+      "unilateral_self_approve_http": 403,
+      "missing_attestation_http": 403,
+      "mismatched_release_attestation_http": 403,
+      "sod_coauth_release_http": 200,
+      "release_receipt": {
+        "operation": "sign_release",
+        "release_id": "REL-2026-884",
+        "sod_verified": true,
+        "developer_sub": "user:alice@org-alpha.io",
+        "release_approver_sub": "user:carol@org-payment.io",
+        "scanner_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
+        "artifact_sha256": "sha256:9f884c0ffee12345",
+        "co_authorized_principals": [
+          "user:alice@org-alpha.io",
+          "user:carol@org-payment.io"
+        ],
+        "task_id": "ws-m10-rehearsal-s8-sod-release",
+        "lineage_path": "/ws-m10-rehearsal-s8-sod-release/DeveloperAlice|/ws-m10-rehearsal-s8-sod-release/OwnerConsent",
+        "lineage_decision": "ALLOW_CO_AUTHORIZED",
+        "receipt_id": "RCPT-917835D7F3",
+        "idempotency_key": "c156510fe0b5f4aa4b2f6f2f4b2371cc586c058830b81d8de9adf555089a104f",
+        "idempotent_replay": false,
+        "charge_count": 1,
+        "replay_count": 0
+      },
+      "distributed_audit_complete": true
+    },
+    "9_federated_medical_cohort": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s9-med-cohort",
+      "raw_export_hospital_b_http": 403,
+      "raw_export_inst_c_http": 403,
+      "raw_export_consent_refusal_http": 403,
+      "aggregated_cohort": {
+        "aggregation_id": "COH-52451E72",
+        "study_id": "STUDY-MED-2026-07",
+        "institutions_aggregated": 2,
+        "institutions": [
+          "institution-bob",
+          "institution-carol"
+        ],
+        "total_sample_count": 800,
+        "pooled_event_rate": 0.07115,
+        "raw_pii_present": false,
+        "task_id": "ws-m10-rehearsal-s9-med-cohort",
+        "sub": "user:alice@org-alpha.io"
+      },
+      "cross_task_commercial_replay_http": 403,
+      "distributed_audit_complete": true
+    },
+    "10_prompt_injection_cascading_revocation": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s10-inj-cascade",
+      "revoked_bob_prefix": "/ws-m10-rehearsal-s10-inj-cascade/AssistantAlice/TechReviewBob",
+      "hop3_legitimate_note_http": 200,
+      "hop3_injected_budget_http": 403,
+      "hop3_injected_exfil_http": 403,
+      "post_revoke_bob_hop2_http": 403,
+      "post_revoke_dave_preminted_hop3_http": 403,
+      "degraded_vault_outcomes": {
+        "cloud-infra-escrow": 403,
+        "vendor-procurement-escrow": 200
+      },
+      "distributed_audit_complete": true
+    },
+    "11_symmetric_beta_entry_and_token_theft": {
+      "status": "PASS",
+      "task_id": "ws-m10-rehearsal-s11-beta-sym",
+      "beta_gateway_missing_oidc_http": 401,
+      "beta_gateway_alice_cross_domain_http": 403,
+      "beta_gateway_sub_spoof_http": 403,
+      "bob_fanout_domains_verified": [
+        "org-beta.io",
+        "org-alpha.io",
+        "org-payment.io"
+      ],
+      "stolen_token_replay_on_vault_http": 403,
+      "stolen_token_replay_on_alpha_http": 403,
+      "alice_cross_tenant_snoop_found": false,
+      "distributed_audit_from_beta_entry": {
+        "nodes_queried_count": 8,
+        "unreachable_nodes": {},
+        "reconstructed_complete": true,
+        "anomalies": []
+      }
+    }
+  },
+  "overall_status": "PASS"
+}

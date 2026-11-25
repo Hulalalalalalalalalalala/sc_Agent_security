@@ -1,0 +1,34 @@
+=== kind get clusters ===
+agent-identity-lab
+lct-audit
+lct-org-alpha
+lct-org-beta
+lct-org-pay
+lctmh-alpha
+lctmh-beta
+lctmh-pay
+=== kind-lctmh-alpha (lineage-alpha) ===
+NAME                                READY   STATUS    RESTARTS   AGE     IP            NODE                        NOMINATED NODE   READINESS GATES
+alpha-ca-6d6bc76c87-jz5xc           1/1     Running   0          5m16s   10.241.0.6    lctmh-alpha-control-plane   <none>           <none>
+alpha-directory-dc87cccb8-kqjwv     1/1     Running   0          5m16s   10.241.0.8    lctmh-alpha-control-plane   <none>           <none>
+alpha-revocation-759bff67c4-tlq25   1/1     Running   0          5m16s   10.241.0.7    lctmh-alpha-control-plane   <none>           <none>
+alpha-sts-66dfdc88cb-rddls          1/1     Running   0          5m16s   10.241.0.5    lctmh-alpha-control-plane   <none>           <none>
+assistant-alice-6469cd756-bb8bz     2/2     Running   0          5m16s   10.241.0.9    lctmh-alpha-control-plane   <none>           <none>
+e2e-user-gateway-6766d9bd8f-9pc5r   1/1     Running   0          5m16s   10.241.0.10   lctmh-alpha-control-plane   <none>           <none>
+=== kind-lctmh-beta (lineage-beta) ===
+NAME                                     READY   STATUS    RESTARTS   AGE     IP            NODE                       NOMINATED NODE   READINESS GATES
+assistant-bob-d56ff5d54-wh67x            2/2     Running   0          116s    10.242.0.12   lctmh-beta-control-plane   <none>           <none>
+assistant-bob-standby-6778bbf767-cdstp   2/2     Running   0          5m14s   10.242.0.9    lctmh-beta-control-plane   <none>           <none>
+assistant-dave-5f84c8b7bc-gfgbc          2/2     Running   0          5m14s   10.242.0.10   lctmh-beta-control-plane   <none>           <none>
+beta-ca-5d59449965-zdjl5                 1/1     Running   0          5m14s   10.242.0.6    lctmh-beta-control-plane   <none>           <none>
+beta-revocation-8cc77d8f4-xh4p4          1/1     Running   0          5m14s   10.242.0.7    lctmh-beta-control-plane   <none>           <none>
+beta-sts-85498bb855-2zf44                1/1     Running   0          5m15s   10.242.0.5    lctmh-beta-control-plane   <none>           <none>
+beta-user-gateway-f96b9988b-h9vjj        1/1     Running   0          5m14s   10.242.0.11   lctmh-beta-control-plane   <none>           <none>
+=== kind-lctmh-pay (lineage-pay) ===
+NAME                                      READY   STATUS    RESTARTS   AGE     IP            NODE                      NOMINATED NODE   READINESS GATES
+assistant-carol-84f668d6d6-f6wx9          2/2     Running   0          5m12s   10.243.0.7    lctmh-pay-control-plane   <none>           <none>
+assistant-carol-standby-c6f75985d-nbz67   2/2     Running   0          5m12s   10.243.0.10   lctmh-pay-control-plane   <none>           <none>
+assistant-vault-759f796dcd-2sx69          2/2     Running   0          5m12s   10.243.0.9    lctmh-pay-control-plane   <none>           <none>
+payment-ca-84c869b45b-rllpb               1/1     Running   0          5m13s   10.243.0.6    lctmh-pay-control-plane   <none>           <none>
+payment-revocation-748cfdb9d4-hjm9d       1/1     Running   0          5m13s   10.243.0.4    lctmh-pay-control-plane   <none>           <none>
+payment-sts-56b497894f-hppsm              1/1     Running   0          5m13s   10.243.0.5    lctmh-pay-control-plane   <none>           <none>

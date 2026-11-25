@@ -1,0 +1,29 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m10-r2-verified-s7-legal-nda",
+  "dave_pricing_floor_probe_http": 403,
+  "unilateral_commit_http": 403,
+  "over_budget_165_usd_http": 403,
+  "weak_warranty_12m_http": 403,
+  "compliant_coauth_commit_http": 200,
+  "committed_contract": {
+    "operation": "commit_negotiated_contract",
+    "contract_id": "NDA-2026-99",
+    "warranty_tier": "24M",
+    "unit_price_usd": 115.0,
+    "max_penalty_pct": 8.0,
+    "co_authorized_principals": [
+      "user:alice@org-alpha.io",
+      "user:bob@org-beta.io"
+    ],
+    "task_id": "ws-m10-r2-verified-s7-legal-nda",
+    "lineage_path": "/ws-m10-r2-verified-s7-legal-nda/BuyerAlice|/ws-m10-r2-verified-s7-legal-nda/OwnerConsent",
+    "lineage_decision": "ALLOW_CO_AUTHORIZED",
+    "receipt_id": "RCPT-A1A755EDC0",
+    "idempotency_key": "2f03972792c0a02b848043c9f6361d6694cab9d2be20b9ef793aca384a8dcd9e",
+    "idempotent_replay": false,
+    "charge_count": 1,
+    "replay_count": 0
+  },
+  "distributed_audit_complete": true
+}

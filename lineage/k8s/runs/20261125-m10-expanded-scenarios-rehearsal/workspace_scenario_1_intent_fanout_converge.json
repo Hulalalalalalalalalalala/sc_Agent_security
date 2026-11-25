@@ -1,0 +1,111 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m10-rehearsal-s1-collab",
+  "e2e_latency_ms": 6533.28,
+  "sse_states": [
+    "TASK_STATE_SUBMITTED",
+    "TASK_STATE_WORKING",
+    "TASK_STATE_COMPLETED"
+  ],
+  "sse_artifacts": [
+    "alice-intent-plan"
+  ],
+  "yellow_pages_peers": {
+    "alice": "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+    "bob": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+    "carol": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+    "vault": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+  },
+  "intent_plan": {
+    "project_code": "PRJ-ATLAS",
+    "summary": "Joint Project PRJ-ATLAS: Tech review with Alice, Procurement with Carol, and Bob's commercial vendor engagement. Escrow lock to finalize.",
+    "branches": [
+      {
+        "logical_branch_id": "TechReviewBob",
+        "required_skill": "workspace.tech_review",
+        "allocated_budget_usd": 175.0,
+        "project_code": "PRJ-ATLAS",
+        "attenuated_permissions": {
+          "tools": [
+            "query_operation_status",
+            "reserve_cloud_budget"
+          ],
+          "methods": [
+            "initialize",
+            "tools/call",
+            "tools/list"
+          ],
+          "max_amount": 175.0,
+          "numeric_bounds": {},
+          "allowed_scopes": null,
+          "allowed_targets": [
+            "cloud-infra-escrow"
+          ],
+          "param_whitelist": {
+            "project_code": [
+              "PRJ-ATLAS"
+            ]
+          },
+          "max_calls": 4
+        }
+      },
+      {
+        "logical_branch_id": "BizProcurementCarol",
+        "required_skill": "workspace.biz_procurement",
+        "allocated_budget_usd": 525.0,
+        "project_code": "PRJ-ATLAS",
+        "attenuated_permissions": {
+          "tools": [
+            "procure_vendor_quote",
+            "query_operation_status"
+          ],
+          "methods": [
+            "initialize",
+            "tools/call",
+            "tools/list"
+          ],
+          "max_amount": 525.0,
+          "numeric_bounds": {},
+          "allowed_scopes": null,
+          "allowed_targets": [
+            "vendor-procurement-escrow"
+          ],
+          "param_whitelist": {
+            "project_code": [
+              "PRJ-ATLAS"
+            ]
+          },
+          "max_calls": 4
+        }
+      }
+    ],
+    "requires_vault_convergence": true,
+    "available_peer_skills": [
+      "workspace.alice_private",
+      "workspace.biz_procurement",
+      "workspace.bob_private",
+      "workspace.carol_private",
+      "workspace.deep_analysis",
+      "workspace.tech_review",
+      "workspace.vault_converge"
+    ],
+    "llm_trace": {
+      "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+      "model": "qwen2.5:3b",
+      "completion_id": "chatcmpl-331",
+      "system_fingerprint": "fp_ollama",
+      "prompt_tokens": 143,
+      "completion_tokens": 107,
+      "total_tokens": 250,
+      "latency_ms": 2801.54,
+      "raw_content": "{\n  \"project_code\": \"PRJ-ATLAS\",\n  \"selected_skills\": [\n    \"workspace.tech_review\",\n    \"workspace.biz_procurement\",\n    \"workspace.carol_private\"\n  ],\n  \"tech_budget_usd\": 5000,\n  \"procurement_budget_usd\": 15000,\n  \"summary\": \"Joint Project PRJ-ATLAS: Tech review with Alice, Procurement with Carol, and Bob's commercial vendor engagement. Escrow lock to finalize.\"\n}"
+    }
+  },
+  "completed_vault_locks": 2,
+  "distributed_audit": {
+    "nodes_queried": 7,
+    "total_entries": 24,
+    "pull_latency_ms": 263.93,
+    "reconstructed_complete": true
+  }
+}

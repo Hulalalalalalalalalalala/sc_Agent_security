@@ -1,0 +1,21 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m10-r2-verified-s11-beta-sym",
+  "beta_gateway_missing_oidc_http": 401,
+  "beta_gateway_alice_cross_domain_http": 401,
+  "beta_gateway_sub_spoof_http": 403,
+  "bob_fanout_domains_verified": [
+    "org-beta.io",
+    "org-alpha.io",
+    "org-payment.io"
+  ],
+  "stolen_token_replay_on_vault_http": 403,
+  "stolen_token_replay_on_alpha_http": 403,
+  "alice_cross_tenant_snoop_found": false,
+  "distributed_audit_from_beta_entry": {
+    "nodes_queried_count": 8,
+    "unreachable_nodes": {},
+    "reconstructed_complete": true,
+    "anomalies": []
+  }
+}

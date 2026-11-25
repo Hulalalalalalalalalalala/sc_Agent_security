@@ -23,6 +23,8 @@ from __future__ import annotations
 import base64
 from collections import OrderedDict, deque
 import hmac
+import json
+import os
 import threading
 import time
 from typing import Any, Callable, Deque, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -46,6 +48,7 @@ from lineage.identity.trust_bundle import TrustBundleResolver
 from lineage.oauth_sts.keycloak_realm import (
     DEFAULT_FLAT_OAUTH_SCOPES,
     DEFAULT_REALM_NAME,
+    DEFAULT_USER_HOME_DOMAINS,
     STANDARD_OAUTH_CLIENT_IDS,
     spiffe_id_to_oauth_client_id,
 )
@@ -99,11 +102,14 @@ class OAuthSTSService:
         client_secrets: Optional[Mapping[str, str]] = None,
         spiffe_trust_resolver: Optional[TrustBundleResolver] = None,
         peer_sts_jwks_Urls_provider: Optional[Callable[[], List[str]]] = None,
+        peer_issuer_aliases_provider: Optional[Callable[[], Mapping[str, List[str]]]] = None,
         issuer_override: Optional[str] = None,
         token_ttl_seconds: float = 900.0,
         host: str = "127.0.0.1",
         port: int = 0,
         rsa_keypair: Optional[KeyPair] = None,
+        allow_multi_domain_principals: bool = False,
+        credentials_file: Optional[str] = None,
     ) -> None:
         self.trust_domain = trust_domain.strip().lower()
         self.realm = realm.strip() or DEFAULT_REALM_NAME
@@ -112,13 +118,18 @@ class OAuthSTSService:
         self._issuer_override = issuer_override.rstrip("/") if issuer_override else None
         self._user_passwords: Dict[str, str] = dict(user_passwords or {})
         self._client_secrets: Dict[str, str] = dict(client_secrets or {})
+        self.allow_multi_domain_principals = bool(allow_multi_domain_principals)
+        self._credentials_file = str(credentials_file).strip() if credentials_file else None
+        self._credentials_mtime: float = -1.0
         self.spiffe_trust_resolver = spiffe_trust_resolver
         self._peer_sts_jwks_urls_provider = peer_sts_jwks_Urls_provider
+        self._peer_issuer_aliases_provider = peer_issuer_aliases_provider
 
         self._lock = threading.RLock()
         self._revoked_jtis: "OrderedDict[str, float]" = OrderedDict()
         self._issued_tokens_meta: Dict[str, Dict[str, Any]] = {}
         self._peer_jwks_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._peer_jwks_by_issuer: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._peer_jwks_last_fetch: float = 0.0
         self._exchange_logs: Deque[Dict[str, Any]] = deque(maxlen=MAX_STS_EXCHANGE_LOGS)
 
@@ -149,7 +160,27 @@ class OAuthSTSService:
                 return f"{scheme}://{host_hdr}/realms/{self.realm}"
         return f"{self.http.base_url}/realms/{self.realm}"
 
-    def register_peer_jwk(self, jwk: Mapping[str, Any]) -> None:
+    def _maybe_reload_credentials_file(self) -> None:
+        if not self._credentials_file or not os.path.isfile(self._credentials_file):
+            return
+        try:
+            st = os.stat(self._credentials_file)
+            if st.st_mtime == self._credentials_mtime:
+                return
+            with open(self._credentials_file, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+            with self._lock:
+                if isinstance(doc.get("users"), Mapping):
+                    self._user_passwords.update({str(k): str(v) for k, v in doc["users"].items()})
+                if isinstance(doc.get("clients"), Mapping):
+                    self._client_secrets.update({str(k): str(v) for k, v in doc["clients"].items()})
+                self._credentials_mtime = st.st_mtime
+        except Exception:
+            pass
+
+    def register_peer_jwk(
+        self, jwk: Mapping[str, Any], issuer: Optional[str] = None
+    ) -> None:
         kid = str(jwk.get("kid") or "")
         if kid and len(kid) <= 128:
             with self._lock:
@@ -157,6 +188,8 @@ class OAuthSTSService:
                 self._peer_jwks_cache.move_to_end(kid)
                 while len(self._peer_jwks_cache) > MAX_PEER_JWKS:
                     self._peer_jwks_cache.popitem(last=False)
+                if issuer:
+                    self._peer_jwks_by_issuer.setdefault(issuer.rstrip("/"), {})[kid] = dict(jwk)
 
     def _refresh_federated_peer_jwks(self, force: bool = False) -> None:
         if self._peer_sts_jwks_urls_provider is None:
@@ -167,7 +200,13 @@ class OAuthSTSService:
                 return
         urls = list(self._peer_sts_jwks_urls_provider() or [])[:32]
         fetched: Dict[str, Dict[str, Any]] = {}
+        fetched_by_iss: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for u in urls:
+            src_iss = (
+                u.split("/protocol/openid-connect/certs", 1)[0].rstrip("/")
+                if "/protocol/openid-connect/certs" in u
+                else ""
+            )
             try:
                 resp = httpx.get(u, timeout=2.5, follow_redirects=False, trust_env=False)
                 if resp.status_code == 200:
@@ -176,6 +215,8 @@ class OAuthSTSService:
                             kid_s = str(k["kid"])
                             if len(kid_s) <= 128:
                                 fetched[kid_s] = dict(k)
+                                if src_iss:
+                                    fetched_by_iss.setdefault(src_iss, {})[kid_s] = dict(k)
             except Exception:
                 continue
         with self._lock:
@@ -184,6 +225,8 @@ class OAuthSTSService:
                 self._peer_jwks_cache.move_to_end(k_id)
             while len(self._peer_jwks_cache) > MAX_PEER_JWKS:
                 self._peer_jwks_cache.popitem(last=False)
+            for iss_k, kmap in fetched_by_iss.items():
+                self._peer_jwks_by_issuer.setdefault(iss_k, {}).update(kmap)
             self._peer_jwks_last_fetch = now_ts
 
     def export_jwks(self) -> Dict[str, Any]:
@@ -218,6 +261,7 @@ class OAuthSTSService:
             cid = form.get("client_id", "").strip()
             csec = form.get("client_secret", "").strip()
 
+        self._maybe_reload_credentials_file()
         if not cid or not csec:
             raise OAuthSTSError("missing_client_credentials")
         expected = self._client_secrets.get(cid)
@@ -227,20 +271,40 @@ class OAuthSTSService:
             raise OAuthSTSError(f"invalid_client_credentials:{cid}")
         return cid, cid
 
+    def _lookup_peer_jwk(self, unv_iss: str, kid: str) -> Optional[Dict[str, Any]]:
+        dyn_aliases: Dict[str, List[str]] = {}
+        if self._peer_issuer_aliases_provider is not None:
+            try:
+                dyn_aliases = {
+                    str(k).rstrip("/"): [str(a).rstrip("/") for a in (vals or ()) if str(a).strip()]
+                    for k, vals in (self._peer_issuer_aliases_provider() or {}).items()
+                }
+            except Exception:
+                dyn_aliases = {}
+        with self._lock:
+            if unv_iss:
+                if unv_iss in self._peer_jwks_by_issuer and kid in self._peer_jwks_by_issuer[unv_iss]:
+                    return self._peer_jwks_by_issuer[unv_iss][kid]
+                for alias_src in dyn_aliases.get(unv_iss) or ():
+                    if alias_src in self._peer_jwks_by_issuer and kid in self._peer_jwks_by_issuer[alias_src]:
+                        return self._peer_jwks_by_issuer[alias_src][kid]
+            if not self._peer_jwks_by_issuer:
+                return self._peer_jwks_cache.get(kid)
+        return None
+
     def _verify_subject_jwt(self, raw_jwt: str, allow_federated: bool = True) -> Dict[str, Any]:
-        hdr, _, _, _ = jws_parse_unverified(raw_jwt)
+        hdr, unv_claims, _, _ = jws_parse_unverified(raw_jwt)
         kid = str(hdr.get("kid") or "")
+        unv_iss = str(unv_claims.get("iss") or "").rstrip("/")
         own_jwk = self.keypair.public_jwk()
         candidate_jwk: Optional[Dict[str, Any]] = None
         if kid == own_jwk["kid"]:
             candidate_jwk = own_jwk
         elif allow_federated:
-            with self._lock:
-                candidate_jwk = self._peer_jwks_cache.get(kid)
+            candidate_jwk = self._lookup_peer_jwk(unv_iss, kid)
             if candidate_jwk is None:
                 self._refresh_federated_peer_jwks(force=True)
-                with self._lock:
-                    candidate_jwk = self._peer_jwks_cache.get(kid)
+                candidate_jwk = self._lookup_peer_jwk(unv_iss, kid)
         if candidate_jwk is None:
             raise OAuthSTSError(f"unknown_signing_kid:{kid}")
 
@@ -272,6 +336,7 @@ class OAuthSTSService:
         aud: Any,
         azp: str,
         scope: str,
+        lct_sub: Optional[str] = None,
         act: Optional[Dict[str, Any]] = None,
         typ: str = "JWT",
     ) -> Tuple[str, Dict[str, Any]]:
@@ -289,6 +354,8 @@ class OAuthSTSService:
             "exp": exp_ts,
             "scope": scope,
         }
+        if lct_sub:
+            claims["lct_sub"] = lct_sub
         if act is not None:
             claims["act"] = act
         jwt_str = jws_sign_compact(claims, self.keypair, typ=typ)
@@ -382,6 +449,7 @@ class OAuthSTSService:
             iss = self.realm_issuer(req)
 
             if grant_type == "password":
+                self._maybe_reload_credentials_file()
                 username = form.get("username", "").strip()
                 password = form.get("password", "")
                 expected_pw = self._user_passwords.get(username)
@@ -404,6 +472,32 @@ class OAuthSTSService:
                 else:
                     eff_scopes = default_scopes
                 scope_str = " ".join(eff_scopes)
+                if self.allow_multi_domain_principals:
+                    home_td = DEFAULT_USER_HOME_DOMAINS.get(username, self.trust_domain)
+                    canonical_user_sub = (
+                        username
+                        if (username.startswith("user:") and "@" in username)
+                        else (f"user:{username}" if "@" in username else f"user:{username}@{home_td}")
+                    )
+                else:
+                    if "@" in username:
+                        lhs_u, rhs_dom = username.rsplit("@", 1)
+                        clean_u = lhs_u[len("user:") :] if lhs_u.startswith("user:") else lhs_u
+                        if rhs_dom.strip().lower() != self.trust_domain:
+                            return (
+                                403,
+                                {
+                                    "error": "unauthorized_principal_domain",
+                                    "error_description": (
+                                        f"Sovereign STS for {self.trust_domain!r} refuses to issue "
+                                        f"foreign principal {username!r}"
+                                    ),
+                                },
+                                {},
+                            )
+                        canonical_user_sub = f"user:{clean_u}@{self.trust_domain}"
+                    else:
+                        canonical_user_sub = f"user:{username}@{self.trust_domain}"
                 aud_list = [cid for cid in STANDARD_OAUTH_CLIENT_IDS if cid != client_id]
                 acc_jwt, acc_claims = self._mint_jwt(
                     issuer=iss,
@@ -412,6 +506,7 @@ class OAuthSTSService:
                     aud=aud_list or client_id,
                     azp=client_id,
                     scope=scope_str,
+                    lct_sub=canonical_user_sub,
                 )
                 id_jwt, _ = self._mint_jwt(
                     issuer=iss,
@@ -420,6 +515,7 @@ class OAuthSTSService:
                     aud=client_id,
                     azp=client_id,
                     scope="openid profile email",
+                    lct_sub=canonical_user_sub,
                 )
                 return (
                     200,
@@ -516,6 +612,7 @@ class OAuthSTSService:
 
                 sub_val = str(subj_claims.get("sub") or "")
                 pref_user = str(subj_claims.get("preferred_username") or sub_val)
+                lct_sub_val = str(subj_claims.get("lct_sub") or "").strip() or None
                 ex_jwt, ex_claims = self._mint_jwt(
                     issuer=iss,
                     sub=sub_val,
@@ -523,6 +620,7 @@ class OAuthSTSService:
                     aud=target_aud,
                     azp=client_id,
                     scope=out_scope,
+                    lct_sub=lct_sub_val,
                     act=new_act,
                 )
                 with self._lock:

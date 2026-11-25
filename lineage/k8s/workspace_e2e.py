@@ -14,25 +14,67 @@ from __future__ import annotations
 import os
 import secrets
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import httpx
 
 from lineage.a2a import Message, TaskState
 from lineage.audit import DistributedAuditor, build_audit_query_headers
 from lineage.common.http_utils import HTTPRequestContext, ManagedHTTPService
-from lineage.protocol import PermissionLattice, TaskCheckpoint
+from lineage.protocol import PermissionLattice, TaskCheckpoint, compute_branch_idempotency_key
 from lineage.registry import AgentCard, AgentStatus
+
+
+def _resolve_beta_user_gateway(gw: Any) -> Tuple[str, str]:
+    """Resolve `beta-user-gateway` (`org-beta.io`) dynamically from signed domain descriptor."""
+    gw.syncer.sync_all(require_all=False, max_wait_sec=12.0)
+    if gw.descriptor_store is not None:
+        locs = gw.descriptor_store.get_locators("org-beta.io", "user_gateway")
+        if locs:
+            loc = locs[0]
+            return str(loc.origin_url).rstrip("/"), str(loc.spiffe_id or "spiffe://org-beta.io/ns/lineage-beta/sa/beta-user-gateway")
+    raise RuntimeError("No verified 'user_gateway' locator published in org-beta.io SignedDomainDescriptor")
+
+
+def _post_beta_gateway_mtls(
+    gw: Any,
+    path: str,
+    payload: Dict[str, Any],
+    timeout: float = 90.0,
+) -> httpx.Response:
+    origin, exp_spiffe = _resolve_beta_user_gateway(gw)
+    url = f"{origin}{path}"
+    with httpx.Client(
+        verify=gw.mtls_bundle.verify_for_target(
+            target_url=url,
+            expected_spiffe_id=exp_spiffe,
+        ),
+        timeout=timeout,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        return client.post(url, json=payload)
 
 
 def run_distributed_audit_for_task(
     gw: Any,
     task_id: str,
     entry_skill: str = "workspace.orchestrate",
+    entry_spiffe_ids: Optional[Sequence[str]] = None,
+    seed_domains: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Run stateless `DistributedAuditor` BFS pull over mTLS 1.3 (`0` central collector)."""
     gw.syncer.sync_all(require_all=False, max_wait_sec=10.0)
-    entry_card = gw.resolve_agent_card(skill=entry_skill, only_healthy=True)
+    eff_entries = (
+        [str(s) for s in entry_spiffe_ids if str(s).strip()]
+        if entry_spiffe_ids
+        else [gw.resolve_agent_card(skill=entry_skill, only_healthy=True).spiffe_id]
+    )
+    eff_seeds = (
+        [str(d) for d in seed_domains if str(d).strip()]
+        if seed_domains
+        else ["org-alpha.io", "org-beta.io", "org-payment.io"]
+    )
 
     ca_endpoints: Dict[str, str] = {"org-alpha.io": os.environ.get("ALPHA_CA_URL", "http://alpha-ca.lineage-alpha.svc.cluster.local:8090")}
     if gw.descriptor_store is not None:
@@ -57,8 +99,8 @@ def run_distributed_audit_for_task(
     )
     res = dist_auditor.pull_and_reconstruct(
         task_id=task_id,
-        entry_spiffe_ids=[entry_card.spiffe_id],
-        seed_domains=["org-alpha.io", "org-beta.io", "org-payment.io"],
+        entry_spiffe_ids=eff_entries,
+        seed_domains=eff_seeds,
     )
     return res.to_dict()
 
@@ -943,4 +985,1127 @@ def run_ws_scenario_5_degradation_compare_and_audit(
             "replayed_query_http": r_rep_q.status_code,
         },
         "distributed_audit": audit_s5,
+    }
+
+
+
+# =============================================================================
+# Milestone 10 (Platform v2.1) — 6 Expanded Domain-Vertical Scenarios (S2/S3/S5/S6/S7/S8)
+# =============================================================================
+
+
+def run_ws_scenario_6_bidirectional_fin_pingpong(
+    gw: Any, run_id: str
+) -> Dict[str, Any]:
+    """Catalog S2 (Financial Risk Control): Bidirectional `A -> B` & `B -> A` Ping-Pong + Joint Vault Change + Dual-Domain Revocation Interlock."""
+    alice_card = gw.resolve_agent_card(skill="workspace.orchestrate", only_healthy=True)
+    bob_card = gw.resolve_agent_card(
+        skill="workspace.tech_review", contains_spiffe="sa/assistant-bob", only_healthy=True
+    )
+
+    oidc_alice = gw.login_oidc_user("alice")
+    alice_jwt = str(oidc_alice.get("id_token") or oidc_alice["access_token"])
+    oidc_bob = gw.login_oidc_user("bob")
+    bob_jwt = str(oidc_bob.get("id_token") or oidc_bob["access_token"])
+    bob_access_jwt = str(oidc_bob["access_token"])
+
+    tid = f"ws-{run_id}-s6-fin-pingpong"
+    alice_perms = PermissionLattice.create(
+        tools=["service_diag_read", "commit_joint_change"],
+        param_whitelist={"change_id": ["FIN-RULE-42"]},
+        max_calls=10,
+    )
+    tok_alice, _ = gw.mint_root_for_user(
+        task_id=tid,
+        sub="user:alice@org-alpha.io",
+        permissions=alice_perms,
+        target_card=alice_card,
+        hop_segment="AssistantAlice",
+        user_oidc_token=alice_jwt,
+    )
+
+    # Round 1 (A -> B): Unilateral LCT probe fails 403 -> Bob OIDC consent -> CoAuth([alice, bob]) succeeds 200!
+    r_r1_unilat = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {"op": "probe_peer_private_resource", "target_tool": "service_diag_read"},
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_r1_unilat.status_code == 403, (r_r1_unilat.status_code, r_r1_unilat.text)
+
+    r_r1_co = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "request_peer_co_auth_and_read",
+            "target_tool": "service_diag_read",
+            "owner_oidc_token": bob_jwt,
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_r1_co.status_code == 200, (r_r1_co.status_code, r_r1_co.text)
+    diag_data = r_r1_co.json()["upstream_body"]["result"]["data"]
+    assert diag_data["desensitized"] is True and diag_data["raw_pii_present"] is False, diag_data
+    assert diag_data["co_authorized_principals"] == [
+        "user:alice@org-alpha.io",
+        "user:bob@org-beta.io",
+    ], diag_data
+
+    # Round 2 (REVERSE B -> A):
+    # (a) DELEGATION_MODE=dual OAuth Bearer probe by Bob (`beta-sts`) via A2A JSON-RPC `parts[].data.private_tool` -> 403!
+    r_r2_oauth, _ = gw.post_oauth_mtls(
+        alice_card,
+        bob_access_jwt,
+        "oauth_federated",
+        tid,
+        {
+            "jsonrpc": "2.0",
+            "id": "r2-oauth-a2a",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "ROLE_USER",
+                    "parts": [{"data": {"private_tool": "gateway_config_read"}}],
+                }
+            },
+        },
+        path="/a2a",
+        source_sts_domain="org-beta.io",
+    )
+    assert r_r2_oauth.status_code == 403, (r_r2_oauth.status_code, r_r2_oauth.text)
+    assert r_r2_oauth.json().get("error") == "CROSS_PRINCIPAL_DENIED", r_r2_oauth.json()
+
+    # (b) Symmetric `beta-user-gateway` dispatches Bob's Hop-0 token into `Assistant-B` (`reverse_pingpong_inspect_alpha`)!
+    tid_rev_b = f"{tid}-rev-b2a"
+    r_r2_b2a = _post_beta_gateway_mtls(
+        gw,
+        "/v1/gateway/dispatch",
+        {
+            "task_id": tid_rev_b,
+            "sub": "user:bob@org-beta.io",
+            "user_oidc_token": bob_jwt,
+            "first_hop_spiffe_id": bob_card.spiffe_id,
+            "first_hop_jkt": bob_card.jkt,
+            "first_hop_public_jwk": bob_card.public_jwk,
+            "first_hop_return_endpoint": bob_card.return_endpoint,
+            "hop_segment": "AssistantBobReverse",
+            "permissions": PermissionLattice.create(
+                tools=["gateway_config_read", "alice_private_roadmap"], max_calls=8
+            ).to_dict(),
+            "target_endpoint": bob_card.endpoint,
+            "payload": {
+                "op": "reverse_pingpong_inspect_alpha",
+                "alice_oidc_token": alice_jwt,
+                "alpha_mcp_target": "skill://workspace.orchestrate",
+            },
+        },
+    )
+    assert r_r2_b2a.status_code == 200, (r_r2_b2a.status_code, r_r2_b2a.text)
+    b2a_body = r_r2_b2a.json()["upstream_body"]
+    assert b2a_body["unilateral_gateway_config_http"] == 403, b2a_body
+    assert b2a_body["unilateral_roadmap_http"] == 403, b2a_body
+    assert b2a_body["roadmap_consent_refusal_http"] == 403, b2a_body
+    rev_gw_cfg = b2a_body["reverse_coauth_gateway_config"]
+    assert rev_gw_cfg["desensitized"] is True, rev_gw_cfg
+    assert rev_gw_cfg["co_authorized_principals"] == [
+        "user:bob@org-beta.io",
+        "user:alice@org-alpha.io",
+    ], rev_gw_cfg
+
+    # Round 3: Shared-Vault `commit_joint_change("FIN-RULE-42")` + Dual-Domain Revocation Interlock!
+    idem_chg = compute_branch_idempotency_key(tid, "fin-rule-42")
+    r_r3_unilat = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "tool_name": "commit_joint_change",
+            "arguments": {"change_id": "FIN-RULE-42", "risk_rule_digest": "sha256:rule42-v1"},
+            "idempotency_key": idem_chg,
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_r3_unilat.status_code == 403, (r_r3_unilat.status_code, r_r3_unilat.text)
+    assert (r_r3_unilat.json().get("upstream_body") or {}).get("error") == "DUAL_APPROVAL_REQUIRED", r_r3_unilat.json()
+
+    r_r3_consent = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "request_peer_co_auth_and_read",
+            "target_tool": "commit_joint_change",
+            "consent_tools": ["commit_joint_change"],
+            "consent_param_whitelist": {"change_id": ["FIN-RULE-42"]},
+            "owner_oidc_token": bob_jwt,
+            "cache_consent_key": f"{tid}:bob-chg",
+            "mint_consent_only": True,
+            "consent_hop_segment": "BobChangeConsent",
+            "handshake_hop_segment": "ChangeConsentHandshake",
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_r3_consent.status_code == 200, (r_r3_consent.status_code, r_r3_consent.text)
+    bob_consent_prefix = r_r3_consent.json()["consent_lineage_path"]
+
+    r_r3_commit = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:bob-chg",
+            "tool_name": "commit_joint_change",
+            "arguments": {"change_id": "FIN-RULE-42", "risk_rule_digest": "sha256:rule42-v1"},
+            "idempotency_key": idem_chg,
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_r3_commit.status_code == 200, (r_r3_commit.status_code, r_r3_commit.text)
+    chg_receipt = r_r3_commit.json()["upstream_body"]["result"]["data"]
+    assert chg_receipt["co_authorized_principals"] == [
+        "user:alice@org-alpha.io",
+        "user:bob@org-beta.io",
+    ], chg_receipt
+
+    # Conflicting parameter replay on same idempotency_key -> 409 IDEMPOTENCY_PARAMETER_MISMATCH!
+    r_r3_conflict = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:bob-chg",
+            "tool_name": "commit_joint_change",
+            "arguments": {"change_id": "FIN-RULE-42", "risk_rule_digest": "sha256:tampered-v2"},
+            "idempotency_key": idem_chg,
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_r3_conflict.status_code == 409, (r_r3_conflict.status_code, r_r3_conflict.text)
+
+    # Foreign principal (`user:alice@org-alpha.io`) attempting `revoke_own_consent` on `Assistant-B` -> 403!
+    tok_foreign_rev, _ = gw.mint_root_for_user(
+        task_id=f"{tid}-foreign-rev",
+        sub="user:alice@org-alpha.io",
+        permissions=PermissionLattice.create(tools=["service_diag_read"], max_calls=2),
+        target_card=bob_card,
+        hop_segment="ForeignRevokeAttempt",
+        user_oidc_token=alice_jwt,
+    )
+    r_foreign_rev = gw.post_lct_mtls(
+        bob_card.endpoint,
+        tok_foreign_rev,
+        {"op": "revoke_own_consent", "target_task_id": tid, "prefix": bob_consent_prefix},
+        expected_spiffe_id=bob_card.spiffe_id,
+    )
+    assert r_foreign_rev.status_code == 403, (r_foreign_rev.status_code, r_foreign_rev.text)
+    assert r_foreign_rev.json().get("error") == "FORBIDDEN_FOREIGN_CONSENT_REVOCATION", r_foreign_rev.json()
+
+    # Bob revokes his beta consent prefix -> subsequent CoAuth commit on Shared-Vault immediately fails 403!
+    r_revoke_bob = _post_beta_gateway_mtls(
+        gw,
+        "/v1/gateway/dispatch",
+        {
+            "task_id": f"{tid}-revoke-ctl",
+            "sub": "user:bob@org-beta.io",
+            "user_oidc_token": bob_jwt,
+            "first_hop_spiffe_id": bob_card.spiffe_id,
+            "first_hop_jkt": bob_card.jkt,
+            "first_hop_public_jwk": bob_card.public_jwk,
+            "first_hop_return_endpoint": bob_card.return_endpoint,
+            "hop_segment": "BobRevokeConsent",
+            "permissions": PermissionLattice.create(tools=["service_diag_read"], max_calls=2).to_dict(),
+            "target_endpoint": bob_card.endpoint,
+            "payload": {
+                "op": "revoke_own_consent",
+                "target_task_id": tid,
+                "prefix": bob_consent_prefix,
+                "reason": "bob_withdrew_joint_change_approval",
+            },
+        },
+    )
+    assert r_revoke_bob.status_code == 200, (r_revoke_bob.status_code, r_revoke_bob.text)
+
+    r_r3_post_rev = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:bob-chg",
+            "tool_name": "commit_joint_change",
+            "arguments": {"change_id": "FIN-RULE-42", "risk_rule_digest": "sha256:rule42-v3"},
+            "idempotency_key": compute_branch_idempotency_key(tid, "fin-rule-42-after-rev"),
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_r3_post_rev.status_code == 403, (r_r3_post_rev.status_code, r_r3_post_rev.text)
+
+    audit_s6 = run_distributed_audit_for_task(gw, tid)
+    assert audit_s6["reconstructed_complete"] is True, audit_s6
+    assert audit_s6["unreachable_nodes"] == {}, audit_s6
+
+    return {
+        "status": "PASS",
+        "task_id": tid,
+        "reverse_task_id": tid_rev_b,
+        "round1_a_to_b_unilateral_http": r_r1_unilat.status_code,
+        "round1_a_to_b_coauth_http": r_r1_co.status_code,
+        "round2_dual_oauth_b_to_a_http": r_r2_oauth.status_code,
+        "round2_b_to_a_unilateral_http": b2a_body["unilateral_gateway_config_http"],
+        "round2_b_to_a_roadmap_refusal_http": b2a_body["roadmap_consent_refusal_http"],
+        "round2_b_to_a_reverse_coauth_principals": rev_gw_cfg["co_authorized_principals"],
+        "round3_unilateral_commit_http": r_r3_unilat.status_code,
+        "round3_coauth_commit_http": r_r3_commit.status_code,
+        "round3_idempotency_conflict_http": r_r3_conflict.status_code,
+        "round3_post_bob_revocation_http": r_r3_post_rev.status_code,
+        "distributed_audit_complete": audit_s6["reconstructed_complete"],
+    }
+
+
+def run_ws_scenario_7_legal_redline_negotiation(
+    gw: Any, run_id: str
+) -> Dict[str, Any]:
+    """Catalog S3 (Enterprise Legal & Procurement): Multi-Round Redline Sub-Delegation + Lattice Numeric/Whitelist Guardrails."""
+    alice_card = gw.resolve_agent_card(skill="workspace.orchestrate", only_healthy=True)
+    oidc_alice = gw.login_oidc_user("alice")
+    alice_jwt = str(oidc_alice.get("id_token") or oidc_alice["access_token"])
+    oidc_bob = gw.login_oidc_user("bob")
+    bob_jwt = str(oidc_bob.get("id_token") or oidc_bob["access_token"])
+
+    tid = f"ws-{run_id}-s7-legal-nda"
+    buyer_perms = PermissionLattice.create(
+        tools=["legal_redline_review", "commit_negotiated_contract"],
+        numeric_bounds={"unit_price_usd": 120.0, "max_penalty_pct": 10.0},
+        param_whitelist={
+            "contract_id": ["NDA-2026-99"],
+            "warranty_tier": ["24M", "36M"],
+        },
+        max_calls=12,
+    )
+    tok_alice, _ = gw.mint_root_for_user(
+        task_id=tid,
+        sub="user:alice@org-alpha.io",
+        permissions=buyer_perms,
+        target_card=alice_card,
+        hop_segment="BuyerAlice",
+        user_oidc_token=alice_jwt,
+    )
+
+    # Round 1: 3-hop legal sub-delegation (`Alice -> B -> Dave`); Dave blocked from `pricing_floor_read` (403)!
+    r_redline = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {"op": "bob_relay_legal_redline", "contract_id": "NDA-2026-99"},
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_redline.status_code == 200, (r_redline.status_code, r_redline.text)
+    rl_body = r_redline.json()
+    assert rl_body["pricing_floor_probe_http"] == 403, rl_body
+    assert rl_body["legal_review"]["desensitized"] is True, rl_body
+
+    # Round 2: Unilateral contract commit fails 403 DUAL_APPROVAL_REQUIRED
+    r_unilat_ct = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "tool_name": "commit_negotiated_contract",
+            "arguments": {
+                "contract_id": "NDA-2026-99",
+                "warranty_tier": "24M",
+                "unit_price_usd": 115.0,
+                "max_penalty_pct": 8.0,
+            },
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_unilat_ct.status_code == 403, (r_unilat_ct.status_code, r_unilat_ct.text)
+
+    # Obtain seller (Bob) consent with wider seller ceiling ($200, 12%, 12M/24M/36M)
+    r_seller_c = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "request_peer_co_auth_and_read",
+            "target_tool": "commit_negotiated_contract",
+            "consent_tools": ["commit_negotiated_contract"],
+            "consent_numeric_bounds": {"unit_price_usd": 200.0, "max_penalty_pct": 12.0},
+            "consent_param_whitelist": {
+                "contract_id": ["NDA-2026-99"],
+                "warranty_tier": ["12M", "24M", "36M"],
+            },
+            "owner_oidc_token": bob_jwt,
+            "cache_consent_key": f"{tid}:seller-consent",
+            "mint_consent_only": True,
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_seller_c.status_code == 200, (r_seller_c.status_code, r_seller_c.text)
+
+    # Round 3: Prompt-injected concession breaches buyer's `unit_price_usd <= 120.0` (`165.0`) -> 403 LATTICE_PERMISSION_DENIED!
+    r_breach_price = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:seller-consent",
+            "tool_name": "commit_negotiated_contract",
+            "arguments": {
+                "contract_id": "NDA-2026-99",
+                "warranty_tier": "24M",
+                "unit_price_usd": 165.0,
+                "max_penalty_pct": 8.0,
+            },
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_breach_price.status_code == 403, (r_breach_price.status_code, r_breach_price.text)
+    assert (r_breach_price.json().get("upstream_body") or {}).get("error") == "LATTICE_PERMISSION_DENIED", r_breach_price.json()
+
+    # Disallowed warranty_tier `12M` -> 403 LATTICE_PERMISSION_DENIED!
+    r_breach_tier = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:seller-consent",
+            "tool_name": "commit_negotiated_contract",
+            "arguments": {
+                "contract_id": "NDA-2026-99",
+                "warranty_tier": "12M",
+                "unit_price_usd": 115.0,
+                "max_penalty_pct": 8.0,
+            },
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_breach_tier.status_code == 403, (r_breach_tier.status_code, r_breach_tier.text)
+
+    # Round 4: Compliant terms within `[alice ⊓ bob]` lattice (`$115.0`, `8.0%`, `24M`) -> 200!
+    r_ok_ct = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:seller-consent",
+            "tool_name": "commit_negotiated_contract",
+            "arguments": {
+                "contract_id": "NDA-2026-99",
+                "warranty_tier": "24M",
+                "unit_price_usd": 115.0,
+                "max_penalty_pct": 8.0,
+            },
+            "idempotency_key": compute_branch_idempotency_key(tid, "nda-99"),
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_ok_ct.status_code == 200, (r_ok_ct.status_code, r_ok_ct.text)
+    ct_data = r_ok_ct.json()["upstream_body"]["result"]["data"]
+    assert ct_data["unit_price_usd"] == 115.0 and ct_data["warranty_tier"] == "24M", ct_data
+
+    audit_s7 = run_distributed_audit_for_task(gw, tid)
+    assert audit_s7["reconstructed_complete"] is True, audit_s7
+    assert audit_s7["unreachable_nodes"] == {}, audit_s7
+
+    return {
+        "status": "PASS",
+        "task_id": tid,
+        "dave_pricing_floor_probe_http": rl_body["pricing_floor_probe_http"],
+        "unilateral_commit_http": r_unilat_ct.status_code,
+        "over_budget_165_usd_http": r_breach_price.status_code,
+        "weak_warranty_12m_http": r_breach_tier.status_code,
+        "compliant_coauth_commit_http": r_ok_ct.status_code,
+        "committed_contract": ct_data,
+        "distributed_audit_complete": audit_s7["reconstructed_complete"],
+    }
+
+
+def run_ws_scenario_8_supply_chain_sod(
+    gw: Any, run_id: str
+) -> Dict[str, Any]:
+    """Catalog S5 (Compliance / Release SoD): 4-Hop Signed Scanner Attestation + Carol OIDC Approval (`[alice, carol]`)."""
+    alice_card = gw.resolve_agent_card(skill="workspace.orchestrate", only_healthy=True)
+    oidc_alice = gw.login_oidc_user("alice")
+    alice_jwt = str(oidc_alice.get("id_token") or oidc_alice["access_token"])
+    oidc_carol = gw.login_oidc_user("carol")
+    carol_jwt = str(oidc_carol.get("id_token") or oidc_carol["access_token"])
+
+    tid = f"ws-{run_id}-s8-sod-release"
+    dev_perms = PermissionLattice.create(
+        tools=["sast_scan", "sign_release"],
+        param_whitelist={"release_id": ["REL-2026-884", "REL-2026-999"]},
+        max_calls=10,
+    )
+    tok_alice, _ = gw.mint_root_for_user(
+        task_id=tid,
+        sub="user:alice@org-alpha.io",
+        permissions=dev_perms,
+        target_card=alice_card,
+        hop_segment="DeveloperAlice",
+        user_oidc_token=alice_jwt,
+    )
+
+    # 1) 4-hop `Alice -> A -> B -> Dave` signed compliance/SAST attestation (`lct-compliance-attestation+jwt`)!
+    r_scan = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "sast_scan_pipeline",
+            "release_id": "REL-2026-884",
+            "artifact_sha256": "sha256:9f884c0ffee12345",
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_scan.status_code == 200, (r_scan.status_code, r_scan.text)
+    scan_out = r_scan.json()
+    att_jws = str(scan_out["attestation_jws"])
+    assert scan_out["scanner_spiffe_id"].endswith("/sa/assistant-dave"), scan_out
+
+    # 2) Unilateral `sign_release` by Developer Alice (even with valid Dave attestation!) -> 403 DUAL_APPROVAL_REQUIRED!
+    r_self_approve = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "tool_name": "sign_release",
+            "arguments": {
+                "release_id": "REL-2026-884",
+                "compliance_attestation_jws": att_jws,
+            },
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_self_approve.status_code == 403, (r_self_approve.status_code, r_self_approve.text)
+    assert (r_self_approve.json().get("upstream_body") or {}).get("error") == "DUAL_APPROVAL_REQUIRED", r_self_approve.json()
+
+    # 3) Obtain Release Approver Carol's real Keycloak OIDC consent via `pay-ca /v1/ca/mint-consent-token`!
+    r_carol_c = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "request_peer_co_auth_and_read",
+            "target_tool": "sign_release",
+            "target_peer_skill": "workspace.biz_procurement",
+            "consent_tools": ["sign_release"],
+            "consent_param_whitelist": {"release_id": ["REL-2026-884", "REL-2026-999"]},
+            "owner_oidc_token": carol_jwt,
+            "cache_consent_key": f"{tid}:carol-rel",
+            "mint_consent_only": True,
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_carol_c.status_code == 200, (r_carol_c.status_code, r_carol_c.text)
+
+    # 4) Missing attestation & mismatched `release_id` (`REL-2026-999` vs `REL-2026-884`) -> 403!
+    r_missing_att = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:carol-rel",
+            "tool_name": "sign_release",
+            "arguments": {"release_id": "REL-2026-884", "compliance_attestation_jws": ""},
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_missing_att.status_code == 403, (r_missing_att.status_code, r_missing_att.text)
+
+    r_mismatch_rel = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:carol-rel",
+            "tool_name": "sign_release",
+            "arguments": {
+                "release_id": "REL-2026-999",
+                "compliance_attestation_jws": att_jws,
+            },
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_mismatch_rel.status_code == 403, (r_mismatch_rel.status_code, r_mismatch_rel.text)
+    assert (r_mismatch_rel.json().get("upstream_body") or {}).get("error") == "MISSING_OR_INVALID_COMPLIANCE_ATTESTATION", r_mismatch_rel.json()
+
+    # 5) Valid `CoAuthorizedToken([alice, carol])` + valid Dave `REL-2026-884` attestation -> 200!
+    r_rel_ok = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "call_mcp_with_wallet",
+            "use_consent_key": f"{tid}:carol-rel",
+            "tool_name": "sign_release",
+            "arguments": {
+                "release_id": "REL-2026-884",
+                "compliance_attestation_jws": att_jws,
+            },
+            "idempotency_key": compute_branch_idempotency_key(tid, "rel-884"),
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_rel_ok.status_code == 200, (r_rel_ok.status_code, r_rel_ok.text)
+    rel_data = r_rel_ok.json()["upstream_body"]["result"]["data"]
+    assert rel_data["sod_verified"] is True, rel_data
+    assert rel_data["co_authorized_principals"] == [
+        "user:alice@org-alpha.io",
+        "user:carol@org-payment.io",
+    ], rel_data
+
+    audit_s8 = run_distributed_audit_for_task(gw, tid)
+    assert audit_s8["reconstructed_complete"] is True, audit_s8
+    assert audit_s8["unreachable_nodes"] == {}, audit_s8
+
+    return {
+        "status": "PASS",
+        "task_id": tid,
+        "scanner_spiffe_id": scan_out["scanner_spiffe_id"],
+        "unilateral_self_approve_http": r_self_approve.status_code,
+        "missing_attestation_http": r_missing_att.status_code,
+        "mismatched_release_attestation_http": r_mismatch_rel.status_code,
+        "sod_coauth_release_http": r_rel_ok.status_code,
+        "release_receipt": rel_data,
+        "distributed_audit_complete": audit_s8["reconstructed_complete"],
+    }
+
+
+def run_ws_scenario_9_federated_medical_cohort(
+    gw: Any, run_id: str
+) -> Dict[str, Any]:
+    """Catalog S6 (Healthcare / Risk Federated Cohort): Multi-Owner DP Stats + Raw Export Deny + Cross-Task Replay Block."""
+    alice_card = gw.resolve_agent_card(skill="workspace.orchestrate", only_healthy=True)
+    oidc_alice = gw.login_oidc_user("alice")
+    alice_jwt = str(oidc_alice.get("id_token") or oidc_alice["access_token"])
+    oidc_bob = gw.login_oidc_user("bob")
+    bob_jwt = str(oidc_bob.get("id_token") or oidc_bob["access_token"])
+    oidc_carol = gw.login_oidc_user("carol")
+    carol_jwt = str(oidc_carol.get("id_token") or oidc_carol["access_token"])
+
+    tid = f"ws-{run_id}-s9-med-cohort"
+    study_id = "STUDY-MED-2026-07"
+    med_perms = PermissionLattice.create(
+        tools=[
+            "cohort_aggregate_stats",
+            "export_raw_patient_records",
+            "federated_cohort_aggregate",
+        ],
+        param_whitelist={"study_id": [study_id]},
+        max_calls=12,
+    )
+    tok_med, _ = gw.mint_root_for_user(
+        task_id=tid,
+        sub="user:alice@org-alpha.io",
+        permissions=med_perms,
+        target_card=alice_card,
+        hop_segment="ResearcherAlice",
+        user_oidc_token=alice_jwt,
+    )
+
+    # 1) Raw patient record export blocked `403` on BOTH Hospital-B (`Assistant-B`) & Institution-C (`Assistant-C`),
+    #    and CA consent policy refuses `export_raw_patient_records` (`403`)!
+    r_raw_b = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_med,
+        {
+            "op": "probe_peer_private_resource",
+            "target_tool": "export_raw_patient_records",
+            "target_peer_mcp": "skill://workspace.bob_private",
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    r_raw_c = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_med,
+        {
+            "op": "probe_peer_private_resource",
+            "target_tool": "export_raw_patient_records",
+            "target_peer_mcp": "skill://workspace.carol_private",
+            "fallback_peer_skill": "workspace.biz_procurement",
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_raw_b.status_code == 403 and r_raw_c.status_code == 403, (r_raw_b.status_code, r_raw_c.status_code)
+
+    r_raw_consent_b = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_med,
+        {
+            "op": "request_peer_co_auth_and_read",
+            "target_tool": "export_raw_patient_records",
+            "owner_oidc_token": bob_jwt,
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_raw_consent_b.status_code == 403, (r_raw_consent_b.status_code, r_raw_consent_b.text)
+
+    # 2) Scoped consent from Data Steward Bob (`org-beta`) & Data Steward Carol (`org-payment`) for `STUDY-MED-2026-07`!
+    r_coh_b = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_med,
+        {
+            "op": "request_peer_co_auth_and_read",
+            "target_tool": "cohort_aggregate_stats",
+            "target_peer_skill": "workspace.tech_review",
+            "target_peer_mcp": "skill://workspace.bob_private",
+            "consent_param_whitelist": {"study_id": [study_id]},
+            "arguments": {"study_id": study_id},
+            "owner_oidc_token": bob_jwt,
+            "cache_consent_key": f"{tid}:bob-med-consent",
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_coh_b.status_code == 200, (r_coh_b.status_code, r_coh_b.text)
+    dig_b = r_coh_b.json()["upstream_body"]["result"]["data"]
+
+    r_coh_c = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_med,
+        {
+            "op": "request_peer_co_auth_and_read",
+            "target_tool": "cohort_aggregate_stats",
+            "target_peer_skill": "workspace.biz_procurement",
+            "target_peer_mcp": "skill://workspace.carol_private",
+            "consent_param_whitelist": {"study_id": [study_id]},
+            "arguments": {"study_id": study_id},
+            "owner_oidc_token": carol_jwt,
+            "handshake_hop_segment": "CarolConsentHandshake",
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_coh_c.status_code == 200, (r_coh_c.status_code, r_coh_c.text)
+    dig_c = r_coh_c.json()["upstream_body"]["result"]["data"]
+    assert dig_b["raw_pii_present"] is False and dig_c["raw_pii_present"] is False
+    assert bool(dig_b.get("digest_jws")) and bool(dig_c.get("digest_jws"))
+
+    # 3a) Unsigned / synthesized fake institution digest -> 403 INVALID_COHORT_DIGEST_SIGNATURE!
+    fake_unsigned_dig = {k: v for k, v in dig_c.items() if k != "digest_jws"}
+    r_unsigned_agg = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_med,
+        {
+            "op": "call_mcp_with_wallet",
+            "tool_name": "federated_cohort_aggregate",
+            "arguments": {
+                "study_id": study_id,
+                "cohort_digests": [dig_b, fake_unsigned_dig],
+            },
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_unsigned_agg.status_code == 403, (r_unsigned_agg.status_code, r_unsigned_agg.text)
+    assert (
+        (r_unsigned_agg.json().get("upstream_body") or {}).get("error")
+        == "INVALID_COHORT_DIGEST_SIGNATURE"
+    ), r_unsigned_agg.json()
+
+    # 3b) Aggregate SVID-signed desensitized digests in `Shared-Vault` -> 200!
+    r_agg = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_med,
+        {
+            "op": "call_mcp_with_wallet",
+            "tool_name": "federated_cohort_aggregate",
+            "arguments": {
+                "study_id": study_id,
+                "cohort_digests": [dig_b, dig_c],
+            },
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_agg.status_code == 200, (r_agg.status_code, r_agg.text)
+    agg_data = r_agg.json()["upstream_body"]["result"]["data"]
+    assert (
+        agg_data["institutions_aggregated"] == 2
+        and agg_data["raw_pii_present"] is False
+        and agg_data.get("cohort_digests_verified") is True
+        and len(agg_data.get("verified_institution_spiffe_ids") or []) == 2
+    ), agg_data
+
+    # 4) Cross-Task / Cross-Purpose Replay: reusing Hospital-B's `STUDY-MED-2026-07` consent in `T_commercial` -> 403!
+    tid_comm = f"{tid}-commercial-replay"
+    tok_comm, _ = gw.mint_root_for_user(
+        task_id=tid_comm,
+        sub="user:alice@org-alpha.io",
+        permissions=PermissionLattice.create(
+            tools=["cohort_aggregate_stats"],
+            param_whitelist={"study_id": ["STUDY-COMMERCIAL-99"]},
+            max_calls=4,
+        ),
+        target_card=alice_card,
+        hop_segment="CommercialAlice",
+        user_oidc_token=alice_jwt,
+    )
+    r_cross_task = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_comm,
+        {
+            "op": "call_mcp_with_wallet",
+            "target_mcp": "skill://workspace.bob_private",
+            "use_consent_key": f"{tid}:bob-med-consent",
+            "tool_name": "cohort_aggregate_stats",
+            "arguments": {"study_id": "STUDY-COMMERCIAL-99"},
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_cross_task.status_code == 403, (r_cross_task.status_code, r_cross_task.text)
+
+    audit_s9 = run_distributed_audit_for_task(gw, tid)
+    assert audit_s9["reconstructed_complete"] is True, audit_s9
+    assert audit_s9["unreachable_nodes"] == {}, audit_s9
+
+    return {
+        "status": "PASS",
+        "task_id": tid,
+        "raw_export_hospital_b_http": r_raw_b.status_code,
+        "raw_export_inst_c_http": r_raw_c.status_code,
+        "raw_export_consent_refusal_http": r_raw_consent_b.status_code,
+        "aggregated_cohort": agg_data,
+        "cross_task_commercial_replay_http": r_cross_task.status_code,
+        "distributed_audit_complete": audit_s9["reconstructed_complete"],
+    }
+
+
+def run_ws_scenario_10_prompt_injection_cascading_revocation(
+    gw: Any, run_id: str
+) -> Dict[str, Any]:
+    """Catalog S7: 4-Hop Indirect Prompt Injection Offline Block + Cascading Subtree Revocation of Pre-Minted Hop-3 Token."""
+    alice_card = gw.resolve_agent_card(skill="workspace.orchestrate", only_healthy=True)
+    bob_card = gw.resolve_agent_card(
+        skill="workspace.tech_review", contains_spiffe="sa/assistant-bob", only_healthy=True
+    )
+    dave_card = gw.resolve_agent_card(skill="workspace.deep_analysis", only_healthy=True)
+
+    oidc_alice = gw.login_oidc_user("alice")
+    alice_jwt = str(oidc_alice.get("id_token") or oidc_alice["access_token"])
+
+    tid = f"ws-{run_id}-s10-inj-cascade"
+    root_perms = PermissionLattice.create(
+        tools=[
+            "reserve_cloud_budget",
+            "procure_vendor_quote",
+            "query_operation_status",
+            "record_compliance_note",
+            "lock_joint_project",
+        ],
+        max_amount=700.0,
+        allowed_targets=[
+            "cloud-infra-escrow",
+            "vendor-procurement-escrow",
+            "compliance-ledger",
+        ],
+        param_whitelist={"project_code": ["PRJ-AUDIT"]},
+        max_calls=16,
+    )
+    tok_alice, _ = gw.mint_root_for_user(
+        task_id=tid,
+        sub="user:alice@org-alpha.io",
+        permissions=root_perms,
+        target_card=alice_card,
+        hop_segment="AssistantAlice",
+        user_oidc_token=alice_jwt,
+    )
+
+    # 1) Execute 4-hop fanout (`Alice -> A -> {B -> D -> Vault, C -> Vault}`)!
+    r_fan = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {
+            "op": "prompt_injection_audit_fanout",
+            "project_code": "PRJ-AUDIT",
+            "cache_key": tid,
+        },
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_fan.status_code == 200, (r_fan.status_code, r_fan.text)
+    fan_out = r_fan.json()
+    bob_prefix = str(fan_out["branch_bob_dave"]["hop2_lineage_path"])
+    dave_res = fan_out["branch_bob_dave"]["dave_hop3"]
+    assert dave_res["legitimate_note_http"] == 200, dave_res
+    assert dave_res["injected_budget_escalation_http"] == 403, dave_res
+    assert dave_res["injected_param_exfil_http"] == 403, dave_res
+
+    # 2) Compromise detected on `Assistant-B`: revoke prefix `/ws-.../AssistantAlice/TechReviewBob`!
+    rev_ev = gw.rev_client.revoke_prefix(
+        caller=gw.identity,
+        prefix=bob_prefix,
+        reason="s10_compromised_bob_subtree_quarantine",
+        authority_token=tok_alice,
+    )
+    gw.emit_revocation_audit(
+        task_id=tid,
+        sub="user:alice@org-alpha.io",
+        revocation_event=rev_ev,
+        root_block_hash="",
+        current_block_hash="",
+    )
+
+    # 3) BOTH `Assistant-B`'s pre-revocation Hop-2 token AND `Assistant-D`'s ALREADY-MINTED Hop-3 token
+    #    immediately fail `403` against `Shared-Vault`!
+    tok_ctl_b, _ = gw.mint_root_for_user(
+        task_id=f"{tid}-probe-b",
+        sub="user:alice@org-alpha.io",
+        permissions=PermissionLattice.create(tools=["query_operation_status"], max_calls=3),
+        target_card=bob_card,
+        hop_segment="ProbeBobCtl",
+    )
+    r_hop2_rep = gw.post_lct_mtls(
+        bob_card.endpoint,
+        tok_ctl_b,
+        {
+            "op": "replay_cached_pre_revocation_token",
+            "cache_key": f"{tid}:bob-hop2",
+            "tool_name": "query_operation_status",
+            "arguments": {"idempotency_key": f"probe-{tid}"},
+        },
+        expected_spiffe_id=bob_card.spiffe_id,
+    )
+    assert r_hop2_rep.status_code == 403, (r_hop2_rep.status_code, r_hop2_rep.text)
+
+    tok_ctl_d, _ = gw.mint_root_for_user(
+        task_id=f"{tid}-probe-d",
+        sub="user:alice@org-alpha.io",
+        permissions=PermissionLattice.create(tools=["record_compliance_note"], max_calls=3),
+        target_card=dave_card,
+        hop_segment="ProbeDaveCtl",
+    )
+    r_hop3_rep = gw.post_lct_mtls(
+        dave_card.endpoint,
+        tok_ctl_d,
+        {
+            "op": "replay_cached_pre_revocation_token",
+            "cache_key": f"{tid}:dave-hop3",
+            "tool_name": "record_compliance_note",
+            "arguments": {"project_code": "PRJ-AUDIT", "note": "post-revoke-replay"},
+        },
+        expected_spiffe_id=dave_card.spiffe_id,
+    )
+    assert r_hop3_rep.status_code == 403, (r_hop3_rep.status_code, r_hop3_rep.text)
+    assert (r_hop3_rep.json().get("upstream_body") or {}).get("error") == "LINEAGE_REVOKED", r_hop3_rep.json()
+
+    # 4) Parallel innocent `Assistant-C` branch survives smoothly (`ALLOW_DEGRADED_DAG`)!
+    r_lock = gw.post_lct_mtls(
+        alice_card.endpoint,
+        tok_alice,
+        {"op": "trigger_converged_project_lock", "project_code": "PRJ-AUDIT"},
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_lock.status_code == 200, (r_lock.status_code, r_lock.text)
+    lock_outcomes = r_lock.json()["upstream_body"]["lock_outcomes"]
+    assert lock_outcomes["cloud-infra-escrow"]["http_status"] == 403, lock_outcomes
+    assert lock_outcomes["vendor-procurement-escrow"]["http_status"] == 200, lock_outcomes
+
+    audit_s10 = run_distributed_audit_for_task(gw, tid)
+    assert audit_s10["reconstructed_complete"] is True, audit_s10
+    assert audit_s10["unreachable_nodes"] == {}, audit_s10
+    assert "SMOOTH_DAG_DEGRADATION_ON_REVOCATION" in audit_s10["resilience_classifications"], audit_s10
+
+    return {
+        "status": "PASS",
+        "task_id": tid,
+        "revoked_bob_prefix": bob_prefix,
+        "hop3_legitimate_note_http": dave_res["legitimate_note_http"],
+        "hop3_injected_budget_http": dave_res["injected_budget_escalation_http"],
+        "hop3_injected_exfil_http": dave_res["injected_param_exfil_http"],
+        "post_revoke_bob_hop2_http": r_hop2_rep.status_code,
+        "post_revoke_dave_preminted_hop3_http": r_hop3_rep.status_code,
+        "degraded_vault_outcomes": {k: v["http_status"] for k, v in lock_outcomes.items()},
+        "distributed_audit_complete": audit_s10["reconstructed_complete"],
+    }
+
+
+def run_ws_scenario_11_symmetric_beta_entry_and_token_theft(
+    gw: Any, run_id: str
+) -> Dict[str, Any]:
+    """Catalog S8: Symmetric `org-beta` Entry (`beta-user-gateway`) + Stolen-Token Replay (`403`) + Cross-Tenant Vault Isolation."""
+    alice_card = gw.resolve_agent_card(skill="workspace.orchestrate", only_healthy=True)
+    bob_card = gw.resolve_agent_card(
+        skill="workspace.tech_review", contains_spiffe="sa/assistant-bob", only_healthy=True
+    )
+    vault_mcp_card = gw.resolve_agent_card(skill="mcp.workspace-vault", only_healthy=True)
+
+    oidc_alice = gw.login_oidc_user("alice")
+    alice_jwt = str(oidc_alice.get("id_token") or oidc_alice["access_token"])
+    oidc_bob = gw.login_oidc_user("bob")
+    bob_jwt = str(oidc_bob.get("id_token") or oidc_bob["access_token"])
+
+    tid = f"ws-{run_id}-s11-beta-sym"
+    bob_perms = PermissionLattice.create(
+        tools=[
+            "gateway_config_read",
+            "record_compliance_note",
+            "procure_vendor_quote",
+            "query_operation_status",
+        ],
+        max_amount=300.0,
+        allowed_targets=["compliance-ledger", "vendor-procurement-escrow"],
+        param_whitelist={"project_code": ["PRJ-BETA-SYM"]},
+        max_calls=12,
+    )
+
+    # 1) Adversarial auth checks on `beta-user-gateway` (`POST /v1/gateway/mint-root`):
+    #    - Missing OIDC -> 401
+    #    - Alice's `@org-alpha.io` OIDC -> 403 GATEWAY_PRINCIPAL_DOMAIN_MISMATCH
+    #    - Spoofed `sub` -> 403 GATEWAY_PRINCIPAL_DOMAIN_MISMATCH
+    base_gw_req = {
+        "task_id": f"{tid}-auth-probe",
+        "sub": "user:bob@org-beta.io",
+        "first_hop_spiffe_id": bob_card.spiffe_id,
+        "first_hop_jkt": bob_card.jkt,
+        "permissions": bob_perms.to_dict(),
+    }
+    r_gw_no_oidc = _post_beta_gateway_mtls(gw, "/v1/gateway/mint-root", base_gw_req)
+    assert r_gw_no_oidc.status_code == 401, (r_gw_no_oidc.status_code, r_gw_no_oidc.text)
+
+    r_gw_alice_oidc = _post_beta_gateway_mtls(
+        gw,
+        "/v1/gateway/mint-root",
+        {**base_gw_req, "sub": "user:alice@org-alpha.io", "user_oidc_token": alice_jwt},
+    )
+    # Sovereign `beta-user-gateway` only trusts `beta-sts` (`org-beta.io`), rejecting foreign `alpha-sts` OIDC (`401`)!
+    assert r_gw_alice_oidc.status_code == 401, (r_gw_alice_oidc.status_code, r_gw_alice_oidc.text)
+    assert r_gw_alice_oidc.json().get("error") == "INVALID_USER_OIDC_TOKEN", r_gw_alice_oidc.json()
+
+    r_gw_spoof_sub = _post_beta_gateway_mtls(
+        gw,
+        "/v1/gateway/mint-root",
+        {**base_gw_req, "sub": "user:mallory@org-beta.io", "user_oidc_token": bob_jwt},
+    )
+    assert r_gw_spoof_sub.status_code == 403, (r_gw_spoof_sub.status_code, r_gw_spoof_sub.text)
+
+    r_gw_foreign_sender = _post_beta_gateway_mtls(
+        gw,
+        "/v1/gateway/mint-root",
+        {**base_gw_req, "user_oidc_token": bob_jwt, "sender_jkt": gw.identity.jkt},
+    )
+    assert r_gw_foreign_sender.status_code == 403, (r_gw_foreign_sender.status_code, r_gw_foreign_sender.text)
+    assert r_gw_foreign_sender.json().get("error") == "SENDER_JKT_MISMATCH", r_gw_foreign_sender.json()
+
+    # 2) Legitimate `org-beta.io` Bob entry via `beta-user-gateway /v1/gateway/dispatch` -> fans out across `alpha`, `beta`, `pay`!
+    r_sym = _post_beta_gateway_mtls(
+        gw,
+        "/v1/gateway/dispatch",
+        {
+            "task_id": tid,
+            "sub": "user:bob@org-beta.io",
+            "user_oidc_token": bob_jwt,
+            "first_hop_spiffe_id": bob_card.spiffe_id,
+            "first_hop_jkt": bob_card.jkt,
+            "first_hop_public_jwk": bob_card.public_jwk,
+            "first_hop_return_endpoint": bob_card.return_endpoint,
+            "hop_segment": "CoordinatorBob",
+            "permissions": bob_perms.to_dict(),
+            "target_endpoint": bob_card.endpoint,
+            "payload": {
+                "op": "bob_symmetric_orchestrate",
+                "project_code": "PRJ-BETA-SYM",
+                "alice_oidc_token": alice_jwt,
+            },
+        },
+    )
+    assert r_sym.status_code == 200, (r_sym.status_code, r_sym.text)
+    sym_out = r_sym.json()["upstream_body"]
+    bob_idem_key = str(sym_out["bob_branch_idempotency_key"])
+    assert sym_out["alpha_gateway_config"]["co_authorized_principals"] == [
+        "user:bob@org-beta.io",
+        "user:alice@org-alpha.io",
+    ], sym_out
+    assert sym_out["carol_procurement"]["vendor_quote"]["charged_usd"] == 180.0, sym_out
+
+    # 3) Stolen-Token Cross-Agent Replay: `e2e-user-gateway` (`org-alpha.io`) replays a legitimate `Assistant-B`
+    #    wire `LineageToken` (held only in RAM, never serialized to summary!) against `Shared-Vault` & `Assistant-A` -> 403!
+    r_mint_stolen = _post_beta_gateway_mtls(
+        gw,
+        "/v1/gateway/mint-root",
+        {
+            "task_id": f"{tid}-stolen-probe",
+            "sub": "user:bob@org-beta.io",
+            "user_oidc_token": bob_jwt,
+            "first_hop_spiffe_id": bob_card.spiffe_id,
+            "first_hop_jkt": bob_card.jkt,
+            "permissions": bob_perms.to_dict(),
+            "hop_segment": "StolenBobRoot",
+        },
+    )
+    assert r_mint_stolen.status_code == 200, (r_mint_stolen.status_code, r_mint_stolen.text)
+    stolen_bob_tok = str(r_mint_stolen.json()["compact_token"])
+
+    r_thief_vault = gw.post_lct_mtls(
+        vault_mcp_card.candidate_origins()[0],
+        stolen_bob_tok,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "procure_vendor_quote",
+                "arguments": {"project_code": "PRJ-BETA-SYM", "amount": 50.0},
+            },
+        },
+        path="/mcp",
+        expected_spiffe_id=vault_mcp_card.spiffe_id,
+    )
+    assert r_thief_vault.status_code == 403, (r_thief_vault.status_code, r_thief_vault.text)
+
+    r_thief_alpha = gw.post_lct_mtls(
+        alice_card.candidate_origins()[0],
+        stolen_bob_tok,
+        {"private_tool": "gateway_config_read"},
+        path="/a2a/task",
+        expected_spiffe_id=alice_card.spiffe_id,
+    )
+    assert r_thief_alpha.status_code == 403, (r_thief_alpha.status_code, r_thief_alpha.text)
+    del stolen_bob_tok
+
+    # 4) Cross-Tenant Vault Isolation: Alice (`user:alice@org-alpha.io`) querying Bob's `bob_idem_key` -> `found == False`!
+    tok_alice_q, _ = gw.mint_root_for_user(
+        task_id=f"{tid}-alice-snooping",
+        sub="user:alice@org-alpha.io",
+        permissions=PermissionLattice.create(tools=["query_operation_status"], max_calls=3),
+        target_card=vault_mcp_card,
+        hop_segment="AliceTenantProbe",
+        user_oidc_token=alice_jwt,
+    )
+    r_snoop = gw.post_lct_mtls(
+        vault_mcp_card.candidate_origins()[0],
+        tok_alice_q,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "query_operation_status",
+                "arguments": {"idempotency_key": bob_idem_key},
+            },
+        },
+        path="/mcp",
+        expected_spiffe_id=vault_mcp_card.spiffe_id,
+    )
+    assert r_snoop.status_code == 200, (r_snoop.status_code, r_snoop.text)
+    snoop_doc = r_snoop.json()["result"]["data"]
+    assert snoop_doc["found"] is False and snoop_doc["charge_count"] == 0, snoop_doc
+
+    # 5) Decentralized `DistributedAuditor` starting purely from `entry_spiffe_ids=[bob_card.spiffe_id]` (`org-beta.io`)!
+    audit_s11 = run_distributed_audit_for_task(
+        gw,
+        tid,
+        entry_spiffe_ids=[bob_card.spiffe_id],
+        seed_domains=["org-beta.io"],
+    )
+    assert audit_s11["reconstructed_complete"] is True, audit_s11
+    assert audit_s11["unreachable_nodes"] == {}, audit_s11
+    assert audit_s11["anomalies"] == [], audit_s11
+
+    return {
+        "status": "PASS",
+        "task_id": tid,
+        "beta_gateway_missing_oidc_http": r_gw_no_oidc.status_code,
+        "beta_gateway_alice_cross_domain_http": r_gw_alice_oidc.status_code,
+        "beta_gateway_sub_spoof_http": r_gw_spoof_sub.status_code,
+        "bob_fanout_domains_verified": ["org-beta.io", "org-alpha.io", "org-payment.io"],
+        "stolen_token_replay_on_vault_http": r_thief_vault.status_code,
+        "stolen_token_replay_on_alpha_http": r_thief_alpha.status_code,
+        "alice_cross_tenant_snoop_found": snoop_doc["found"],
+        "distributed_audit_from_beta_entry": {
+            "nodes_queried_count": audit_s11["nodes_queried_count"],
+            "unreachable_nodes": audit_s11["unreachable_nodes"],
+            "reconstructed_complete": audit_s11["reconstructed_complete"],
+            "anomalies": audit_s11["anomalies"],
+        },
     }

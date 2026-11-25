@@ -47,6 +47,24 @@ class VerifiedOIDCToken:
     expires_at: float
 
 
+def _issuer_from_jwks_url(url: str) -> str:
+    clean = str(url or "").strip()
+    if "/protocol/openid-connect/certs" in clean:
+        return clean.split("/protocol/openid-connect/certs", 1)[0].rstrip("/")
+    return clean.rstrip("/")
+
+
+def _infer_domain_from_issuer_host(issuer: str) -> Optional[str]:
+    low = issuer.lower()
+    if "alpha-oidc." in low or ".lineage-alpha." in low or ".org-alpha.io" in low:
+        return "org-alpha.io"
+    if "beta-oidc." in low or ".lineage-beta." in low or ".org-beta.io" in low:
+        return "org-beta.io"
+    if "payment-oidc." in low or "pay-oidc." in low or ".lineage-pay." in low or ".org-payment.io" in low:
+        return "org-payment.io"
+    return None
+
+
 class OIDCTokenVerifier:
     """Thread-safe RS256/ES256 JWKS verifier for Keycloak / OAuth 2.0 STS tokens."""
 
@@ -58,6 +76,11 @@ class OIDCTokenVerifier:
         allowed_issuers: Optional[Iterable[str]] = None,
         allowed_issuers_provider: Optional[Callable[[], Sequence[str]]] = None,
         default_user_domain: str = "org-alpha.io",
+        issuer_user_domain_map: Optional[Mapping[str, str]] = None,
+        issuer_aliases: Optional[Mapping[str, Iterable[str]]] = None,
+        issuer_aliases_provider: Optional[Callable[[], Mapping[str, Sequence[str]]]] = None,
+        allowed_user_domains: Optional[Iterable[str]] = None,
+        single_entity_issuers: bool = False,
         static_jwks: Optional[Iterable[Mapping[str, Any]]] = None,
         cache_ttl_sec: float = 30.0,
         timeout: float = 3.5,
@@ -74,17 +97,35 @@ class OIDCTokenVerifier:
         )
         self._allowed_issuers_provider = allowed_issuers_provider
         self.default_user_domain = default_user_domain.strip().lower()
+        self.issuer_user_domain_map: Dict[str, str] = {
+            str(k).rstrip("/"): str(v).strip().lower()
+            for k, v in (issuer_user_domain_map or {}).items()
+            if str(k).strip() and str(v).strip()
+        }
+        self._issuer_aliases: Dict[str, Tuple[str, ...]] = {
+            str(k).rstrip("/"): tuple(str(a).rstrip("/") for a in vals if str(a).strip())
+            for k, vals in (issuer_aliases or {}).items()
+            if str(k).strip()
+        }
+        self._issuer_aliases_provider = issuer_aliases_provider
+        self.allowed_user_domains: Optional[frozenset[str]] = (
+            frozenset(str(d).strip().lower() for d in allowed_user_domains if str(d).strip())
+            if allowed_user_domains is not None
+            else None
+        )
+        self.single_entity_issuers = bool(single_entity_issuers)
         self.cache_ttl_sec = max(1.0, float(cache_ttl_sec))
         self.timeout = float(timeout)
         self._lock = threading.RLock()
-        self._keys_by_kid: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._static_keys_by_kid: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._keys_by_issuer: Dict[str, "OrderedDict[str, Dict[str, Any]]"] = {}
         self._last_refresh: float = 0.0
         if static_jwks:
             for k in static_jwks:
                 if isinstance(k, Mapping) and k.get("kid"):
                     kid_s = str(k["kid"])
                     if len(kid_s) <= 128:
-                        self._keys_by_kid[kid_s] = dict(k)
+                        self._static_keys_by_kid[kid_s] = dict(k)
 
     def _candidate_jwks_urls(self) -> List[str]:
         urls = list(self._static_urls)
@@ -98,11 +139,12 @@ class OIDCTokenVerifier:
     def refresh_jwks(self, force: bool = False) -> None:
         now_ts = time.time()
         with self._lock:
-            if not force and self._keys_by_kid and (now_ts - self._last_refresh) < self.cache_ttl_sec:
+            if not force and self._keys_by_issuer and (now_ts - self._last_refresh) < self.cache_ttl_sec:
                 return
         urls = self._candidate_jwks_urls()
-        fetched: Dict[str, Dict[str, Any]] = {}
+        fetched_by_iss: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
         for url in urls:
+            src_iss = _issuer_from_jwks_url(url)
             try:
                 resp = httpx.get(url, timeout=self.timeout, follow_redirects=False, trust_env=False)
                 if resp.status_code == 200:
@@ -110,17 +152,46 @@ class OIDCTokenVerifier:
                         if isinstance(k, Mapping) and k.get("kid"):
                             kid_s = str(k["kid"])
                             if len(kid_s) <= 128:
-                                fetched[kid_s] = dict(k)
+                                fetched_by_iss.setdefault(src_iss, []).append((kid_s, dict(k)))
             except Exception:
                 continue
         with self._lock:
-            if fetched:
-                for k_id, k_doc in fetched.items():
-                    self._keys_by_kid[k_id] = k_doc
-                    self._keys_by_kid.move_to_end(k_id)
-                while len(self._keys_by_kid) > 128:
-                    self._keys_by_kid.popitem(last=False)
+            for src_iss, pairs in fetched_by_iss.items():
+                bucket = self._keys_by_issuer.setdefault(src_iss, OrderedDict())
+                for k_id, k_doc in pairs:
+                    bucket[k_id] = k_doc
+                    bucket.move_to_end(k_id)
+                while len(bucket) > 64:
+                    bucket.popitem(last=False)
             self._last_refresh = now_ts
+
+    def _lookup_key_for_issuer(self, iss: str, kid: str, cand_urls: Sequence[str]) -> Optional[Dict[str, Any]]:
+        dyn_aliases: Dict[str, Sequence[str]] = {}
+        if self._issuer_aliases_provider is not None:
+            try:
+                dyn_aliases = {
+                    str(k).rstrip("/"): [str(a).rstrip("/") for a in (vals or ()) if str(a).strip()]
+                    for k, vals in (self._issuer_aliases_provider() or {}).items()
+                }
+            except Exception:
+                dyn_aliases = {}
+        with self._lock:
+            if kid in self._static_keys_by_kid:
+                return self._static_keys_by_kid[kid]
+            direct_bucket = self._keys_by_issuer.get(iss)
+            if direct_bucket is not None and kid in direct_bucket:
+                return direct_bucket[kid]
+            for alias_src in (*(self._issuer_aliases.get(iss) or ()), *(dyn_aliases.get(iss) or ())):
+                alias_bucket = self._keys_by_issuer.get(alias_src)
+                if alias_bucket is not None and kid in alias_bucket:
+                    return alias_bucket[kid]
+            # Only share keys across URL aliases when verifier explicitly represents a single STS entity
+            # or has only one configured JWKS URL (e.g., cluster-local URL with external Host issuer).
+            if self.single_entity_issuers or len(cand_urls) <= 1:
+                for b in self._keys_by_issuer.values():
+                    if kid in b:
+                        return b[kid]
+        return None
 
     def verify_jwt(
         self,
@@ -134,19 +205,38 @@ class OIDCTokenVerifier:
             raise OAuthSTSError("empty_oidc_jwt")
         tok = raw_jwt.strip()
         try:
-            hdr, _, _, _ = jws_parse_unverified(tok)
+            hdr, unv_claims, _, _ = jws_parse_unverified(tok)
         except CryptoError as exc:
             raise OAuthSTSError(f"malformed_oidc_jwt:{exc}") from exc
 
+        unv_iss = str(unv_claims.get("iss") or "").rstrip("/")
+        if not unv_iss:
+            raise OAuthSTSError("missing_iss_claim")
+        if self.expected_issuer is not None and unv_iss != self.expected_issuer:
+            raise OAuthSTSError(
+                f"oidc_issuer_mismatch: got {unv_iss!r}, expected {self.expected_issuer!r}"
+            )
+        if self.allowed_issuers is not None and unv_iss not in self.allowed_issuers:
+            raise OAuthSTSError(f"oidc_issuer_not_allowed: {unv_iss!r}")
+        dyn_allowed: Optional[set[str]] = None
+        if self._allowed_issuers_provider is not None:
+            dyn_allowed = {
+                str(x).rstrip("/")
+                for x in (self._allowed_issuers_provider() or ())
+                if str(x).strip()
+            }
+            if dyn_allowed and unv_iss not in dyn_allowed:
+                raise OAuthSTSError(f"oidc_issuer_not_allowed: {unv_iss!r} not in {sorted(dyn_allowed)}")
+
         kid = str(hdr.get("kid") or "")
-        with self._lock:
-            jwk = self._keys_by_kid.get(kid)
+        cand_urls = self._candidate_jwks_urls()
+        jwk = self._lookup_key_for_issuer(unv_iss, kid, cand_urls)
         if jwk is None:
             self.refresh_jwks(force=True)
-            with self._lock:
-                jwk = self._keys_by_kid.get(kid)
+            cand_urls = self._candidate_jwks_urls()
+            jwk = self._lookup_key_for_issuer(unv_iss, kid, cand_urls)
         if jwk is None:
-            raise OAuthSTSError(f"unknown_oidc_signing_kid:{kid}")
+            raise OAuthSTSError(f"unknown_oidc_signing_kid:{kid}:for_issuer:{unv_iss}")
 
         try:
             _, claims = jws_verify_compact(tok, jwk, expected_typ=None)
@@ -169,22 +259,8 @@ class OIDCTokenVerifier:
                 raise OAuthSTSError("oidc_token_nbf_in_future")
 
         iss = str(claims.get("iss") or "").rstrip("/")
-        if not iss:
-            raise OAuthSTSError("missing_iss_claim")
-        if self.expected_issuer is not None and iss != self.expected_issuer:
-            raise OAuthSTSError(
-                f"oidc_issuer_mismatch: got {iss!r}, expected {self.expected_issuer!r}"
-            )
-        if self.allowed_issuers is not None and iss not in self.allowed_issuers:
-            raise OAuthSTSError(f"oidc_issuer_not_allowed: {iss!r}")
-        if self._allowed_issuers_provider is not None:
-            dyn_allowed = {
-                str(x).rstrip("/")
-                for x in (self._allowed_issuers_provider() or ())
-                if str(x).strip()
-            }
-            if dyn_allowed and iss not in dyn_allowed:
-                raise OAuthSTSError(f"oidc_issuer_not_allowed: {iss!r} not in {sorted(dyn_allowed)}")
+        if iss != unv_iss:
+            raise OAuthSTSError("oidc_issuer_claim_mismatch")
 
         raw_aud = claims.get("aud")
         if isinstance(raw_aud, str):
@@ -219,12 +295,48 @@ class OIDCTokenVerifier:
             raise OAuthSTSError("missing_sub_claim")
 
         uname = pref_user or raw_sub
-        if uname.startswith("user:") and "@" in uname:
+        explicit_lct_sub = claims.get("lct_sub")
+        if isinstance(explicit_lct_sub, list) and explicit_lct_sub:
+            explicit_lct_sub = explicit_lct_sub[0]
+        clean_lct_sub = str(explicit_lct_sub or "").strip()
+
+        mapped_iss_domain = self.issuer_user_domain_map.get(iss) or _infer_domain_from_issuer_host(iss)
+        is_multi_entity = (
+            not self.single_entity_issuers
+            and (
+                (self.allowed_issuers is not None and len(self.allowed_issuers) > 1)
+                or (dyn_allowed is not None and len(dyn_allowed) > 1)
+                or len({_issuer_from_jwks_url(u) for u in cand_urls}) > 1
+            )
+        )
+
+        if clean_lct_sub.startswith("user:") and "@" in clean_lct_sub:
+            canonical_sub = clean_lct_sub
+        elif uname.startswith("user:") and "@" in uname:
             canonical_sub = uname
         elif "@" in uname:
             canonical_sub = f"user:{uname}"
         else:
-            canonical_sub = f"user:{uname}@{self.default_user_domain}"
+            if mapped_iss_domain is not None:
+                canonical_sub = f"user:{uname}@{mapped_iss_domain}"
+            elif is_multi_entity:
+                raise OAuthSTSError(
+                    f"ambiguous_multi_issuer_unqualified_principal:{uname}:from:{iss}"
+                )
+            else:
+                canonical_sub = f"user:{uname}@{self.default_user_domain}"
+
+        sub_domain = canonical_sub.rsplit("@", 1)[1].strip().lower() if "@" in canonical_sub else ""
+        if mapped_iss_domain is not None and not isinstance(claims.get("act"), Mapping):
+            # Direct non-exchanged user token from `iss` must belong to `mapped_iss_domain`
+            if sub_domain != mapped_iss_domain:
+                raise OAuthSTSError(
+                    f"oidc_principal_issuer_domain_mismatch:{canonical_sub}:not_in:{mapped_iss_domain}"
+                )
+        if self.allowed_user_domains is not None and sub_domain not in self.allowed_user_domains:
+            raise OAuthSTSError(
+                f"oidc_user_domain_not_allowed:{canonical_sub}:allowed={sorted(self.allowed_user_domains)}"
+            )
 
         act_raw = claims.get("act")
         act_dict = dict(act_raw) if isinstance(act_raw, Mapping) else None

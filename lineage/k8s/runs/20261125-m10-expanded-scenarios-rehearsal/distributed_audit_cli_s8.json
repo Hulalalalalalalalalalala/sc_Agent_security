@@ -1,0 +1,43 @@
+{
+  "mode": "decentralized_on_demand_bfs",
+  "task_id": "ws-m10-rehearsal-s8-sod-release",
+  "nodes_queried": [
+    "ca:org-alpha.io",
+    "ca:org-beta.io",
+    "ca:org-payment.io",
+    "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave"
+  ],
+  "nodes_queried_count": 8,
+  "unreachable_nodes": {},
+  "total_entries": 23,
+  "pull_latency_ms": 268.95,
+  "stream_integrity_ok": true,
+  "reconstructed_complete": true,
+  "resilience_classifications": [
+    "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+  ],
+  "reconstruction": {
+    "task_id": "ws-m10-rehearsal-s8-sod-release",
+    "sub": "user:alice@org-alpha.io",
+    "root_block_hash": "YSlLXjq5_K6C3mdllHEpd_-lydGoxXjyk-fEtxay1GI",
+    "reconstructed_complete": true,
+    "lineage_paths_observed": [
+      "/ws-m10-rehearsal-s8-sod-release/DeveloperAlice",
+      "/ws-m10-rehearsal-s8-sod-release/DeveloperAlice/ConsentHandshake",
+      "/ws-m10-rehearsal-s8-sod-release/DeveloperAlice/MaintainerReviewBob",
+      "/ws-m10-rehearsal-s8-sod-release/DeveloperAlice/MaintainerReviewBob/SecurityScannerDave",
+      "/ws-m10-rehearsal-s8-sod-release/OwnerConsent"
+    ],
+    "verified_hops": 13,
+    "tool_invocations_verified": 1,
+    "resilience_classifications": [
+      "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+    ],
+    "anomalies": []
+  },
+  "anomalies": []
+}

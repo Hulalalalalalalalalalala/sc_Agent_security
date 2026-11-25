@@ -1,0 +1,16 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m10-r2-verified-s3-cont",
+  "phase1_expired_status": 401,
+  "checkpoint_id": "ckpt-15278036b5044a1e",
+  "consumed_before_expiry_usd": 280.0,
+  "remaining_budget_usd": 320.0,
+  "inflation_attempt_http": 403,
+  "inflation_attempt_error": "CONTINUATION_BUDGET_EXCEEDED",
+  "continuation_replay_http": 409,
+  "continuation_replay_error": "CONTINUATION_REPLAY_REJECTED",
+  "resumed_vault_locks": 2,
+  "resilience_classifications": [
+    "VERIFIED_TASK_CONTINUATION"
+  ]
+}

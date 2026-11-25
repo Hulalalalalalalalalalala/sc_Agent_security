@@ -60,6 +60,13 @@ class JTIReplayCache:
         self._lock = threading.Lock()
         self._entries: "OrderedDict[str, float]" = OrderedDict()
 
+    def is_seen(self, jti: str, now: Optional[float] = None) -> bool:
+        """Return True if `jti` is currently active in the cache without recording it."""
+        ts = time.time() if now is None else float(now)
+        with self._lock:
+            exp_at = self._entries.get(jti)
+            return exp_at is not None and exp_at > ts
+
     def check_and_record(self, jti: str, now: Optional[float] = None) -> bool:
         """Atomically return True and record `jti` if unseen; return False if replayed."""
         ts = time.time() if now is None else float(now)

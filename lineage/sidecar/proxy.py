@@ -33,7 +33,11 @@ from lineage.audit.logger import (
     AuditStreamEmitter,
 )
 from lineage.common.crypto import (
+    CryptoError,
     compute_jwk_thumbprint,
+    jws_parse_unverified,
+    jws_sign_compact,
+    jws_verify_compact,
     redact_sensitive,
     sha256_canonical_b64url,
     strict_json_loads,
@@ -45,7 +49,7 @@ from lineage.common.http_utils import (
     validate_origin_form_target,
 )
 from lineage.common.mtls import WorkloadMTLSBundle
-from lineage.identity.spiffe import SpiffeId, WorkloadIdentity
+from lineage.identity.spiffe import IdentityError, SpiffeId, WorkloadIdentity
 from lineage.identity.trust_bundle import TrustBundleResolver
 from lineage.protocol.dpop import JTIReplayCache, create_dpop_proof
 from lineage.protocol.lattice import PermissionLattice
@@ -267,6 +271,7 @@ class LineageSidecar:
         resource_owner_sub: Optional[str] = None,
         owner_protected_tools: Optional[Iterable[str]] = None,
         allowed_co_auth_tools: Optional[Iterable[str]] = None,
+        allowed_scanner_spiffe_ids: Optional[Iterable[str]] = None,
         authorized_auditors: Iterable[str] = (),
         local_ca_url: Optional[str] = None,
         sa_token_path: Optional[str] = None,
@@ -293,6 +298,16 @@ class LineageSidecar:
             if allowed_co_auth_tools is not None
             else None
         )
+        if allowed_scanner_spiffe_ids is None:
+            self._allowed_scanner_spiffe_ids: frozenset[str] = frozenset(
+                {"spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave"}
+            )
+        else:
+            self._allowed_scanner_spiffe_ids = frozenset(
+                SpiffeId.parse(str(s).strip()).uri
+                for s in allowed_scanner_spiffe_ids
+                if str(s).strip()
+            )
         self._local_ca_url = (local_ca_url or "").strip().rstrip("/") or None
         self._sa_token_path = (sa_token_path or "").strip() or None
         self.identity = identity
@@ -346,9 +361,14 @@ class LineageSidecar:
         self.oauth_convergence_inbox = OAuthConvergenceInbox()
         self.detector = ThreeLayerFaultDetector()
         self._skip_receipt_replay_cache = JTIReplayCache(ttl_seconds=600.0)
+        self._attestation_replay_cache = JTIReplayCache(ttl_seconds=900.0)
+        self._cohort_digest_replay_cache = JTIReplayCache(ttl_seconds=900.0)
         self._skip_level_results = _BoundedTaskListStore()
         self._direct_results = _BoundedTaskListStore()
         self._task_checkpoints = _BoundedTaskListStore()
+        self._state_lock = threading.Lock()
+        self._issued_consent_tokens: "OrderedDict[Tuple[str, str], str]" = OrderedDict()
+        self._cached_replay_tokens: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
         self._inbound_http = ManagedHTTPService(
             service_name=f"sidecar-in-{identity.parsed_spiffe.default_hop_segment}",
@@ -446,6 +466,61 @@ class LineageSidecar:
         self, task_id: str, expected_sub: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         return self._direct_results.get(task_id, expected_sub=expected_sub)
+
+    def _extract_inbound_tool_and_args(
+        self, norm_path: str, body_json: Any
+    ) -> Tuple[Optional[str], Optional[Mapping[str, Any]], bool]:
+        """Extract canonical `(tool_name, tool_args, is_mcp_route)` across MCP, top-level A2A, and A2A v1.0 JSON-RPC."""
+        is_mcp_route = self.is_tool_server or norm_path == "/mcp"
+        if is_mcp_route:
+            if isinstance(body_json, Mapping):
+                params = body_json.get("params") or {}
+                if isinstance(params, Mapping):
+                    t_name = str(params.get("name") or "").strip() or None
+                    t_args = (
+                        params.get("arguments")
+                        if isinstance(params.get("arguments"), Mapping)
+                        else None
+                    )
+                    return t_name, t_args, True
+            return None, None, True
+
+        if not isinstance(body_json, Mapping):
+            return None, None, False
+
+        cand_priv = body_json.get("private_tool") or body_json.get("tool")
+        cand_args: Optional[Mapping[str, Any]] = (
+            body_json.get("arguments")
+            if isinstance(body_json.get("arguments"), Mapping)
+            else body_json
+        )
+        if not cand_priv and isinstance(body_json.get("params"), Mapping):
+            params_obj = body_json["params"]
+            cfg_obj = params_obj.get("configuration")
+            if isinstance(cfg_obj, Mapping):
+                cand_priv = cfg_obj.get("private_tool") or cfg_obj.get("tool")
+                if cand_priv:
+                    cand_args = (
+                        cfg_obj.get("arguments")
+                        if isinstance(cfg_obj.get("arguments"), Mapping)
+                        else cfg_obj
+                    )
+            if not cand_priv:
+                msg_obj = params_obj.get("message")
+                if isinstance(msg_obj, Mapping):
+                    for pt in msg_obj.get("parts") or ():
+                        if isinstance(pt, Mapping) and isinstance(pt.get("data"), Mapping):
+                            pt_data = pt["data"]
+                            cand_priv = pt_data.get("private_tool") or pt_data.get("tool")
+                            if cand_priv:
+                                cand_args = (
+                                    pt_data.get("arguments")
+                                    if isinstance(pt_data.get("arguments"), Mapping)
+                                    else pt_data
+                                )
+                                break
+        clean_tool = str(cand_priv).strip() if cand_priv else None
+        return clean_tool, (cand_args if clean_tool else None), False
 
     def _outbound_verify_kwarg(
         self,
@@ -694,15 +769,20 @@ class LineageSidecar:
         body_json = req.json() if req.body else {}
 
         # Determine endpoint role & monotonic escalation-only risk hint (`[CRITICAL-01]`, `[CRITICAL-04]`)
-        is_mcp_route = self.is_tool_server or norm_path == "/mcp"
+        ext_tool_name, ext_tool_args, is_mcp_route = self._extract_inbound_tool_and_args(
+            norm_path, body_json
+        )
         is_direct_result_route = (not is_mcp_route) and norm_path == "/v1/task-result"
         is_agent_delegation_route = (not is_mcp_route) and (not is_direct_result_route)
 
         if is_mcp_route:
-            mcp_method = str(body_json.get("method", "tools/call"))
-            params = body_json.get("params") or {}
-            tool_name = params.get("name") if isinstance(params, Mapping) else None
-            tool_args = params.get("arguments") if isinstance(params, Mapping) else None
+            mcp_method = (
+                str(body_json.get("method", "tools/call"))
+                if isinstance(body_json, Mapping)
+                else "tools/call"
+            )
+            tool_name = ext_tool_name
+            tool_args = ext_tool_args
             ext_hint = req.header("X-LCT-Risk-Hint")
             # External caller may ONLY escalate risk (`HIGH`); `LOW` hints are ignored!
             risk_hint = (
@@ -717,26 +797,32 @@ class LineageSidecar:
             tool_args = None
             risk_hint = None
             check_lattice = False
-            if isinstance(body_json, Mapping):
-                cand_priv = body_json.get("private_tool") or body_json.get("tool")
-                if not cand_priv and isinstance(body_json.get("params"), Mapping):
-                    msg_obj = (body_json.get("params") or {}).get("message")
-                    if isinstance(msg_obj, Mapping):
-                        for pt in msg_obj.get("parts") or ():
-                            if isinstance(pt, Mapping) and isinstance(pt.get("data"), Mapping):
-                                cand_priv = pt["data"].get("private_tool") or pt["data"].get("tool")
-                                if cand_priv:
-                                    break
-                if (
-                    cand_priv
-                    and self.resource_owner_sub
-                    and (
-                        self._owner_protected_tools is None
-                        or str(cand_priv) in self._owner_protected_tools
+            if (
+                ext_tool_name
+                and self.resource_owner_sub
+                and (
+                    self._owner_protected_tools is None
+                    or ext_tool_name in self._owner_protected_tools
+                )
+            ):
+                mcp_method = "tools/call"
+                tool_name = ext_tool_name
+                tool_args = ext_tool_args
+                check_lattice = True
+
+        if self._mtls_bundle is not None:
+            try:
+                pre_parsed = decode_token(compact_token)
+            except (TokenError, CryptoError):
+                pre_parsed = None
+            if pre_parsed is not None:
+                ch_pre_ok, ch_pre_err = self._verify_mtls_channel_binding(req, pre_parsed)
+                if not ch_pre_ok:
+                    return (
+                        403,
+                        {"error": "MTLS_CHANNEL_BINDING_MISMATCH", "detail": ch_pre_err},
+                        {},
                     )
-                ):
-                    tool_name = str(cand_priv)
-                    check_lattice = True
 
         eff_owner_sub: Optional[str] = None
         if self.resource_owner_sub:
@@ -1129,16 +1215,15 @@ class LineageSidecar:
             )
 
         body_json = req.json() if req.body else {}
-        is_mcp_route = self.is_tool_server or norm_path == "/mcp"
-        oauth_tool_name = ""
+        ext_oauth_tool, _, is_mcp_route = self._extract_inbound_tool_and_args(
+            norm_path, body_json
+        )
+        oauth_tool_name = ext_oauth_tool or ""
         required_scopes: List[str] = []
         if is_mcp_route:
-            params = body_json.get("params") or {}
-            tool_name = str(params.get("name") or "") if isinstance(params, Mapping) else ""
-            oauth_tool_name = tool_name
-            if tool_name == "execute_settlement":
+            if oauth_tool_name == "execute_settlement":
                 required_scopes = ["travel:pay"]
-            elif tool_name in (
+            elif oauth_tool_name in (
                 "search_flight",
                 "search_flights",
                 "book_flight",
@@ -1148,8 +1233,6 @@ class LineageSidecar:
                 "record_itinerary_audit",
             ):
                 required_scopes = ["travel:book"]
-        elif isinstance(body_json, Mapping) and body_json.get("private_tool"):
-            oauth_tool_name = str(body_json["private_tool"]).strip()
 
         own_cid = spiffe_id_to_oauth_client_id(self.identity.spiffe_id)
         try:
@@ -1809,10 +1892,17 @@ class LineageSidecar:
                 with open(self._sa_token_path, "r", encoding="utf-8") as fh:
                     sa_jwt = fh.read().strip()
                 ca_hdrs: Dict[str, str] = {"Authorization": f"Bearer {sa_jwt}"}
+                raw_nb = body.get("numeric_bounds")
+                raw_at = body.get("allowed_targets")
+                raw_pw = body.get("param_whitelist")
                 perms = PermissionLattice.create(
                     tools=req_tools,
-                    max_calls=max(1, min(int(body.get("max_calls", 2)), 4)),
+                    numeric_bounds=(dict(raw_nb) if isinstance(raw_nb, Mapping) else None),
+                    allowed_targets=(list(raw_at) if isinstance(raw_at, (list, tuple, set, frozenset)) else None),
+                    param_whitelist=(dict(raw_pw) if isinstance(raw_pw, Mapping) else None),
+                    max_calls=max(1, min(int(body.get("max_calls", 4)), 8)),
                 )
+                hop_seg_c = str(body.get("hop_segment") or "OwnerConsent").strip() or "OwnerConsent"
                 ca_req_json: Dict[str, Any] = {
                     "trust_domain": self.identity.trust_domain,
                     "sub": self.resource_owner_sub,
@@ -1820,7 +1910,7 @@ class LineageSidecar:
                     "sender_jkt": self.identity.jkt,
                     "first_hop_spiffe_id": str(body["delegate_spiffe_id"]),
                     "first_hop_jkt": str(body["delegate_jkt"]),
-                    "hop_segment": "OwnerConsent",
+                    "hop_segment": hop_seg_c,
                     "permissions": perms.to_dict(),
                     "ttl_seconds": min(float(body.get("ttl_seconds", 120.0)), 300.0),
                     "co_auth_consent": True,
@@ -1834,9 +1924,301 @@ class LineageSidecar:
                     timeout=10.0,
                     trust_env=False,
                 )
-                return r_ca.status_code, r_ca.json(), {}
+                ca_out = r_ca.json()
+                if r_ca.status_code == 200 and ca_out.get("compact_token") and ca_out.get("lineage_path"):
+                    with self._state_lock:
+                        if len(self._issued_consent_tokens) >= 2048:
+                            self._issued_consent_tokens.popitem(last=False)
+                        self._issued_consent_tokens[
+                            (str(body["task_id"]), str(ca_out["lineage_path"]))
+                        ] = str(ca_out["compact_token"])
+                return r_ca.status_code, ca_out, {}
             except Exception as exc:
                 return 502, {"error": "local_ca_consent_failed", "detail": str(exc)}, {}
+
+        if action == "revoke_consent_prefix":
+            if self.revocation_replica is None:
+                return 500, {"error": "revocation_replica_not_configured"}, {}
+            if not self.resource_owner_sub:
+                return 403, {"error": "FORBIDDEN_FOREIGN_CONSENT_REVOCATION", "detail": "Sidecar has no resource_owner_sub"}, {}
+            req_id_rev = str(body.get("request_id") or "").strip()
+            act_rev = self.active_requests.get(req_id_rev) if req_id_rev else None
+            if act_rev is None or act_rev.parsed_token.sub != self.resource_owner_sub:
+                return (
+                    403,
+                    {
+                        "error": "FORBIDDEN_FOREIGN_CONSENT_REVOCATION",
+                        "detail": (
+                            f"Only authenticated resource owner {self.resource_owner_sub!r} "
+                            "may revoke consent prefixes issued by this workload"
+                        ),
+                    },
+                    {},
+                )
+            tid_c = str(body.get("task_id") or "").strip()
+            target_prefix = str(body.get("prefix") or f"/{tid_c}/OwnerConsent").strip()
+            reason_c = str(body.get("reason") or "owner_consent_revoked")
+            auth_tok_c = str(body.get("authority_token") or "").strip() or None
+            if auth_tok_c is None and tid_c:
+                with self._state_lock:
+                    auth_tok_c = self._issued_consent_tokens.get((tid_c, target_prefix))
+            if not auth_tok_c:
+                return 403, {"error": "consent_authority_token_not_found", "prefix": target_prefix}, {}
+            try:
+                parsed_c = decode_token(auth_tok_c)
+                if not isinstance(parsed_c, LineageToken):
+                    raise TokenError("Invalid consent authority token")
+                if parsed_c.sub != self.resource_owner_sub:
+                    raise TokenError("Cached consent token subject mismatch")
+                rev_ev_c = self.revocation_replica.revoke_prefix(
+                    caller=self.identity,
+                    prefix=target_prefix,
+                    reason=reason_c,
+                    authority_token=auth_tok_c,
+                )
+            except Exception as exc:
+                return 403, {"error": "consent_revocation_failed", "detail": str(exc)}, {}
+            if self.audit_emitter is not None:
+                self.audit_emitter.emit(
+                    event_type=AuditEventType.REVOCATION_ISSUED,
+                    task_id=parsed_c.task_id,
+                    sub=parsed_c.sub,
+                    lineage_path=target_prefix,
+                    hop_index=0,
+                    epoch=0,
+                    root_block_hash=parsed_c.root_block_hash,
+                    parent_block_hash=None,
+                    current_block_hash=parsed_c.leaf_block_hash,
+                    action_detail={
+                        "target": rev_ev_c.target,
+                        "revocation_version": (
+                            rev_ev_c.origin_version
+                            if rev_ev_c.origin_version is not None
+                            else rev_ev_c.version
+                        ),
+                        "reason": reason_c,
+                        "trust_domain": rev_ev_c.trust_domain,
+                        "consent_revocation": True,
+                    },
+                    decision="REVOKED",
+                )
+            return 200, {"revoked": True, "event": rev_ev_c.to_dict()}, {}
+
+        if action == "verify_compliance_attestation":
+            att_jws = str(body.get("attestation_jws") or "").strip()
+            exp_task_id = str(body.get("expected_task_id") or "").strip()
+            exp_release_id = str(body.get("expected_release_id") or "").strip()
+            if not att_jws or not exp_task_id or not exp_release_id:
+                return (
+                    403,
+                    {
+                        "valid": False,
+                        "error": "MISSING_OR_INVALID_COMPLIANCE_ATTESTATION",
+                        "detail": "Missing attestation_jws, expected_task_id, or expected_release_id",
+                    },
+                    {},
+                )
+            try:
+                if not self._allowed_scanner_spiffe_ids:
+                    raise TokenError("Allowed scanner SPIFFE ID allowlist is empty (fail-closed)")
+                _, unv_claims, _, _ = jws_parse_unverified(att_jws)
+                scanner_spiffe = SpiffeId.parse(str(unv_claims.get("issuer_spiffe_id") or "")).uri
+                scanner_jwk = unv_claims.get("issuer_jwk")
+                scanner_svid = str(unv_claims.get("issuer_svid") or "")
+                if not isinstance(scanner_jwk, Mapping) or not scanner_svid:
+                    raise TokenError("Missing issuer_jwk or issuer_svid in compliance attestation")
+                scanner_jkt = compute_jwk_thumbprint(dict(scanner_jwk))
+                now_ts = time.time()
+                self.trust_resolver.verify_workload_svid(
+                    scanner_svid,
+                    expected_spiffe_id=scanner_spiffe,
+                    expected_jkt=scanner_jkt,
+                    now=now_ts,
+                )
+                _, att_claims = jws_verify_compact(
+                    att_jws,
+                    dict(scanner_jwk),
+                    expected_typ="lct-compliance-attestation+jwt",
+                )
+                if scanner_spiffe not in self._allowed_scanner_spiffe_ids:
+                    raise TokenError(
+                        f"Unauthorized scanner workload {scanner_spiffe!r}; allowed={sorted(self._allowed_scanner_spiffe_ids)}"
+                    )
+                if att_claims.get("scan_passed") is not True:
+                    raise TokenError("Compliance scan did not pass (scan_passed != True)")
+                if str(att_claims.get("task_id") or "") != exp_task_id:
+                    raise TokenError(
+                        f"Attestation task_id {att_claims.get('task_id')!r} != {exp_task_id!r}"
+                    )
+                if str(att_claims.get("release_id") or "") != exp_release_id:
+                    raise TokenError(
+                        f"Attestation release_id {att_claims.get('release_id')!r} != {exp_release_id!r}"
+                    )
+                att_jti = str(att_claims.get("jti") or "").strip()
+                if not att_jti or len(att_jti) > 128:
+                    raise TokenError("Missing or malformed jti in compliance attestation")
+                iat_a = float(att_claims["iat"])
+                exp_a = float(att_claims["exp"])
+                if not math.isfinite(iat_a) or not math.isfinite(exp_a):
+                    raise TokenError("Non-finite attestation timestamps")
+                if iat_a > now_ts + 10.0 or exp_a <= now_ts - 2.0:
+                    raise TokenError("Compliance attestation expired or not yet valid")
+                if not self._attestation_replay_cache.check_and_record(
+                    f"att:{scanner_spiffe}:{att_jti}", now=now_ts
+                ):
+                    raise TokenError(f"Replayed compliance attestation jti={att_jti!r}")
+            except (CryptoError, IdentityError, TokenError, KeyError, ValueError, TypeError) as exc:
+                return (
+                    403,
+                    {
+                        "valid": False,
+                        "error": "MISSING_OR_INVALID_COMPLIANCE_ATTESTATION",
+                        "detail": str(exc),
+                    },
+                    {},
+                )
+            return (
+                200,
+                {
+                    "valid": True,
+                    "scanner_spiffe_id": scanner_spiffe,
+                    "release_id": exp_release_id,
+                    "artifact_sha256": str(att_claims.get("artifact_sha256") or ""),
+                    "attestation_jti": att_jti,
+                },
+                {},
+            )
+
+        if action == "verify_cohort_digest":
+            dig_jws = str(body.get("digest_jws") or "").strip()
+            exp_task_id_d = str(body.get("expected_task_id") or "").strip()
+            exp_study_id = str(body.get("expected_study_id") or "").strip()
+            record_replay_d = bool(body.get("record_replay", True))
+            if not dig_jws or not exp_task_id_d or not exp_study_id:
+                return (
+                    403,
+                    {
+                        "valid": False,
+                        "error": "INVALID_COHORT_DIGEST_SIGNATURE",
+                        "detail": "Missing digest_jws, expected_task_id, or expected_study_id",
+                    },
+                    {},
+                )
+            try:
+                _, unv_d, _, _ = jws_parse_unverified(dig_jws)
+                inst_spiffe = SpiffeId.parse(str(unv_d.get("institution_spiffe_id") or "")).uri
+                inst_jwk = unv_d.get("issuer_jwk")
+                inst_svid = str(unv_d.get("issuer_svid") or "")
+                if not isinstance(inst_jwk, Mapping) or not inst_svid:
+                    raise TokenError("Missing issuer_jwk or issuer_svid in cohort digest")
+                inst_jkt = compute_jwk_thumbprint(dict(inst_jwk))
+                now_d = time.time()
+                self.trust_resolver.verify_workload_svid(
+                    inst_svid,
+                    expected_spiffe_id=inst_spiffe,
+                    expected_jkt=inst_jkt,
+                    now=now_d,
+                )
+                _, d_claims = jws_verify_compact(
+                    dig_jws,
+                    dict(inst_jwk),
+                    expected_typ="lct-cohort-digest+jwt",
+                )
+                if str(d_claims.get("task_id") or "") != exp_task_id_d:
+                    raise TokenError(
+                        f"Cohort digest task_id {d_claims.get('task_id')!r} != {exp_task_id_d!r}"
+                    )
+                if str(d_claims.get("study_id") or "") != exp_study_id:
+                    raise TokenError(
+                        f"Cohort digest study_id {d_claims.get('study_id')!r} != {exp_study_id!r}"
+                    )
+                if d_claims.get("raw_pii_present") is not False or d_claims.get("desensitized") is not True:
+                    raise TokenError("Cohort digest failed desensitized / zero-PII attestation")
+                dig_jti = str(d_claims.get("jti") or "").strip()
+                if not dig_jti or len(dig_jti) > 128:
+                    raise TokenError("Missing or malformed jti in cohort digest")
+                iat_d = float(d_claims["iat"])
+                exp_d = float(d_claims["exp"])
+                if not math.isfinite(iat_d) or not math.isfinite(exp_d):
+                    raise TokenError("Non-finite cohort digest timestamps")
+                if iat_d > now_d + 10.0 or exp_d <= now_d - 2.0:
+                    raise TokenError("Cohort digest expired or not yet valid")
+                replay_key_d = f"cdig:{inst_spiffe}:{dig_jti}"
+                if record_replay_d:
+                    if not self._cohort_digest_replay_cache.check_and_record(
+                        replay_key_d, now=now_d
+                    ):
+                        raise TokenError(f"Replayed cohort digest jti={dig_jti!r}")
+                else:
+                    if self._cohort_digest_replay_cache.is_seen(replay_key_d, now=now_d):
+                        raise TokenError(f"Replayed cohort digest jti={dig_jti!r}")
+            except (CryptoError, IdentityError, TokenError, KeyError, ValueError, TypeError) as exc:
+                return (
+                    403,
+                    {
+                        "valid": False,
+                        "error": "INVALID_COHORT_DIGEST_SIGNATURE",
+                        "detail": str(exc),
+                    },
+                    {},
+                )
+            return (
+                200,
+                {
+                    "valid": True,
+                    "institution_spiffe_id": inst_spiffe,
+                    "institution": str(d_claims.get("institution") or ""),
+                    "study_id": exp_study_id,
+                    "sample_count": int(d_claims["sample_count"]),
+                    "event_rate": float(d_claims["event_rate"]),
+                    "digest_jti": dig_jti,
+                },
+                {},
+            )
+
+        if action == "replay_cached_hop_tool":
+            if not fault_injection_enabled:
+                return 403, {"error": "fault_injection_disabled"}, {}
+            cache_key = str(body.get("cache_key") or "").strip()
+            with self._state_lock:
+                cached = self._cached_replay_tokens.get(cache_key)
+            if not cached:
+                return 404, {"error": "cached_hop_token_not_found", "cache_key": cache_key}, {}
+            c_tok = str(cached["compact_token"])
+            c_urls = list(cached["candidate_urls"])
+            c_spiffe = cached.get("target_spiffe_id")
+            c_td = cached.get("target_trust_domain")
+            c_payload = body.get("payload") or {}
+            last_exc: Optional[Exception] = None
+            resp_rep: Optional[httpx.Response] = None
+            for t_url in c_urls:
+                dpop_r = create_dpop_proof(self.identity, "POST", t_url, c_tok)
+                try:
+                    with httpx.Client(
+                        verify=self._outbound_verify_kwarg(
+                            target_url=t_url,
+                            expected_trust_domain=c_td,
+                            expected_spiffe_id=c_spiffe,
+                        ),
+                        timeout=15.0,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        resp_rep = client.post(
+                            t_url,
+                            json=c_payload,
+                            headers={"Authorization": f"DPoP {c_tok}", "DPoP": dpop_r},
+                        )
+                    break
+                except httpx.HTTPError as exc:
+                    last_exc = exc
+            if resp_rep is None:
+                return 502, {"error": "upstream_transport_error", "detail": str(last_exc)}, {}
+            try:
+                up_b = resp_rep.json()
+            except Exception:
+                up_b = {"raw": resp_rep.text[:256]}
+            return resp_rep.status_code, {"upstream_status": resp_rep.status_code, "upstream_body": up_b}, {}
 
         if action == "resolve_card":
             if self.directory_client is None:
@@ -1957,6 +2339,82 @@ class LineageSidecar:
             except Exception as exc:
                 return 403, {"error": "co_authorization_assembly_failed", "detail": str(exc)}, {}
 
+        if action == "sign_compliance_attestation":
+            rel_id = str(body.get("release_id") or "").strip()
+            art_sha = str(body.get("artifact_sha256") or "").strip()
+            if not rel_id or not art_sha:
+                return 400, {"error": "missing_release_id_or_artifact_sha256"}, {}
+            now_a = time.time()
+            ttl_a = min(max(float(body.get("ttl_seconds", 300.0)), 5.0), 600.0)
+            att_claims: Dict[str, Any] = {
+                "jti": f"att-{secrets.token_hex(8)}",
+                "issuer_spiffe_id": self.identity.spiffe_id,
+                "issuer_jwk": self.identity.public_jwk(),
+                "issuer_svid": self.identity.workload_svid,
+                "task_id": active_tok.task_id,
+                "release_id": rel_id,
+                "artifact_sha256": art_sha,
+                "scan_passed": bool(body.get("scan_passed", True)),
+                "iat": now_a,
+                "exp": now_a + ttl_a,
+            }
+            att_jws = jws_sign_compact(
+                payload=att_claims,
+                keypair=self.identity.keypair,
+                typ="lct-compliance-attestation+jwt",
+            )
+            return (
+                200,
+                {
+                    "attestation_jws": att_jws,
+                    "scanner_spiffe_id": self.identity.spiffe_id,
+                    "task_id": active_tok.task_id,
+                    "release_id": rel_id,
+                    "artifact_sha256": art_sha,
+                },
+                {},
+            )
+
+        if action == "sign_cohort_digest":
+            study_id_d = str(body.get("study_id") or "").strip()
+            inst_d = str(body.get("institution") or "").strip()
+            sample_cnt_d = int(body.get("sample_count") or 0)
+            ev_rate_d = float(body.get("event_rate") or 0.0)
+            if not study_id_d or not inst_d or sample_cnt_d <= 0:
+                return 400, {"error": "invalid_cohort_digest_request"}, {}
+            now_cd = time.time()
+            ttl_cd = min(max(float(body.get("ttl_seconds", 300.0)), 5.0), 600.0)
+            cd_claims: Dict[str, Any] = {
+                "jti": f"cdig-{secrets.token_hex(8)}",
+                "institution_spiffe_id": self.identity.spiffe_id,
+                "institution": inst_d,
+                "issuer_jwk": self.identity.public_jwk(),
+                "issuer_svid": self.identity.workload_svid,
+                "task_id": active_tok.task_id,
+                "study_id": study_id_d,
+                "sample_count": sample_cnt_d,
+                "event_rate": ev_rate_d,
+                "desensitized": True,
+                "raw_pii_present": False,
+                "iat": now_cd,
+                "exp": now_cd + ttl_cd,
+            }
+            dig_jws = jws_sign_compact(
+                payload=cd_claims,
+                keypair=self.identity.keypair,
+                typ="lct-cohort-digest+jwt",
+            )
+            return (
+                200,
+                {
+                    "digest_jws": dig_jws,
+                    "institution_spiffe_id": self.identity.spiffe_id,
+                    "task_id": active_tok.task_id,
+                    "study_id": study_id_d,
+                },
+                {},
+            )
+
         # Action 1: Direct Tool Invocation (or Converged MultiParent Tool Invocation)
         if action == "call_tool":
             raw_target_url = str(body.get("target_url") or "").strip()
@@ -2012,6 +2470,18 @@ class LineageSidecar:
             timeout_val = _require_finite_timeout(body.get("timeout"), 60.0)
             payload = body.get("payload") or {}
             compact_out = active_tok.encode_compact()
+            if fault_injection_enabled and body.get("cache_token_under_key"):
+                ck_name = str(body["cache_token_under_key"]).strip()
+                if ck_name:
+                    with self._state_lock:
+                        if len(self._cached_replay_tokens) >= 1024:
+                            self._cached_replay_tokens.popitem(last=False)
+                        self._cached_replay_tokens[ck_name] = {
+                            "compact_token": compact_out,
+                            "candidate_urls": list(candidate_urls),
+                            "target_spiffe_id": eff_spiffe_id,
+                            "target_trust_domain": eff_trust_domain,
+                        }
             primary_tool_url = candidate_urls[0]
             tool_idem_key = str(body.get("idempotency_key") or "").strip()
             if not tool_idem_key and body.get("logical_branch_id"):

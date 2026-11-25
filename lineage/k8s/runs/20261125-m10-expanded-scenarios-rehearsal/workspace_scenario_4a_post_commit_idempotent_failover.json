@@ -1,0 +1,15 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m10-rehearsal-s4a-idem",
+  "bob_failover_epoch": 1,
+  "carol_failover_epoch": 1,
+  "standby_idempotent_replay": true,
+  "vault_charge_count_for_branch": 1,
+  "conflicting_idempotency_replay_http": 409,
+  "conflicting_idempotency_replay_error": "IDEMPOTENCY_PARAMETER_MISMATCH",
+  "zombie_primary_wakeup_status": 403,
+  "resilience_classifications": [
+    "VERIFIED_FAILOVER_GRAFT",
+    "VERIFIED_FAILOVER_GRAFT"
+  ]
+}

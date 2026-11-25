@@ -176,6 +176,7 @@ WORKSPACE_ROLE_SLOTS: Dict[str, Tuple[str, ...]] = {
         "assistant-bob",
         "assistant-bob-standby",
         "assistant-dave",
+        "beta-user-gateway",
         "oauth_sts",
     ),
     "pay": (
@@ -745,6 +746,7 @@ def _agent_or_tool_deployment_docs(
     resource_owner_sub: Optional[str] = None,
     owner_protected_tools: Optional[str] = None,
     allowed_co_auth_tools: Optional[str] = None,
+    allowed_scanner_spiffe_ids: Optional[str] = None,
     registry_mode: str = "federated",
     audit_mode: Optional[str] = None,
     authorized_auditors: Optional[str] = None,
@@ -817,6 +819,10 @@ def _agent_or_tool_deployment_docs(
         sidecar_env.append({"name": "AUTHORIZED_AUDITORS", "value": authorized_auditors})
     if resource_owner_sub:
         sidecar_env.append({"name": "RESOURCE_OWNER_SUB", "value": resource_owner_sub})
+    if allowed_scanner_spiffe_ids:
+        sidecar_env.append(
+            {"name": "ALLOWED_SCANNER_SPIFFE_IDS", "value": allowed_scanner_spiffe_ids}
+        )
     if owner_protected_tools:
         sidecar_env.append({"name": "OWNER_PROTECTED_TOOLS", "value": owner_protected_tools})
     if allowed_co_auth_tools:
@@ -1731,7 +1737,8 @@ def render_role_k8s_manifests(
         or ("decentralized" if norm_top == "workspace" else None)
     )
     auditor_spiffe_csv = (
-        "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway"
+        "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway,"
+        "spiffe://org-beta.io/ns/lineage-beta/sa/beta-user-gateway"
         if eff_audit_mode == "decentralized"
         else None
     )
@@ -2100,7 +2107,7 @@ def render_role_k8s_manifests(
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
                 consent_issuer_policy=(
-                    "assistant-alice=user:alice@org-alpha.io:calendar_free_busy"
+                    "assistant-alice=user:alice@org-alpha.io:calendar_free_busy,gateway_config_read,commit_joint_change,cohort_aggregate_stats"
                     if norm_top == "workspace"
                     else None
                 ),
@@ -2122,7 +2129,8 @@ def render_role_k8s_manifests(
                     require_pinned_anchors=require_pinned_anchors,
                     llm_url=llm_url,
                     llm_model=llm_model,
-                    agent_skills="workspace.orchestrate",
+                    agent_skills="workspace.orchestrate,workspace.alice_private",
+                    supported_tools="hr_salary_read,calendar_write,calendar_free_busy,gateway_config_read,alice_private_roadmap,export_raw_patient_records",
                     agent_priority=10,
                     agent_display_name="Alice Workspace Assistant",
                     enable_fault_injection=True,
@@ -2131,8 +2139,8 @@ def render_role_k8s_manifests(
                     peer_name="alice",
                     peer_owner_sub="user:alice@org-alpha.io",
                     resource_owner_sub="user:alice@org-alpha.io",
-                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
-                    allowed_co_auth_tools="calendar_free_busy",
+                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy,gateway_config_read,alice_private_roadmap,export_raw_patient_records",
+                    allowed_co_auth_tools="calendar_free_busy,gateway_config_read,commit_joint_change,cohort_aggregate_stats",
                     registry_mode=norm_reg,
                     audit_mode=eff_audit_mode,
                     authorized_auditors=auditor_spiffe_csv,
@@ -2339,6 +2347,7 @@ def render_role_k8s_manifests(
                 rev_fed_nodeport=ports["revocation_federation"],
                 svid_ttl_seconds=svid_ttl_seconds,
                 require_pinned_anchors=require_pinned_anchors,
+                authorized_gateway_sa=("beta-user-gateway" if norm_top == "workspace" else None),
                 sts_enabled=sts_enabled,
                 enable_oidc_jwks_on_ca=(norm_top == "workspace" and sts_enabled),
                 registry_mode=norm_reg,
@@ -2346,8 +2355,8 @@ def render_role_k8s_manifests(
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
                 consent_issuer_policy=(
-                    "assistant-bob=user:bob@org-beta.io:calendar_free_busy;"
-                    "assistant-bob-standby=user:bob@org-beta.io:calendar_free_busy"
+                    "assistant-bob=user:bob@org-beta.io:calendar_free_busy,service_diag_read,commit_joint_change,commit_negotiated_contract,cohort_aggregate_stats;"
+                    "assistant-bob-standby=user:bob@org-beta.io:calendar_free_busy,service_diag_read,commit_joint_change,commit_negotiated_contract,cohort_aggregate_stats"
                     if norm_top == "workspace"
                     else None
                 ),
@@ -2370,7 +2379,7 @@ def render_role_k8s_manifests(
                     llm_url=llm_url,
                     llm_model=llm_model,
                     agent_skills="workspace.tech_review,workspace.bob_private",
-                    supported_tools="hr_salary_read,calendar_write,calendar_free_busy",
+                    supported_tools="hr_salary_read,calendar_write,calendar_free_busy,service_diag_read,pricing_floor_read,cohort_aggregate_stats,export_raw_patient_records",
                     agent_priority=10,
                     agent_display_name="Bob Workspace Assistant",
                     enable_fault_injection=True,
@@ -2380,8 +2389,8 @@ def render_role_k8s_manifests(
                     peer_name="bob",
                     peer_owner_sub="user:bob@org-beta.io",
                     resource_owner_sub="user:bob@org-beta.io",
-                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
-                    allowed_co_auth_tools="calendar_free_busy",
+                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy,service_diag_read,pricing_floor_read,cohort_aggregate_stats,export_raw_patient_records",
+                    allowed_co_auth_tools="calendar_free_busy,service_diag_read,commit_joint_change,commit_negotiated_contract,cohort_aggregate_stats",
                     registry_mode=norm_reg,
                     audit_mode=eff_audit_mode,
                     authorized_auditors=auditor_spiffe_csv,
@@ -2403,6 +2412,7 @@ def render_role_k8s_manifests(
                     llm_url=llm_url,
                     llm_model=llm_model,
                     agent_skills="workspace.tech_review",
+                    supported_tools="hr_salary_read,calendar_write,calendar_free_busy,service_diag_read,pricing_floor_read,cohort_aggregate_stats,export_raw_patient_records",
                     agent_priority=20,
                     agent_display_name="Bob Standby Assistant",
                     enable_fault_injection=True,
@@ -2412,8 +2422,8 @@ def render_role_k8s_manifests(
                     peer_name="bob",
                     peer_owner_sub="user:bob@org-beta.io",
                     resource_owner_sub="user:bob@org-beta.io",
-                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
-                    allowed_co_auth_tools="calendar_free_busy",
+                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy,service_diag_read,pricing_floor_read,cohort_aggregate_stats,export_raw_patient_records",
+                    allowed_co_auth_tools="calendar_free_busy,service_diag_read,commit_joint_change,commit_negotiated_contract,cohort_aggregate_stats",
                     registry_mode=norm_reg,
                     audit_mode=eff_audit_mode,
                     authorized_auditors=auditor_spiffe_csv,
@@ -2435,6 +2445,7 @@ def render_role_k8s_manifests(
                     llm_url=llm_url,
                     llm_model=llm_model,
                     agent_skills="workspace.deep_analysis",
+                    supported_tools="legal_redline_review,sast_scan",
                     agent_priority=10,
                     agent_display_name="Dave Deep-Analysis Assistant",
                     enable_fault_injection=True,
@@ -2446,6 +2457,156 @@ def render_role_k8s_manifests(
                     audit_mode=eff_audit_mode,
                     authorized_auditors=auditor_spiffe_csv,
                 )
+            )
+            beta_gw_port = int(ports.get("beta-user-gateway", 31107))
+            beta_gw_env: List[Dict[str, str]] = [
+                {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+                {"name": "TRUST_DOMAIN", "value": spec.trust_domain},
+                {"name": "LOCAL_CA_URL", "value": local_ca},
+                {"name": "OAUTH_REALM", "value": DEFAULT_REALM_NAME},
+                {
+                    "name": "AUTHORIZED_CALLER_SPIFFE_IDS",
+                    "value": "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway,spiffe://org-beta.io/ns/lineage-beta/sa/beta-user-gateway",
+                },
+                {"name": "LCT_NODE_LOCATOR_FILE", "value": "/etc/lct-node-locator/locator.json"},
+                {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
+                {"name": "LCT_PERSISTED_DESCRIPTORS_FILE", "value": "/etc/lct-descriptors/descriptors.json"},
+                {"name": "LCT_MTLS_RAM_DIR", "value": "/var/run/lct-mtls-ram"},
+                {"name": "LCT_TRUST_ANCHORS_DIR", "value": "/etc/lct-anchors"},
+                {
+                    "name": "LCT_REQUIRE_PINNED_ANCHORS",
+                    "value": ("true" if require_pinned_anchors else "false"),
+                },
+                {"name": "LCT_SVID_TTL_SECONDS", "value": str(int(svid_ttl_seconds))},
+            ]
+            if local_sts:
+                beta_gw_env.append({"name": "LOCAL_STS_URL", "value": local_sts})
+                beta_gw_env.append(
+                    {
+                        "name": "OIDC_JWKS_URL",
+                        "value": f"{local_sts}/realms/{DEFAULT_REALM_NAME}/protocol/openid-connect/certs",
+                    }
+                )
+            docs.extend(
+                [
+                    {
+                        "apiVersion": "v1",
+                        "kind": "ServiceAccount",
+                        "metadata": {"name": "beta-user-gateway", "namespace": ns},
+                    },
+                    {
+                        "apiVersion": "apps/v1",
+                        "kind": "Deployment",
+                        "metadata": {"name": "beta-user-gateway", "namespace": ns},
+                        "spec": {
+                            "replicas": 1,
+                            "selector": {"matchLabels": {"app": "beta-user-gateway"}},
+                            "template": {
+                                "metadata": {
+                                    "labels": {
+                                        "app": "beta-user-gateway",
+                                        "lct.io/trust-domain": spec.trust_domain,
+                                    }
+                                },
+                                "spec": {
+                                    "serviceAccountName": "beta-user-gateway",
+                                    "automountServiceAccountToken": False,
+                                    "securityContext": {"fsGroup": 2000},
+                                    "volumes": [
+                                        {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
+                                        *_identity_addressing_volumes(include_node_locator=True),
+                                        {
+                                            "name": "lct-sa-token",
+                                            "projected": {
+                                                "sources": [
+                                                    {
+                                                        "serviceAccountToken": {
+                                                            "path": "token",
+                                                            "expirationSeconds": 600,
+                                                            "audience": "lct-federation-ca",
+                                                        }
+                                                    },
+                                                    {
+                                                        "configMap": {
+                                                            "name": "kube-root-ca.crt",
+                                                            "items": [
+                                                                {"key": "ca.crt", "path": "ca.crt"}
+                                                            ],
+                                                        }
+                                                    },
+                                                ]
+                                            },
+                                        },
+                                    ],
+                                    "containers": [
+                                        {
+                                            "name": "user-gateway",
+                                            "image": image,
+                                            "imagePullPolicy": "Never",
+                                            "args": ["--role", "user-gateway"],
+                                            "env": beta_gw_env,
+                                            "ports": [{"containerPort": 8443, "name": "lct-mtls"}],
+                                            "volumeMounts": [
+                                                {
+                                                    "name": "lct-sa-token",
+                                                    "mountPath": "/var/run/lct-sa",
+                                                    "readOnly": True,
+                                                },
+                                                {
+                                                    "name": "lct-mtls-ram",
+                                                    "mountPath": "/var/run/lct-mtls-ram",
+                                                },
+                                                *_identity_addressing_mounts(include_node_locator=True),
+                                            ],
+                                            "livenessProbe": {
+                                                "exec": {
+                                                    "command": [
+                                                        "/app/.venv/bin/python3",
+                                                        "-c",
+                                                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=4)",
+                                                    ]
+                                                },
+                                                "initialDelaySeconds": 15,
+                                                "periodSeconds": 10,
+                                                "timeoutSeconds": 5,
+                                                "failureThreshold": 6,
+                                            },
+                                            "readinessProbe": {
+                                                "exec": {
+                                                    "command": [
+                                                        "/app/.venv/bin/python3",
+                                                        "-c",
+                                                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/readyz', timeout=4)",
+                                                    ]
+                                                },
+                                                "initialDelaySeconds": 2,
+                                                "periodSeconds": 2,
+                                                "timeoutSeconds": 5,
+                                            },
+                                        }
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "apiVersion": "v1",
+                        "kind": "Service",
+                        "metadata": {"name": "beta-user-gateway", "namespace": ns},
+                        "spec": {
+                            "type": "NodePort",
+                            "selector": {"app": "beta-user-gateway"},
+                            "ports": [
+                                {
+                                    "name": "lct-mtls",
+                                    "port": 8443,
+                                    "targetPort": 8443,
+                                    "nodePort": beta_gw_port,
+                                }
+                            ],
+                        },
+                    },
+                ]
             )
             return yaml.safe_dump_all(docs, sort_keys=False)
 
@@ -2470,6 +2631,7 @@ def render_role_k8s_manifests(
                 enable_fault_injection=True,
                 delegation_mode=delegation_mode,
                 local_sts_url=local_sts,
+                allowed_scanner_spiffe_ids="spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
                 registry_mode=norm_reg,
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
@@ -2497,6 +2659,7 @@ def render_role_k8s_manifests(
                 specialist_instance="primary",
                 delegation_mode=delegation_mode,
                 local_sts_url=local_sts,
+                allowed_scanner_spiffe_ids="spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
                 registry_mode=norm_reg,
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
@@ -2524,6 +2687,7 @@ def render_role_k8s_manifests(
                 specialist_instance="backup",
                 delegation_mode=delegation_mode,
                 local_sts_url=local_sts,
+                allowed_scanner_spiffe_ids="spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
                 registry_mode=norm_reg,
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
@@ -2568,8 +2732,8 @@ def render_role_k8s_manifests(
             audit_mode=eff_audit_mode,
             authorized_auditors=auditor_spiffe_csv,
             consent_issuer_policy=(
-                "assistant-carol=user:carol@org-payment.io:calendar_free_busy;"
-                "assistant-carol-standby=user:carol@org-payment.io:calendar_free_busy"
+                "assistant-carol=user:carol@org-payment.io:calendar_free_busy,sign_release,commit_joint_change,cohort_aggregate_stats;"
+                "assistant-carol-standby=user:carol@org-payment.io:calendar_free_busy,sign_release,commit_joint_change,cohort_aggregate_stats"
                 if norm_top == "workspace"
                 else None
             ),
@@ -2591,7 +2755,8 @@ def render_role_k8s_manifests(
                 require_pinned_anchors=require_pinned_anchors,
                 llm_url=llm_url,
                 llm_model=llm_model,
-                agent_skills="workspace.biz_procurement",
+                agent_skills="workspace.biz_procurement,workspace.carol_private",
+                supported_tools="hr_salary_read,calendar_write,calendar_free_busy,cohort_aggregate_stats,export_raw_patient_records",
                 agent_priority=10,
                 agent_display_name="Carol Commercial Assistant",
                 enable_fault_injection=True,
@@ -2601,8 +2766,8 @@ def render_role_k8s_manifests(
                 peer_name="carol",
                 peer_owner_sub="user:carol@org-payment.io",
                 resource_owner_sub="user:carol@org-payment.io",
-                owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
-                allowed_co_auth_tools="calendar_free_busy",
+                owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy,cohort_aggregate_stats,export_raw_patient_records",
+                allowed_co_auth_tools="calendar_free_busy,sign_release,commit_joint_change,cohort_aggregate_stats",
                 registry_mode=norm_reg,
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
@@ -2624,6 +2789,7 @@ def render_role_k8s_manifests(
                 llm_url=llm_url,
                 llm_model=llm_model,
                 agent_skills="workspace.biz_procurement",
+                supported_tools="hr_salary_read,calendar_write,calendar_free_busy,cohort_aggregate_stats,export_raw_patient_records",
                 agent_priority=20,
                 agent_display_name="Carol Standby Assistant",
                 enable_fault_injection=True,
@@ -2633,8 +2799,8 @@ def render_role_k8s_manifests(
                 peer_name="carol",
                 peer_owner_sub="user:carol@org-payment.io",
                 resource_owner_sub="user:carol@org-payment.io",
-                owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
-                allowed_co_auth_tools="calendar_free_busy",
+                owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy,cohort_aggregate_stats,export_raw_patient_records",
+                allowed_co_auth_tools="calendar_free_busy,sign_release,commit_joint_change,cohort_aggregate_stats",
                 registry_mode=norm_reg,
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
@@ -2656,11 +2822,12 @@ def render_role_k8s_manifests(
                 llm_url=llm_url,
                 llm_model=llm_model,
                 agent_skills="workspace.vault_converge,mcp.workspace-vault",
-                supported_tools="reserve_cloud_budget,procure_vendor_quote,query_operation_status,lock_joint_project,record_compliance_note",
+                supported_tools="reserve_cloud_budget,procure_vendor_quote,query_operation_status,lock_joint_project,record_compliance_note,commit_joint_change,commit_negotiated_contract,sign_release,federated_cohort_aggregate",
                 agent_priority=10,
                 agent_display_name="Workspace Vault & Converger",
                 delegation_mode=delegation_mode,
                 local_sts_url=local_sts,
+                allowed_scanner_spiffe_ids="spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
                 registry_mode=norm_reg,
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
@@ -2967,6 +3134,7 @@ def _ensure_in_memory_oauth_secret(
         realm_name=str((seed_creds or {}).get("realm") or DEFAULT_REALM_NAME),
         explicit_user_passwords=(seed_creds or {}).get("users"),
         explicit_client_secrets=(seed_creds or {}).get("clients"),
+        realm_trust_domain=(spec.trust_domain if need_kc_realm else None),
     )
 
     creds_sec = {

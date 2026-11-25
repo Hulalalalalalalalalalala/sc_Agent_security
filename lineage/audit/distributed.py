@@ -331,7 +331,11 @@ class DistributedAuditor:
             try:
                 parsed = SpiffeId.parse(val)
                 domains.add(parsed.trust_domain)
-                if not parsed.path.startswith("/authority/") and not parsed.path.startswith("/ns/sys/"):
+                if (
+                    not parsed.path.startswith("/authority/")
+                    and not parsed.path.startswith("/ns/sys/")
+                    and not parsed.path.endswith(("/sa/e2e-user-gateway", "/sa/beta-user-gateway"))
+                ):
                     if required:
                         req_workloads.add(parsed.uri)
                     else:

@@ -1,0 +1,31 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m10-rehearsal-s8-sod-release",
+  "scanner_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
+  "unilateral_self_approve_http": 403,
+  "missing_attestation_http": 403,
+  "mismatched_release_attestation_http": 403,
+  "sod_coauth_release_http": 200,
+  "release_receipt": {
+    "operation": "sign_release",
+    "release_id": "REL-2026-884",
+    "sod_verified": true,
+    "developer_sub": "user:alice@org-alpha.io",
+    "release_approver_sub": "user:carol@org-payment.io",
+    "scanner_spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
+    "artifact_sha256": "sha256:9f884c0ffee12345",
+    "co_authorized_principals": [
+      "user:alice@org-alpha.io",
+      "user:carol@org-payment.io"
+    ],
+    "task_id": "ws-m10-rehearsal-s8-sod-release",
+    "lineage_path": "/ws-m10-rehearsal-s8-sod-release/DeveloperAlice|/ws-m10-rehearsal-s8-sod-release/OwnerConsent",
+    "lineage_decision": "ALLOW_CO_AUTHORIZED",
+    "receipt_id": "RCPT-917835D7F3",
+    "idempotency_key": "c156510fe0b5f4aa4b2f6f2f4b2371cc586c058830b81d8de9adf555089a104f",
+    "idempotent_replay": false,
+    "charge_count": 1,
+    "replay_count": 0
+  },
+  "distributed_audit_complete": true
+}

@@ -1,0 +1,73 @@
+{
+  "status": "PASS",
+  "degraded_task_id": "ws-m10-r2-verified-s5-degrade",
+  "degraded_lock_outcomes": {
+    "cloud-infra-escrow": 200,
+    "vendor-procurement-escrow": 403
+  },
+  "protocol_comparison": {
+    "oauth_centralized": {
+      "e2e_latency_ms": 5142.45,
+      "online_sts_rpcs": 6,
+      "overprivilege_probe_http": 200
+    },
+    "oauth_federated": {
+      "e2e_latency_ms": 5794.23,
+      "online_sts_rpcs": 6,
+      "overprivilege_probe_http": 200
+    },
+    "lct": {
+      "online_sts_rpcs": 0,
+      "overprivilege_probe_http": 403,
+      "overprivilege_error": "LATTICE_PERMISSION_DENIED"
+    }
+  },
+  "local_audit_endpoint_security": {
+    "unauthenticated_http": 401,
+    "valid_signed_query_http": 200,
+    "replayed_query_http": 403
+  },
+  "distributed_audit": {
+    "mode": "decentralized_on_demand_bfs",
+    "task_id": "ws-m10-r2-verified-s5-degrade",
+    "nodes_queried": [
+      "ca:org-alpha.io",
+      "ca:org-beta.io",
+      "ca:org-payment.io",
+      "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+      "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+      "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+      "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+    ],
+    "nodes_queried_count": 7,
+    "unreachable_nodes": {},
+    "total_entries": 25,
+    "pull_latency_ms": 205.85,
+    "stream_integrity_ok": true,
+    "reconstructed_complete": true,
+    "resilience_classifications": [
+      "SMOOTH_DAG_DEGRADATION_ON_REVOCATION"
+    ],
+    "reconstruction": {
+      "task_id": "ws-m10-r2-verified-s5-degrade",
+      "sub": "user:alice@org-alpha.io",
+      "root_block_hash": "0iiJhTDOfHwLpx1AUmqv7xtmxfb6C15pvSE79r3Sq8I",
+      "reconstructed_complete": true,
+      "lineage_paths_observed": [
+        "/ws-m10-r2-verified-s5-degrade/AssistantAlice",
+        "/ws-m10-r2-verified-s5-degrade/AssistantAlice/VaultLockTrigger",
+        "/ws-m10-r2-verified-s5-degrade/AssistantAlice/assistant-bob",
+        "/ws-m10-r2-verified-s5-degrade/AssistantAlice/assistant-bob/VaultConverge",
+        "/ws-m10-r2-verified-s5-degrade/AssistantAlice/assistant-carol",
+        "/ws-m10-r2-verified-s5-degrade/AssistantAlice/assistant-carol/VaultConverge"
+      ],
+      "verified_hops": 10,
+      "tool_invocations_verified": 3,
+      "resilience_classifications": [
+        "SMOOTH_DAG_DEGRADATION_ON_REVOCATION"
+      ],
+      "anomalies": []
+    },
+    "anomalies": []
+  }
+}

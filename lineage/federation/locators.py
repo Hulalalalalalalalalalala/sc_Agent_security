@@ -57,6 +57,7 @@ DESCRIPTOR_SERVICE_KEYS: Tuple[str, ...] = (
     "audit_collector",
     "oauth_sts",
     "yellow_pages",
+    "user_gateway",
 )
 MAX_DESCRIPTORS_PER_MESSAGE: int = 32
 MAX_DESCRIPTOR_HTTP_BYTES: int = 1_048_576  # 1 MiB strict HTTP payload ceiling
@@ -144,7 +145,13 @@ class SignedDomainDescriptor:
                     validate_locator_host(loc.host, allowed_cidrs=allowed_cidrs)
                 except LocatorError as exc:
                     raise DescriptorVerificationError(f"Invalid descriptor locator: {exc}") from exc
-                if key in ("directory_federation", "revocation_federation", "audit_collector"):
+                if key in (
+                    "directory_federation",
+                    "revocation_federation",
+                    "audit_collector",
+                    "yellow_pages",
+                    "user_gateway",
+                ):
                     if loc.transport not in ("mtls-tcp", "tls-tcp"):
                         raise DescriptorVerificationError(
                             f"Service {key!r} must use TLS/mTLS transport, got {loc.transport!r}"

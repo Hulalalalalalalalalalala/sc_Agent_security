@@ -1,0 +1,43 @@
+{
+  "mode": "decentralized_on_demand_bfs",
+  "task_id": "ws-m10-rehearsal-s11-beta-sym",
+  "nodes_queried": [
+    "ca:org-alpha.io",
+    "ca:org-beta.io",
+    "ca:org-payment.io",
+    "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+  ],
+  "nodes_queried_count": 8,
+  "unreachable_nodes": {},
+  "total_entries": 19,
+  "pull_latency_ms": 202.98,
+  "stream_integrity_ok": true,
+  "reconstructed_complete": true,
+  "resilience_classifications": [
+    "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+  ],
+  "reconstruction": {
+    "task_id": "ws-m10-rehearsal-s11-beta-sym",
+    "sub": "user:bob@org-beta.io",
+    "root_block_hash": "fzP0duUrQibX43WDNx2mP1Yo33G9BKWBjorxEAld50w",
+    "reconstructed_complete": true,
+    "lineage_paths_observed": [
+      "/ws-m10-rehearsal-s11-beta-sym/CoordinatorBob",
+      "/ws-m10-rehearsal-s11-beta-sym/CoordinatorBob/AlphaConsentFromBob",
+      "/ws-m10-rehearsal-s11-beta-sym/CoordinatorBob/CarolProcurementFromBob",
+      "/ws-m10-rehearsal-s11-beta-sym/CoordinatorBob/ComplianceDaveFromBob",
+      "/ws-m10-rehearsal-s11-beta-sym/OwnerConsent"
+    ],
+    "verified_hops": 8,
+    "tool_invocations_verified": 3,
+    "resilience_classifications": [
+      "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+    ],
+    "anomalies": []
+  },
+  "anomalies": []
+}

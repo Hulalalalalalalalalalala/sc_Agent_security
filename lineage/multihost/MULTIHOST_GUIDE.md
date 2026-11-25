@@ -230,8 +230,8 @@ bash lineage/scripts/multihost.sh e2e
    ```
    命令会自动输出 Markdown 对比表与脱敏 JSON 指标文件（`m8_protocol_comparison.md` / `.json`）；若 `alpha` 部署在远端机器且无需在对比中途缩放 `alpha-sts` 副本数，可附加 `--skip-sts-partition`。
 
-### 5.4 对称工作助手平台（Platform v2：`--topology workspace` + 去中心化按需审计）
-除传统四机订票拓扑外，`deploy` 支持一键切换至 **Platform v2 对称个人/组织工作助手拓扑**（仅需 `alpha`、`beta`、`pay` 三个业务信任域，**无需部署中心化 `audit` 集群**；所有签名审计链存储在各节点本地 `LocalAuditStore`，由 `DistributedAuditor` 按 `task_id` 经 mTLS 1.3 定向拉取重构）：
+### 5.4 对称工作助手平台（Platform v2 / v2.1：`--topology workspace` + 12 场景套件 + 去中心化按需审计）
+除传统四机订票拓扑外，`deploy` 支持一键切换至 **Platform v2.1 对称个人/组织工作助手拓扑**（仅需 `alpha`、`beta`、`pay` 三个业务信任域，内置 `beta-user-gateway` 对称入口与多组织 OIDC `lct_sub` 映射，**无需部署中心化 `audit` 集群**；所有签名审计链存储在各节点本地 `LocalAuditStore`，由 `DistributedAuditor` 按 `task_id` 经 mTLS 1.3 定向拉取重构）：
 
 ```bash
 # 1. 部署对称工作助手网络（--registry-mode centralized 使用 alpha 上的不可信公共黄页；也可传 federated）
@@ -242,8 +242,7 @@ bash lineage/scripts/multihost.sh deploy --roles alpha,beta,pay --topology works
 #    Machine 2: bash lineage/scripts/multihost.sh deploy --roles beta  --topology workspace --registry-mode centralized --seed <M1_IP:PORT>
 #    Machine 3: bash lineage/scripts/multihost.sh deploy --roles pay   --topology workspace --registry-mode centralized --seed <M1_IP:PORT>
 
-# 2. 执行全部 5 组 Platform v2 场景（qwen2.5:3b 黄页意图路由、跨主体 403 与 [alice,bob] 联合授权 lctco1.、
-#    长任务到期 TaskCheckpoint 与剩余预算续期、提交后丢包幂等防双花、去中心化 DistributedAuditor 重构）
+# 2. 执行完整 11 阶段端到端套件（覆盖金融风控、企业法务采购与医疗隐私聚合全部 12 个目录场景；支持 --scenarios 6,7,8,9,10,11 按需筛选）
 bash lineage/scripts/multihost.sh workspace-demo --output-dir ./workspace-results
 
 # 3. 无中心收集器按需拉取任意 task_id 的全网签名因果图

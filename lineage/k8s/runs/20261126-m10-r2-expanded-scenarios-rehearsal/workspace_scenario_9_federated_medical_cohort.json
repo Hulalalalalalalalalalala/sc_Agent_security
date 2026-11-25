@@ -1,0 +1,28 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m10-r2-verified-s9-med-cohort",
+  "raw_export_hospital_b_http": 403,
+  "raw_export_inst_c_http": 403,
+  "raw_export_consent_refusal_http": 403,
+  "aggregated_cohort": {
+    "aggregation_id": "COH-4407BD88",
+    "study_id": "STUDY-MED-2026-07",
+    "institutions_aggregated": 2,
+    "institutions": [
+      "institution-bob",
+      "institution-carol"
+    ],
+    "verified_institution_spiffe_ids": [
+      "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+      "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol"
+    ],
+    "cohort_digests_verified": true,
+    "total_sample_count": 800,
+    "pooled_event_rate": 0.07115,
+    "raw_pii_present": false,
+    "task_id": "ws-m10-r2-verified-s9-med-cohort",
+    "sub": "user:alice@org-alpha.io"
+  },
+  "cross_task_commercial_replay_http": 403,
+  "distributed_audit_complete": true
+}

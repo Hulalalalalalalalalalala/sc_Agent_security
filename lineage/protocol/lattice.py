@@ -23,6 +23,49 @@ class LatticeError(Exception):
     """Raised on malformed PermissionLattice parameters."""
 
 
+_SPEND_TOOLS: FrozenSet[str] = frozenset(
+    {
+        "reserve_cloud_budget",
+        "procure_vendor_quote",
+        "lock_joint_project",
+        "book_flight",
+        "book_hotel",
+        "reserve_hotel",
+        "execute_settlement",
+    }
+)
+
+_IMPLICIT_TOOL_TARGETS: Dict[str, str] = {
+    "reserve_cloud_budget": "cloud-infra-escrow",
+    "procure_vendor_quote": "vendor-procurement-escrow",
+    "record_compliance_note": "compliance-ledger",
+}
+
+_EXPLICIT_TARGET_TOOLS: FrozenSet[str] = frozenset(
+    {"execute_settlement", "lock_joint_project"}
+)
+
+_TOOL_CONSTRAINABLE_PARAMS: Dict[str, FrozenSet[str]] = {
+    "reserve_cloud_budget": frozenset({"project_code"}),
+    "procure_vendor_quote": frozenset({"project_code"}),
+    "record_compliance_note": frozenset({"project_code"}),
+    "lock_joint_project": frozenset({"project_code"}),
+    "commit_negotiated_contract": frozenset(
+        {"contract_id", "warranty_tier", "unit_price_usd", "max_penalty_pct"}
+    ),
+    "commit_joint_change": frozenset({"change_id"}),
+    "sign_release": frozenset({"release_id"}),
+    "cohort_aggregate_stats": frozenset({"study_id"}),
+    "federated_cohort_aggregate": frozenset({"study_id"}),
+    "legal_redline_review": frozenset({"contract_id"}),
+    "book_flight": frozenset({"city"}),
+    "book_hotel": frozenset({"city"}),
+    "reserve_hotel": frozenset({"city"}),
+    "execute_settlement": frozenset({"city"}),
+    "record_itinerary_audit": frozenset({"city"}),
+}
+
+
 def _is_valid_number(val: Any) -> bool:
     if isinstance(val, bool) or not isinstance(val, (int, float)):
         return False
@@ -296,10 +339,14 @@ class PermissionLattice:
         if not isinstance(args, Mapping):
             return False, "tool arguments must be a mapping"
 
-        # 1. Check max_amount constraint
+        tool_schema_params = _TOOL_CONSTRAINABLE_PARAMS.get(tool or "", frozenset())
+
+        # 1. Check max_amount constraint (and require explicit spend arg for known spend tools)
         if self.max_amount is not None:
-            for amt_key in ("amount", "max_amount"):
+            found_spend_arg = False
+            for amt_key in ("amount", "price", "total", "max_amount"):
                 if amt_key in args:
+                    found_spend_arg = True
                     val = args[amt_key]
                     if not _is_valid_number(val):
                         return False, f"parameter {amt_key!r} must be a finite number"
@@ -309,14 +356,21 @@ class PermissionLattice:
                             False,
                             f"parameter {amt_key!r}={fval} violates [0, {self.max_amount}]",
                         )
+            if (tool or "") in _SPEND_TOOLS and not found_spend_arg:
+                return (
+                    False,
+                    f"spend tool {tool!r} requires explicit numeric amount under max_amount={self.max_amount}",
+                )
 
-        # 2. Check general numeric_bounds constraints
+        # 2. Check general numeric_bounds constraints (and reject omission for constrained schema params)
         for bound_key, limit in self.numeric_bounds:
             candidate_keys = [bound_key]
             if bound_key.startswith("max_") and len(bound_key) > 4:
                 candidate_keys.append(bound_key[4:])
+            matched_ck = False
             for ck in candidate_keys:
                 if ck in args:
+                    matched_ck = True
                     val = args[ck]
                     if not _is_valid_number(val):
                         return False, f"parameter {ck!r} must be a finite number"
@@ -326,6 +380,11 @@ class PermissionLattice:
                             False,
                             f"parameter {ck!r}={fval} violates numeric bound [0, {limit}]",
                         )
+            if not matched_ck and any(ck in tool_schema_params for ck in candidate_keys):
+                return (
+                    False,
+                    f"tool {tool!r} omitted required numeric-bounded parameter {bound_key!r} <= {limit}",
+                )
 
         # 3. Check allowed_scopes constraint
         if self.allowed_scopes is not None:
@@ -348,12 +407,14 @@ class PermissionLattice:
                             f"requested {skey}={items} not in allowed_scopes {sorted(self.allowed_scopes)}",
                         )
 
-        # 4. Check allowed_targets constraint
+        # 4. Check allowed_targets constraint (including implicit/explicit target validation)
         if self.allowed_targets is not None:
             if len(self.allowed_targets) == 0:
                 return False, "allowed_targets is empty"
-            for tkey in ("target", "targets"):
+            found_target_arg = False
+            for tkey in ("target", "targets", "required_targets"):
                 if tkey in args:
+                    found_target_arg = True
                     tval = args[tkey]
                     if isinstance(tval, str):
                         t_items = [tval]
@@ -368,8 +429,21 @@ class PermissionLattice:
                             False,
                             f"requested {tkey}={t_items} not in allowed_targets {sorted(self.allowed_targets)}",
                         )
+            if not found_target_arg:
+                imp_target = _IMPLICIT_TOOL_TARGETS.get(tool or "")
+                if imp_target is not None:
+                    if imp_target not in self.allowed_targets:
+                        return (
+                            False,
+                            f"implicit target {imp_target!r} for tool {tool!r} not in allowed_targets {sorted(self.allowed_targets)}",
+                        )
+                elif (tool or "") in _EXPLICIT_TARGET_TOOLS:
+                    return (
+                        False,
+                        f"tool {tool!r} requires explicit target under allowed_targets {sorted(self.allowed_targets)}",
+                    )
 
-        # 5. Check param_whitelist constraints
+        # 5. Check param_whitelist constraints (and reject omission for constrained schema params)
         for pkey, allowed_vals in self.param_whitelist:
             if len(allowed_vals) == 0:
                 return False, f"param_whitelist[{pkey!r}] is empty"
@@ -388,6 +462,11 @@ class PermissionLattice:
                         False,
                         f"parameter {pkey!r}={p_items} not in whitelist {sorted(allowed_vals)}",
                     )
+            elif pkey in tool_schema_params:
+                return (
+                    False,
+                    f"tool {tool!r} omitted required whitelisted parameter {pkey!r} in {sorted(allowed_vals)}",
+                )
 
         return True, "ok"
 

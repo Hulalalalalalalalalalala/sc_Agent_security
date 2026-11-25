@@ -1102,6 +1102,22 @@ def main() -> None:
                         urls.append(u)
             return urls
 
+        def _peer_sts_issuer_aliases() -> Dict[str, List[str]]:
+            if desc_store_sts is None:
+                return {}
+            amap: Dict[str, List[str]] = {}
+            for td_name, desc_obj in desc_store_sts.all_descriptors().items():
+                if td_name == trust_domain:
+                    continue
+                td_short = td_name.strip().lower().removeprefix("org-").split(".", 1)[0]
+                canon = f"http://{td_short}-oidc.lct.local/realms/{oauth_realm}"
+                lst = amap.setdefault(canon, [])
+                for loc in desc_obj.locators.get("oauth_sts", ()):
+                    src_u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm}"
+                    if src_u not in lst:
+                        lst.append(src_u)
+            return amap
+
         oauth_issuer_origin = os.environ.get("OAUTH_ISSUER_ORIGIN", "").strip().rstrip("/") or None
         sts_svc = OAuthSTSService(
             trust_domain=trust_domain,
@@ -1112,9 +1128,11 @@ def main() -> None:
                 sts_syncer.trust_resolver if sts_syncer is not None else None
             ),
             peer_sts_jwks_Urls_provider=_peer_sts_jwks_urls,
+            peer_issuer_aliases_provider=_peer_sts_issuer_aliases,
             issuer_override=oauth_issuer_origin,
             host="0.0.0.0",
             port=sts_port,
+            credentials_file=(creds_path if creds_path else None),
         )
         sts_svc.start()
         print(
@@ -1254,31 +1272,28 @@ def main() -> None:
             def _ca_oidc_jwks_urls() -> List[str]:
                 out = [oidc_jwks_url]
                 if desc_store is not None:
-                    for cand_td in dict.fromkeys([trust_domain, "org-alpha.io"]):
-                        d_obj = desc_store.get_descriptor(cand_td)
-                        if d_obj is not None:
-                            for loc in d_obj.locators.get("oauth_sts", ()):
-                                u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}/protocol/openid-connect/certs"
-                                if u not in out:
-                                    out.append(u)
+                    d_obj = desc_store.get_descriptor(trust_domain)
+                    if d_obj is not None:
+                        for loc in d_obj.locators.get("oauth_sts", ()):
+                            u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}/protocol/openid-connect/certs"
+                            if u not in out:
+                                out.append(u)
                 return out
 
             def _ca_allowed_issuers() -> List[str]:
                 dom_short = trust_domain.strip().lower().removeprefix("org-").split(".", 1)[0]
                 iss_list: List[str] = [
                     f"http://{dom_short}-oidc.lct.local/realms/{oauth_realm_ca}",
-                    f"http://alpha-oidc.lct.local/realms/{oauth_realm_ca}",
                 ]
                 if local_sts_url_ca:
                     iss_list.append(f"{local_sts_url_ca}/realms/{oauth_realm_ca}")
                 if desc_store is not None:
-                    for cand_td in dict.fromkeys([trust_domain, "org-alpha.io"]):
-                        d_obj = desc_store.get_descriptor(cand_td)
-                        if d_obj is not None:
-                            for loc in d_obj.locators.get("oauth_sts", ()):
-                                iss_list.append(
-                                    f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}"
-                                )
+                    d_obj = desc_store.get_descriptor(trust_domain)
+                    if d_obj is not None:
+                        for loc in d_obj.locators.get("oauth_sts", ()):
+                            iss_list.append(
+                                f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}"
+                            )
                 return iss_list
 
             ca_oidc_verifier = OIDCTokenVerifier(
@@ -1286,6 +1301,8 @@ def main() -> None:
                 jwks_urls_provider=_ca_oidc_jwks_urls,
                 allowed_issuers_provider=_ca_allowed_issuers,
                 default_user_domain=trust_domain,
+                allowed_user_domains=(trust_domain,),
+                single_entity_issuers=True,
             )
 
         svc = AutonomousDomainCAService(
@@ -1359,6 +1376,15 @@ def main() -> None:
                 spiffe_id=f"spiffe://{trust_domain}/ns/sys/sa/revocation",
             )
             sts_locs = snap.build_service_locators("oauth_sts", transport="http-ro")
+            ugw_locs = (
+                snap.build_service_locators(
+                    auth_gw_sa,
+                    transport="mtls-tcp",
+                    spiffe_id=f"spiffe://{trust_domain}/ns/{allowed_ns}/sa/{auth_gw_sa}",
+                )
+                if auth_gw_sa and auth_gw_sa != "e2e-user-gateway"
+                else ()
+            )
             yp_dom_ca = os.environ.get("YELLOW_PAGES_DOMAIN", "org-alpha.io").strip().lower() or "org-alpha.io"
             loc_map: Dict[str, Any] = {}
             if ca_locs:
@@ -1371,6 +1397,8 @@ def main() -> None:
                 loc_map["revocation_federation"] = rev_locs
             if sts_locs:
                 loc_map["oauth_sts"] = sts_locs
+            if ugw_locs:
+                loc_map["user_gateway"] = ugw_locs
             if loc_map:
                 desc = svc.publish_domain_locators(loc_map)
                 print(
@@ -2047,13 +2075,24 @@ def main() -> None:
                     ],
                 ],
                 default_user_domain="org-alpha.io",
+                single_entity_issuers=True,
             )
-            oauth_local_ver = OIDCTokenVerifier(
-                jwks_urls_provider=lambda: [
+
+            def _federated_sts_jwks_urls() -> List[str]:
+                urls: List[str] = [
                     f"{o.split('#host=', 1)[0]}/realms/{oauth_realm_sc}/protocol/openid-connect/certs"
                     for o in _domain_sts_origins(identity.trust_domain)
-                ],
-                allowed_issuers_provider=lambda: [
+                ]
+                if desc_store is not None:
+                    for td_k, d_obj in desc_store.all_descriptors().items():
+                        for loc in d_obj.locators.get("oauth_sts", ()):
+                            u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_sc}/protocol/openid-connect/certs"
+                            if u not in urls:
+                                urls.append(u)
+                return urls
+
+            def _federated_allowed_issuers() -> List[str]:
+                iss_out: List[str] = [
                     f"http://{own_short}-oidc.lct.local/realms/{oauth_realm_sc}",
                     *[
                         f"http://{o.split('#host=', 1)[1]}/realms/{oauth_realm_sc}"
@@ -2061,14 +2100,50 @@ def main() -> None:
                         else f"{o}/realms/{oauth_realm_sc}"
                         for o in _domain_sts_origins(identity.trust_domain)
                     ],
-                ],
-                default_user_domain="org-alpha.io",
+                ]
+                if desc_store is not None:
+                    for td_k, d_obj in desc_store.all_descriptors().items():
+                        td_short = td_k.strip().lower().removeprefix("org-").split(".", 1)[0]
+                        iss_out.append(f"http://{td_short}-oidc.lct.local/realms/{oauth_realm_sc}")
+                        for loc in d_obj.locators.get("oauth_sts", ()):
+                            iss_out.append(f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_sc}")
+                return list(dict.fromkeys(iss_out))
+
+            def _federated_issuer_aliases() -> Dict[str, List[str]]:
+                alias_map: Dict[str, List[str]] = {}
+                own_canon = f"http://{own_short}-oidc.lct.local/realms/{oauth_realm_sc}"
+                alias_map[own_canon] = [
+                    f"{o.split('#host=', 1)[0]}/realms/{oauth_realm_sc}"
+                    for o in _domain_sts_origins(identity.trust_domain)
+                ]
+                if desc_store is not None:
+                    for td_k, d_obj in desc_store.all_descriptors().items():
+                        td_short = td_k.strip().lower().removeprefix("org-").split(".", 1)[0]
+                        canon_iss = f"http://{td_short}-oidc.lct.local/realms/{oauth_realm_sc}"
+                        lst = alias_map.setdefault(canon_iss, [])
+                        for loc in d_obj.locators.get("oauth_sts", ()):
+                            src_i = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_sc}"
+                            if src_i not in lst:
+                                lst.append(src_i)
+                return alias_map
+
+            oauth_local_ver = OIDCTokenVerifier(
+                jwks_urls_provider=_federated_sts_jwks_urls,
+                allowed_issuers_provider=_federated_allowed_issuers,
+                issuer_aliases_provider=_federated_issuer_aliases,
+                default_user_domain=identity.trust_domain,
+                single_entity_issuers=False,
             )
             oauth_ex_cli = OAuthTokenExchangeClient(
                 realm=oauth_realm_sc,
                 client_secrets=sc_client_secrets,
             )
 
+        raw_scanner_spiffes_sc = [
+            s.strip()
+            for s in os.environ.get("ALLOWED_SCANNER_SPIFFE_IDS", "").split(",")
+            if s.strip()
+        ]
         sidecar = LineageSidecar(
             identity=identity,
             trust_resolver=resolver,
@@ -2095,6 +2170,7 @@ def main() -> None:
             resource_owner_sub=res_owner_sub_sc,
             owner_protected_tools=owner_prot_tools_sc or None,
             allowed_co_auth_tools=allowed_coauth_tools_sc or None,
+            allowed_scanner_spiffe_ids=(raw_scanner_spiffes_sc if raw_scanner_spiffes_sc else None),
             local_ca_url=local_ca_url or None,
             sa_token_path=resolve_sa_token_path(),
         )
@@ -2230,6 +2306,102 @@ def main() -> None:
             if syncer is not None:
                 syncer.stop_background_refresh()
             sidecar.stop()
+            if mtls_bundle is not None:
+                mtls_bundle.cleanup()
+        return
+
+    if role == "user-gateway":
+        from lineage.federation import DomainUserGatewayService, bootstrap_autonomous_workload
+        from lineage.oauth_sts import OIDCTokenVerifier
+
+        local_ca_url = os.environ["LOCAL_CA_URL"]
+        sa_tok_path = os.environ.get("K8S_SA_TOKEN_PATH", "/var/run/lct-sa/token")
+        seed_store = _build_env_seed_store()
+        desc_store = _build_env_descriptor_store(anchor_store, require_pins)
+        identity, resolver, mtls_bundle, syncer = bootstrap_autonomous_workload(
+            local_ca_url,
+            {},
+            require_all_peers=False,
+            svid_ttl_seconds=svid_ttl,
+            anchor_store=anchor_store,
+            require_pinned_anchors=require_pins,
+            enable_auto_renewal=True,
+            seed_store=seed_store,
+            descriptor_store=desc_store,
+            persisted_descriptors_file=persisted_desc_file,
+        )
+        trust_domain_gw = identity.trust_domain
+        oidc_jwks_gw = os.environ.get("OIDC_JWKS_URL", "").strip()
+        local_sts_gw = os.environ.get("LOCAL_STS_URL", "").strip().rstrip("/")
+        oauth_realm_gw = os.environ.get("OAUTH_REALM", "lct").strip() or "lct"
+
+        def _gw_jwks_urls() -> List[str]:
+            out: List[str] = [oidc_jwks_gw] if oidc_jwks_gw else []
+            if desc_store is not None:
+                d_obj = desc_store.get_descriptor(trust_domain_gw)
+                if d_obj is not None:
+                    for loc in d_obj.locators.get("oauth_sts", ()):
+                        u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_gw}/protocol/openid-connect/certs"
+                        if u not in out:
+                            out.append(u)
+            return out
+
+        def _gw_allowed_issuers() -> List[str]:
+            dom_s = trust_domain_gw.strip().lower().removeprefix("org-").split(".", 1)[0]
+            iss_l: List[str] = [
+                f"http://{dom_s}-oidc.lct.local/realms/{oauth_realm_gw}",
+            ]
+            if local_sts_gw:
+                iss_l.append(f"{local_sts_gw}/realms/{oauth_realm_gw}")
+            if desc_store is not None:
+                d_obj = desc_store.get_descriptor(trust_domain_gw)
+                if d_obj is not None:
+                    for loc in d_obj.locators.get("oauth_sts", ()):
+                        iss_l.append(f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_gw}")
+            return iss_l
+
+        gw_oidc_verifier = OIDCTokenVerifier(
+            jwks_urls=([oidc_jwks_gw] if oidc_jwks_gw else ()),
+            jwks_urls_provider=_gw_jwks_urls,
+            allowed_issuers_provider=_gw_allowed_issuers,
+            default_user_domain=trust_domain_gw,
+            allowed_user_domains=(trust_domain_gw,),
+            single_entity_issuers=True,
+        )
+        raw_callers = [
+            s.strip()
+            for s in os.environ.get("AUTHORIZED_CALLER_SPIFFE_IDS", "").split(",")
+            if s.strip()
+        ]
+
+        def _fresh_sa_jwt_gw() -> str:
+            with open(sa_tok_path, "r", encoding="utf-8") as fh:
+                return fh.read().strip()
+
+        ugw_svc = DomainUserGatewayService(
+            identity=identity,
+            local_ca_url=local_ca_url,
+            sa_jwt_provider=_fresh_sa_jwt_gw,
+            oidc_verifier=gw_oidc_verifier,
+            mtls_bundle=mtls_bundle,
+            authorized_caller_spiffe_ids=(raw_callers or None),
+            readiness_check=syncer.is_ready if syncer is not None else None,
+            inbound_host="0.0.0.0",
+            inbound_port=int(os.environ.get("SIDECAR_INBOUND_PORT", "8443")),
+            health_host="127.0.0.1",
+            health_port=int(os.environ.get("SIDECAR_OUTBOUND_PORT", "8081")),
+        )
+        try:
+            ugw_svc.start()
+            print(
+                f"[user-gateway:{trust_domain_gw}] mTLS + OIDC entry gateway active on 0.0.0.0:8443 spiffe={identity.spiffe_id}",
+                flush=True,
+            )
+            stop_event.wait()
+        finally:
+            ugw_svc.stop()
+            if syncer is not None:
+                syncer.stop_background_refresh()
             if mtls_bundle is not None:
                 mtls_bundle.cleanup()
         return

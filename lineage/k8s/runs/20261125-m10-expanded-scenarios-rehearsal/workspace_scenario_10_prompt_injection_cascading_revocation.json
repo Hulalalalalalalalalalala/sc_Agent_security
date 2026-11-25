@@ -1,0 +1,15 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m10-rehearsal-s10-inj-cascade",
+  "revoked_bob_prefix": "/ws-m10-rehearsal-s10-inj-cascade/AssistantAlice/TechReviewBob",
+  "hop3_legitimate_note_http": 200,
+  "hop3_injected_budget_http": 403,
+  "hop3_injected_exfil_http": 403,
+  "post_revoke_bob_hop2_http": 403,
+  "post_revoke_dave_preminted_hop3_http": 403,
+  "degraded_vault_outcomes": {
+    "cloud-infra-escrow": 403,
+    "vendor-procurement-escrow": 200
+  },
+  "distributed_audit_complete": true
+}

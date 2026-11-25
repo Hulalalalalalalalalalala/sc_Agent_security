@@ -412,18 +412,30 @@ class GatewaySession:
                 origins.append(u)
         return origins
 
-    def login_oidc_user(self, username: str = "alice") -> Dict[str, Any]:
+    def login_oidc_user(
+        self,
+        username: str = "alice",
+        trust_domain: Optional[str] = None,
+        client_id: str = "lct-gateway",
+    ) -> Dict[str, Any]:
+        from lineage.oauth_sts.keycloak_realm import DEFAULT_USER_HOME_DOMAINS
+
         pw = self.oauth_users.get(username, "")
         if not pw:
             raise RuntimeError(f"No OAuth password configured in Secret for user {username!r}")
-        origins = self.oauth_sts_origins("org-alpha.io")
+        eff_td = (
+            trust_domain.strip().lower()
+            if trust_domain
+            else DEFAULT_USER_HOME_DOMAINS.get(username, "org-alpha.io")
+        )
+        origins = self.oauth_sts_origins(eff_td)
         if not origins:
-            raise RuntimeError("No org-alpha.io oauth_sts origin available for Hop-0 login")
+            raise RuntimeError(f"No {eff_td} oauth_sts origin available for Hop-0 login of {username!r}")
         return self.oauth_client.login_user_password(
             sts_origins=origins,
             username=username,
             password=pw,
-            client_id="lct-gateway",
+            client_id=client_id,
         )
 
     def mint_root_for_user(
@@ -533,11 +545,16 @@ class GatewaySession:
         payload: Dict[str, Any],
         path: str = "/a2a/task",
         timeout: float = 90.0,
+        source_sts_domain: Optional[str] = None,
     ) -> Tuple[httpx.Response, Dict[str, Any]]:
         sts_origins = (
-            self.oauth_sts_origins("org-alpha.io")
-            if delegation_mode == "oauth_centralized"
-            else self.oauth_sts_origins(card.trust_domain)
+            self.oauth_sts_origins(source_sts_domain)
+            if source_sts_domain
+            else (
+                self.oauth_sts_origins("org-alpha.io")
+                if delegation_mode == "oauth_centralized"
+                else self.oauth_sts_origins(card.trust_domain)
+            )
         )
         ex_hop1 = self.oauth_client.exchange_token(
             sts_origins=sts_origins,
@@ -2685,6 +2702,12 @@ def main() -> None:
                 run_ws_scenario_4a_post_commit_idempotent_failover,
                 run_ws_scenario_4b_skip_level_return,
                 run_ws_scenario_5_degradation_compare_and_audit,
+                run_ws_scenario_6_bidirectional_fin_pingpong,
+                run_ws_scenario_7_legal_redline_negotiation,
+                run_ws_scenario_8_supply_chain_sod,
+                run_ws_scenario_9_federated_medical_cohort,
+                run_ws_scenario_10_prompt_injection_cascading_revocation,
+                run_ws_scenario_11_symmetric_beta_entry_and_token_theft,
             )
 
             if phase == "ws_scenario1":
@@ -2703,6 +2726,18 @@ def main() -> None:
                 )
             elif phase == "ws_scenario5":
                 out = run_ws_scenario_5_degradation_compare_and_audit(gw, args.run_id)
+            elif phase == "ws_scenario6":
+                out = run_ws_scenario_6_bidirectional_fin_pingpong(gw, args.run_id)
+            elif phase == "ws_scenario7":
+                out = run_ws_scenario_7_legal_redline_negotiation(gw, args.run_id)
+            elif phase == "ws_scenario8":
+                out = run_ws_scenario_8_supply_chain_sod(gw, args.run_id)
+            elif phase == "ws_scenario9":
+                out = run_ws_scenario_9_federated_medical_cohort(gw, args.run_id)
+            elif phase == "ws_scenario10":
+                out = run_ws_scenario_10_prompt_injection_cascading_revocation(gw, args.run_id)
+            elif phase == "ws_scenario11":
+                out = run_ws_scenario_11_symmetric_beta_entry_and_token_theft(gw, args.run_id)
             elif phase == "ws_distributed_audit":
                 out = run_distributed_audit_for_task(gw, args.task_id)
             else:
