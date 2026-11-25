@@ -81,6 +81,7 @@ from lineage.revocation import (
 )
 from lineage.sidecar import LineageSidecar
 from lineage.verifier import VerificationMode
+from lineage.workspace_agents import WorkspaceAssistantPeerApp, WorkspaceVaultMCPApp
 
 PROJECTED_SA_TOKEN_PATH = "/var/run/lct-sa/token"
 PROJECTED_CA_CERT_PATH = "/var/run/lct-sa/ca.crt"
@@ -1201,6 +1202,18 @@ def main() -> None:
         trust_domain = os.environ["TRUST_DOMAIN"]
         allowed_ns = os.environ["ALLOWED_K8S_NAMESPACE"]
         auth_gw_sa = os.environ.get("AUTHORIZED_GATEWAY_SA", "").strip() or None
+        auth_gw_sas = [
+            s.strip()
+            for s in os.environ.get("AUTHORIZED_GATEWAY_SAS", "").split(",")
+            if s.strip()
+        ]
+        auth_auditors = [
+            s.strip()
+            for s in os.environ.get("AUTHORIZED_AUDITORS", "").split(",")
+            if s.strip()
+        ]
+        registry_mode_ca = os.environ.get("REGISTRY_MODE", "federated").strip().lower() or "federated"
+        audit_mode_ca = os.environ.get("AUDIT_MODE", "").strip().lower()
         fed_port_raw = os.environ.get("CA_FEDERATION_PORT", "").strip()
         fed_port = int(fed_port_raw) if fed_port_raw else None
         key_dir = os.environ.get("CA_KEY_MATERIAL_DIR", "").strip()
@@ -1241,28 +1254,31 @@ def main() -> None:
             def _ca_oidc_jwks_urls() -> List[str]:
                 out = [oidc_jwks_url]
                 if desc_store is not None:
-                    own_d = desc_store.get_descriptor(trust_domain)
-                    if own_d is not None:
-                        for loc in own_d.locators.get("oauth_sts", ()):
-                            u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}/protocol/openid-connect/certs"
-                            if u not in out:
-                                out.append(u)
+                    for cand_td in dict.fromkeys([trust_domain, "org-alpha.io"]):
+                        d_obj = desc_store.get_descriptor(cand_td)
+                        if d_obj is not None:
+                            for loc in d_obj.locators.get("oauth_sts", ()):
+                                u = f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}/protocol/openid-connect/certs"
+                                if u not in out:
+                                    out.append(u)
                 return out
 
             def _ca_allowed_issuers() -> List[str]:
                 dom_short = trust_domain.strip().lower().removeprefix("org-").split(".", 1)[0]
                 iss_list: List[str] = [
                     f"http://{dom_short}-oidc.lct.local/realms/{oauth_realm_ca}",
+                    f"http://alpha-oidc.lct.local/realms/{oauth_realm_ca}",
                 ]
                 if local_sts_url_ca:
                     iss_list.append(f"{local_sts_url_ca}/realms/{oauth_realm_ca}")
                 if desc_store is not None:
-                    own_d = desc_store.get_descriptor(trust_domain)
-                    if own_d is not None:
-                        for loc in own_d.locators.get("oauth_sts", ()):
-                            iss_list.append(
-                                f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}"
-                            )
+                    for cand_td in dict.fromkeys([trust_domain, "org-alpha.io"]):
+                        d_obj = desc_store.get_descriptor(cand_td)
+                        if d_obj is not None:
+                            for loc in d_obj.locators.get("oauth_sts", ()):
+                                iss_list.append(
+                                    f"{loc.origin_url.rstrip('/')}/realms/{oauth_realm_ca}"
+                                )
                 return iss_list
 
             ca_oidc_verifier = OIDCTokenVerifier(
@@ -1277,6 +1293,7 @@ def main() -> None:
             allowed_k8s_namespace=allowed_ns,
             audit_collector_url=audit_url,
             authorized_gateway_sa=auth_gw_sa,
+            authorized_gateway_sas=auth_gw_sas or None,
             host="0.0.0.0",
             port=8090,
             federation_port=fed_port,
@@ -1285,23 +1302,24 @@ def main() -> None:
             x509_root_cert_pem=_read_optional_pem(key_dir, "x509_root_cert.pem"),
             audit_ssl_context_provider=(
                 ca_audit_syncer.audit_ssl_context
-                if (ca_audit_syncer is not None and not identity_addressing)
+                if (ca_audit_syncer is not None and not identity_addressing and audit_mode_ca != "decentralized")
                 else None
             ),
             audit_locator_provider=(
                 ca_audit_syncer.audit_locators
-                if (ca_audit_syncer is not None and identity_addressing)
+                if (ca_audit_syncer is not None and identity_addressing and audit_mode_ca != "decentralized")
                 else None
             ),
             audit_ssl_for_locator=(
                 ca_audit_syncer.audit_ssl_context_for_locator
-                if (ca_audit_syncer is not None and identity_addressing)
+                if (ca_audit_syncer is not None and identity_addressing and audit_mode_ca != "decentralized")
                 else None
             ),
             best_effort_audit=(
                 (not wait_for_peers_on_boot)
                 or identity_addressing
                 or audit_url.startswith("https://")
+                or audit_mode_ca == "decentralized"
             ),
             descriptor_store=desc_store,
             on_descriptor_learned=(
@@ -1310,7 +1328,14 @@ def main() -> None:
                 else None
             ),
             oidc_verifier=ca_oidc_verifier,
+            federation_trust_resolver=(
+                ca_audit_syncer.trust_resolver if ca_audit_syncer is not None else None
+            ),
+            authorized_auditors=auth_auditors or None,
+            consent_issuer_policy=os.environ.get("CONSENT_ISSUER_POLICY", "").strip() or None,
         )
+        if ca_audit_syncer is not None:
+            ca_audit_syncer.trust_resolver.register_domain_ca(svc.ca)
         if desc_store is not None:
             desc_store.set_local_trust_domain(trust_domain, svc.trust_anchor)
 
@@ -1323,17 +1348,25 @@ def main() -> None:
                 transport="mtls-tcp",
                 spiffe_id=f"spiffe://{trust_domain}/ns/sys/sa/directory",
             )
+            yp_locs = snap.build_service_locators(
+                "yellow_pages",
+                transport="mtls-tcp",
+                spiffe_id=f"spiffe://{trust_domain}/ns/sys/sa/directory",
+            )
             rev_locs = snap.build_service_locators(
                 "revocation_federation",
                 transport="mtls-tcp",
                 spiffe_id=f"spiffe://{trust_domain}/ns/sys/sa/revocation",
             )
             sts_locs = snap.build_service_locators("oauth_sts", transport="http-ro")
+            yp_dom_ca = os.environ.get("YELLOW_PAGES_DOMAIN", "org-alpha.io").strip().lower() or "org-alpha.io"
             loc_map: Dict[str, Any] = {}
             if ca_locs:
                 loc_map["ca_bundle"] = ca_locs
-            if dir_locs:
+            if dir_locs and (registry_mode_ca != "centralized" or trust_domain == yp_dom_ca):
                 loc_map["directory_federation"] = dir_locs
+            if registry_mode_ca == "centralized" and trust_domain == yp_dom_ca and (yp_locs or dir_locs):
+                loc_map["yellow_pages"] = yp_locs or dir_locs
             if rev_locs:
                 loc_map["revocation_federation"] = rev_locs
             if sts_locs:
@@ -1354,6 +1387,7 @@ def main() -> None:
             loc_watcher.start()
 
         if ca_audit_syncer is not None:
+            ca_audit_syncer.sync_all(require_all=False)
             ca_audit_syncer.start_background_refresh(interval_sec=2.0)
         print(
             f"[domain-ca:{trust_domain}] Autonomous CA ready on 0.0.0.0:8090 (fed_port={fed_port}, allowed_ns={allowed_ns}, anchor={svc.trust_anchor})",
@@ -1621,6 +1655,7 @@ def main() -> None:
         _wait_for_http_ok(f"{rev_url}/healthz")
         rev_replica = RevocationReplicaClient(rev_url, resolver)
         rev_replica.start_background_sync(wait_ms=800)
+        registry_mode_dir = os.environ.get("REGISTRY_MODE", "federated").strip().lower() or "federated"
         svc = AgentDirectoryService(
             resolver,
             revocation_replica=rev_replica,
@@ -1633,6 +1668,7 @@ def main() -> None:
             readiness_check=syncer.is_ready,
             descriptor_store=desc_store,
             on_descriptor_learned=syncer.apply_verified_descriptor,
+            registry_mode=registry_mode_dir,
         )
         try:
             svc.start()
@@ -1755,11 +1791,57 @@ def main() -> None:
 
         rev_replica = RevocationReplicaClient(rev_url, resolver)
         rev_replica.start_background_sync(wait_ms=800)
-        dir_client = AgentDirectoryClient(dir_url, resolver)
+
+        registry_mode_sc = os.environ.get("REGISTRY_MODE", "federated").strip().lower() or "federated"
+        yp_domain_sc = os.environ.get("YELLOW_PAGES_DOMAIN", "org-alpha.io").strip().lower() or "org-alpha.io"
+        audit_mode_sc = os.environ.get("AUDIT_MODE", "").strip().lower()
+        auth_auditors_sc = [
+            s.strip()
+            for s in os.environ.get("AUTHORIZED_AUDITORS", "").split(",")
+            if s.strip()
+        ]
+        res_owner_sub_sc = os.environ.get("RESOURCE_OWNER_SUB", "").strip() or None
+        owner_prot_tools_sc = [
+            s.strip()
+            for s in os.environ.get("OWNER_PROTECTED_TOOLS", "").split(",")
+            if s.strip()
+        ]
+        allowed_coauth_tools_sc = [
+            s.strip()
+            for s in os.environ.get("ALLOWED_CO_AUTH_TOOLS", "").split(",")
+            if s.strip()
+        ]
+
+        def _yellow_pages_locators() -> List[Any]:
+            if desc_store is None:
+                return []
+            yp_desc = desc_store.get_descriptor(yp_domain_sc)
+            if yp_desc is None:
+                return []
+            locs = list(yp_desc.locators.get("yellow_pages", ()))
+            if not locs:
+                locs = list(yp_desc.locators.get("directory_federation", ()))
+            return locs
+
+        dir_client = AgentDirectoryClient(
+            dir_url,
+            resolver,
+            locator_provider=(
+                _yellow_pages_locators
+                if (not dir_url and registry_mode_sc == "centralized")
+                else None
+            ),
+            mtls_bundle=(
+                mtls_bundle
+                if (not dir_url and registry_mode_sc == "centralized")
+                else None
+            ),
+        )
         pod_stream_id = f"{identity.spiffe_id}#{socket.gethostname()}"
-        audit_emitter = AuditStreamEmitter(
-            signer=identity,
-            collector_client=AuditCollectorClient(
+        audit_collector_cli = (
+            None
+            if (audit_mode_sc == "decentralized" and not audit_url)
+            else AuditCollectorClient(
                 audit_url,
                 ssl_context_provider=(
                     syncer.audit_ssl_context
@@ -1776,13 +1858,19 @@ def main() -> None:
                     if (syncer is not None and use_id_addr and not audit_url)
                     else None
                 ),
-            ),
+            )
+        )
+        audit_emitter = AuditStreamEmitter(
+            signer=identity,
+            collector_client=audit_collector_cli,
             stream_id=pod_stream_id,
             best_effort_remote=(
                 (not wait_for_peers_on_boot)
                 or use_id_addr
                 or audit_url.startswith("https://")
+                or audit_mode_sc == "decentralized"
             ),
+            authorized_auditors=auth_auditors_sc or None,
         )
 
         card_lock = threading.Lock()
@@ -1862,13 +1950,14 @@ def main() -> None:
 
         registered_card: Optional[AgentCard] = None
         if should_register_card:
-            _wait_for_http_ok(f"{dir_url}/healthz")
-            for attempt in range(8):
+            if dir_url:
+                _wait_for_http_ok(f"{dir_url}/healthz")
+            for attempt in range(12):
                 try:
                     registered_card = _mint_and_register_card()
                     break
                 except Exception:
-                    if attempt == 7 and wait_for_peers_on_boot:
+                    if attempt == 11 and wait_for_peers_on_boot:
                         raise
                     time.sleep(0.5)
 
@@ -2003,6 +2092,11 @@ def main() -> None:
             oauth_exchange_client=oauth_ex_cli,
             oauth_central_sts_origins_provider=central_origins_fn,
             oauth_domain_sts_origins_provider=domain_origins_fn,
+            resource_owner_sub=res_owner_sub_sc,
+            owner_protected_tools=owner_prot_tools_sc or None,
+            allowed_co_auth_tools=allowed_coauth_tools_sc or None,
+            local_ca_url=local_ca_url or None,
+            sa_token_path=resolve_sa_token_path(),
         )
         sidecar.set_public_origins(init_primary_origin, init_extra_origins)
         if registered_card is not None:
@@ -2168,6 +2262,31 @@ def main() -> None:
         app_obj = TravelOpsMCPApp(loopback_secret, port=app_port)
     elif role == "app-payment-mcp":
         app_obj = PaymentVaultMCPApp(loopback_secret, port=app_port)
+    elif role == "app-peer-assistant":
+        from lineage.agents import OllamaClient
+
+        use_llm_peer = os.environ.get("ENABLE_PEER_LLM", "true").strip().lower() != "false"
+        app_obj = WorkspaceAssistantPeerApp(
+            peer_name=os.environ.get("PEER_NAME", "alice"),
+            owner_sub=os.environ.get("PEER_OWNER_SUB", "user:alice@org-alpha.io"),
+            outbound_proxy_url=sidecar_out_url,
+            loopback_secret=loopback_secret,
+            ollama=(OllamaClient() if use_llm_peer else None),
+            instance_label=os.environ.get("SPECIALIST_INSTANCE", "primary"),
+            vault_mcp_target=os.environ.get("VAULT_MCP_TARGET", "skill://mcp.workspace-vault"),
+            port=app_port,
+        )
+    elif role == "app-workspace-vault":
+        from lineage.agents import OllamaClient
+
+        use_llm_vault = os.environ.get("ENABLE_PEER_LLM", "true").strip().lower() != "false"
+        app_obj = WorkspaceVaultMCPApp(
+            loopback_secret=loopback_secret,
+            outbound_proxy_url=sidecar_out_url,
+            ollama=(OllamaClient() if use_llm_vault else None),
+            vault_mcp_target=os.environ.get("VAULT_MCP_TARGET", "skill://mcp.workspace-vault"),
+            port=app_port,
+        )
     else:
         print(f"Unknown role: {role!r}", file=sys.stderr)
         sys.exit(2)

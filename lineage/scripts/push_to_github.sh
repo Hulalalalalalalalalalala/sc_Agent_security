@@ -154,14 +154,15 @@ done < "${STAGED_LIST}"
 
 TOTAL_MB="$(awk "BEGIN { printf \"%.2f\", ${TOTAL_BYTES} / (1024 * 1024) }")"
 
-# 3. Scan all LCT run evidence artifacts for unredacted wire tokens
-RUNS_DIR="${LINEAGE_DIR}/k8s/runs"
-if [ -d "${RUNS_DIR}" ]; then
-  if grep -rn '"lct1\.\|"lctmp1\.\|"lctm1\.\|"eyJhbG' "${RUNS_DIR}" >/dev/null 2>&1; then
-    echo "[FATAL] Unredacted LCT/JWS wire token detected in ${RUNS_DIR}!" >&2
-    exit 1
+# 3. Scan all LCT run & scale evidence artifacts for unredacted wire tokens
+for scan_dir in "${LINEAGE_DIR}/k8s/runs" "${LINEAGE_DIR}/scale"; do
+  if [ -d "${scan_dir}" ]; then
+    if grep -rn '"lct1\.\|"lctmp1\.\|"lctm1\.\|"lctco1\.\|"eyJhbG' "${scan_dir}" >/dev/null 2>&1; then
+      echo "[FATAL] Unredacted LCT/JWS wire token detected in ${scan_dir}!" >&2
+      exit 1
+    fi
   fi
-fi
+done
 
 echo "  Staged Files  : ${FILE_COUNT} files (${TOTAL_MB} MB total; 0 symlinks; 0 files > 50 MB)"
 echo "  Exclusions    : .tools/ (0 staged), src/ (0 staged), venv/.venv (0 staged)"

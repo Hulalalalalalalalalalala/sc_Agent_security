@@ -30,10 +30,13 @@ COPY lineage/audit /opt/lct/lineage/audit
 COPY lineage/resilience /opt/lct/lineage/resilience
 COPY lineage/sidecar /opt/lct/lineage/sidecar
 COPY lineage/agents /opt/lct/lineage/agents
+COPY lineage/workspace_agents /opt/lct/lineage/workspace_agents
+COPY lineage/scale /opt/lct/lineage/scale
 COPY lineage/oauth_sts /opt/lct/lineage/oauth_sts
 COPY lineage/k8s/__init__.py /opt/lct/lineage/k8s/__init__.py
 COPY lineage/k8s/bootstrap_services.py /opt/lct/lineage/k8s/bootstrap_services.py
 COPY lineage/k8s/e2e_driver.py /opt/lct/lineage/k8s/e2e_driver.py
+COPY lineage/k8s/workspace_e2e.py /opt/lct/lineage/k8s/workspace_e2e.py
 COPY lineage/multihost /opt/lct/lineage/multihost
 
 ENTRYPOINT ["/app/.venv/bin/python3", "-m", "lineage.k8s.bootstrap_services"]

@@ -56,6 +56,7 @@ DESCRIPTOR_SERVICE_KEYS: Tuple[str, ...] = (
     "revocation_federation",
     "audit_collector",
     "oauth_sts",
+    "yellow_pages",
 )
 MAX_DESCRIPTORS_PER_MESSAGE: int = 32
 MAX_DESCRIPTOR_HTTP_BYTES: int = 1_048_576  # 1 MiB strict HTTP payload ceiling

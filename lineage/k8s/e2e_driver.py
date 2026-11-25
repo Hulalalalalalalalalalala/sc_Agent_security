@@ -150,7 +150,7 @@ def _scrub_for_disk(obj: Any) -> Any:
     if isinstance(base, list):
         return [_scrub_for_disk(x) for x in base]
     if isinstance(base, str):
-        if base.startswith(("lct1.", "lctmp1.", "lctm1.")):
+        if base.startswith(("lct1.", "lctmp1.", "lctm1.", "lctco1.")):
             return f"[REDACTED_LCT_TOKEN_SHA256:{sha256_hex(base.encode('ascii'))[:12]}]"
         if base.startswith("eyJ") and base.count(".") == 2:
             return f"[REDACTED_JWS_SHA256:{sha256_hex(base.encode('ascii'))[:12]}]"
@@ -434,6 +434,7 @@ class GatewaySession:
         target_card: Optional[AgentCard] = None,
         hop_segment: str = "OrchestratorAlpha",
         max_depth: int = 6,
+        ttl_seconds: float = 900.0,
         user_oidc_token: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         card = target_card or self.get_orchestrator_card()
@@ -449,6 +450,7 @@ class GatewaySession:
             "permissions": permissions.to_dict(),
             "hop_segment": hop_segment,
             "max_depth": max_depth,
+            "ttl_seconds": ttl_seconds,
         }
         if user_oidc_token:
             req_payload["user_oidc_token"] = user_oidc_token
@@ -457,6 +459,66 @@ class GatewaySession:
             json=req_payload,
             headers={"Authorization": f"Bearer {self._fresh_sa_jwt()}"},
             timeout=10.0,
+        )
+        resp.raise_for_status()
+        meta = resp.json()
+        return str(meta["compact_token"]), meta
+
+    def request_continuation_from_ca(
+        self,
+        checkpoint: Mapping[str, Any],
+        permissions: PermissionLattice,
+        target_card: AgentCard,
+        hop_segment: str = "AssistantAliceCont",
+        max_depth: int = 6,
+        ttl_seconds: float = 300.0,
+        user_oidc_token: Optional[str] = None,
+        prior_root_token: Optional[str] = None,
+    ) -> httpx.Response:
+        req_payload: Dict[str, Any] = {
+            "trust_domain": "org-alpha.io",
+            "checkpoint": dict(checkpoint),
+            "sender_jkt": self.identity.jkt,
+            "first_hop_spiffe_id": target_card.spiffe_id,
+            "first_hop_jkt": target_card.jkt,
+            "first_hop_public_jwk": target_card.public_jwk,
+            "first_hop_return_endpoint": target_card.return_endpoint,
+            "permissions": permissions.to_dict(),
+            "hop_segment": hop_segment,
+            "max_depth": max_depth,
+            "ttl_seconds": ttl_seconds,
+        }
+        if user_oidc_token:
+            req_payload["user_oidc_token"] = user_oidc_token
+        if prior_root_token:
+            req_payload["prior_root_token"] = prior_root_token
+        return httpx.post(
+            f"{ALPHA_CA_URL}/v1/ca/mint-continuation-token",
+            json=req_payload,
+            headers={"Authorization": f"Bearer {self._fresh_sa_jwt()}"},
+            timeout=10.0,
+        )
+
+    def mint_continuation_for_user(
+        self,
+        checkpoint: Mapping[str, Any],
+        permissions: PermissionLattice,
+        target_card: AgentCard,
+        hop_segment: str = "AssistantAliceCont",
+        max_depth: int = 6,
+        ttl_seconds: float = 300.0,
+        user_oidc_token: Optional[str] = None,
+        prior_root_token: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        resp = self.request_continuation_from_ca(
+            checkpoint=checkpoint,
+            permissions=permissions,
+            target_card=target_card,
+            hop_segment=hop_segment,
+            max_depth=max_depth,
+            ttl_seconds=ttl_seconds,
+            user_oidc_token=user_oidc_token,
+            prior_root_token=prior_root_token,
         )
         resp.raise_for_status()
         meta = resp.json()
@@ -2584,6 +2646,7 @@ def main() -> None:
     parser.add_argument("--pod-ips-json", default="{}")
     parser.add_argument("--foreign-pod-ips-json", default="{}")
     parser.add_argument("--skip-sts-partition", action="store_true")
+    parser.add_argument("--task-id", default="")
     args = parser.parse_args()
 
     gw = GatewaySession()
@@ -2613,6 +2676,38 @@ def main() -> None:
                 args.run_id,
                 include_alpha_sts_partition=(not args.skip_sts_partition),
             )
+        elif phase.startswith("ws_"):
+            from lineage.k8s.workspace_e2e import (
+                run_distributed_audit_for_task,
+                run_ws_scenario_1_intent_fanout_converge,
+                run_ws_scenario_2_cross_principal_and_coauth,
+                run_ws_scenario_3_expiry_checkpoint_continuation,
+                run_ws_scenario_4a_post_commit_idempotent_failover,
+                run_ws_scenario_4b_skip_level_return,
+                run_ws_scenario_5_degradation_compare_and_audit,
+            )
+
+            if phase == "ws_scenario1":
+                out = run_ws_scenario_1_intent_fanout_converge(gw, args.run_id)
+            elif phase == "ws_scenario2":
+                out = run_ws_scenario_2_cross_principal_and_coauth(gw, args.run_id)
+            elif phase == "ws_scenario3":
+                out = run_ws_scenario_3_expiry_checkpoint_continuation(gw, args.run_id)
+            elif phase == "ws_scenario4a":
+                out = run_ws_scenario_4a_post_commit_idempotent_failover(gw, args.run_id)
+            elif phase == "ws_scenario4b":
+                out = run_ws_scenario_4b_skip_level_return(
+                    gw,
+                    args.run_id,
+                    sync_marker_file=(args.sync_marker_file or None),
+                )
+            elif phase == "ws_scenario5":
+                out = run_ws_scenario_5_degradation_compare_and_audit(gw, args.run_id)
+            elif phase == "ws_distributed_audit":
+                out = run_distributed_audit_for_task(gw, args.task_id)
+            else:
+                print(f"Unknown workspace phase: {phase!r}", file=sys.stderr)
+                sys.exit(2)
         elif phase == "export_redacted_audit_entries":
             entries = [e.to_dict() for e in gw.audit_client.fetch_entries()]
             out = {"count": len(entries), "entries": _scrub_for_disk(entries)}

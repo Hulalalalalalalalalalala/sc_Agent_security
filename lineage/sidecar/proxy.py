@@ -50,11 +50,16 @@ from lineage.identity.trust_bundle import TrustBundleResolver
 from lineage.protocol.dpop import JTIReplayCache, create_dpop_proof
 from lineage.protocol.lattice import PermissionLattice
 from lineage.protocol.token import (
+    CoAuthorizedToken,
     LineageToken,
     MultiParentToken,
+    TaskCheckpoint,
     TokenError,
+    TokenExpiredError,
+    compute_branch_idempotency_key,
     decode_token,
     validate_clean_endpoint_url,
+    verify_root_block_signature_ignoring_expiry,
 )
 from lineage.registry.agent_card import AgentCard
 from lineage.registry.directory import AgentDirectoryClient
@@ -259,6 +264,12 @@ class LineageSidecar:
         oauth_exchange_client: Optional[Any] = None,
         oauth_central_sts_origins_provider: Optional[Callable[[], Sequence[str]]] = None,
         oauth_domain_sts_origins_provider: Optional[Callable[[str], Sequence[str]]] = None,
+        resource_owner_sub: Optional[str] = None,
+        owner_protected_tools: Optional[Iterable[str]] = None,
+        allowed_co_auth_tools: Optional[Iterable[str]] = None,
+        authorized_auditors: Iterable[str] = (),
+        local_ca_url: Optional[str] = None,
+        sa_token_path: Optional[str] = None,
     ) -> None:
         norm_dm = (delegation_mode or "lct").strip().lower()
         if norm_dm not in ("lct", "dual", "oauth_centralized", "oauth_federated"):
@@ -269,13 +280,36 @@ class LineageSidecar:
         self.oauth_exchange_client = oauth_exchange_client
         self._oauth_central_sts_origins_provider = oauth_central_sts_origins_provider
         self._oauth_domain_sts_origins_provider = oauth_domain_sts_origins_provider
+        self.resource_owner_sub = (
+            str(resource_owner_sub).strip() if resource_owner_sub and str(resource_owner_sub).strip() else None
+        )
+        self._owner_protected_tools: Optional[frozenset[str]] = (
+            frozenset(str(t).strip() for t in owner_protected_tools if str(t).strip())
+            if owner_protected_tools is not None
+            else None
+        )
+        self._allowed_co_auth_tools: Optional[frozenset[str]] = (
+            frozenset(str(t).strip() for t in allowed_co_auth_tools if str(t).strip())
+            if allowed_co_auth_tools is not None
+            else None
+        )
+        self._local_ca_url = (local_ca_url or "").strip().rstrip("/") or None
+        self._sa_token_path = (sa_token_path or "").strip() or None
         self.identity = identity
         self.trust_resolver = trust_resolver
         self.app_upstream_url = app_upstream_url.rstrip("/")
         self.loopback_secret = loopback_secret
         self.revocation_replica = revocation_replica
         self.directory_client = directory_client
-        self.audit_emitter = audit_emitter
+        self.audit_emitter: AuditStreamEmitter = (
+            audit_emitter
+            if audit_emitter is not None
+            else AuditStreamEmitter(
+                signer=identity,
+                stream_id=identity.spiffe_id,
+                authorized_auditors=authorized_auditors,
+            )
+        )
         self.agent_card = agent_card
         self.is_tool_server = is_tool_server
         self.upstream_timeout = float(upstream_timeout)
@@ -314,6 +348,7 @@ class LineageSidecar:
         self._skip_receipt_replay_cache = JTIReplayCache(ttl_seconds=600.0)
         self._skip_level_results = _BoundedTaskListStore()
         self._direct_results = _BoundedTaskListStore()
+        self._task_checkpoints = _BoundedTaskListStore()
 
         self._inbound_http = ManagedHTTPService(
             service_name=f"sidecar-in-{identity.parsed_spiffe.default_hop_segment}",
@@ -429,7 +464,7 @@ class LineageSidecar:
     def _verify_mtls_channel_binding(
         self,
         req: HTTPRequestContext,
-        parsed_token: LineageToken | MultiParentToken,
+        parsed_token: LineageToken | MultiParentToken | CoAuthorizedToken,
     ) -> Tuple[bool, str]:
         """Cross-verify mTLS X.509 peer certificate (`spiffe://` + `jkt`) against LCT sender."""
         if self._mtls_bundle is None:
@@ -541,6 +576,14 @@ class LineageSidecar:
             if self.agent_card is None:
                 return 404, {"error": "no_agent_card"}, {}
             return 200, self.agent_card.to_dict(), {"A2A-Version": "1.0"}
+
+        if req.method == "GET" and norm_path == "/v1/audit/local":
+            return self.audit_emitter.local_store.serve_http_query(
+                req,
+                self.trust_resolver,
+                node_spiffe_id=self.identity.spiffe_id,
+                require_task_id=True,
+            )
 
         # Dedicated endpoint: Upward Authenticated Skip-Level Return (`[HIGH-01]`)
         if req.method == "POST" and norm_path == "/v1/skip-level-return":
@@ -674,6 +717,33 @@ class LineageSidecar:
             tool_args = None
             risk_hint = None
             check_lattice = False
+            if isinstance(body_json, Mapping):
+                cand_priv = body_json.get("private_tool") or body_json.get("tool")
+                if not cand_priv and isinstance(body_json.get("params"), Mapping):
+                    msg_obj = (body_json.get("params") or {}).get("message")
+                    if isinstance(msg_obj, Mapping):
+                        for pt in msg_obj.get("parts") or ():
+                            if isinstance(pt, Mapping) and isinstance(pt.get("data"), Mapping):
+                                cand_priv = pt["data"].get("private_tool") or pt["data"].get("tool")
+                                if cand_priv:
+                                    break
+                if (
+                    cand_priv
+                    and self.resource_owner_sub
+                    and (
+                        self._owner_protected_tools is None
+                        or str(cand_priv) in self._owner_protected_tools
+                    )
+                ):
+                    tool_name = str(cand_priv)
+                    check_lattice = True
+
+        eff_owner_sub: Optional[str] = None
+        if self.resource_owner_sub:
+            if self._owner_protected_tools is None:
+                eff_owner_sub = self.resource_owner_sub
+            elif tool_name and str(tool_name) in self._owner_protected_tools:
+                eff_owner_sub = self.resource_owner_sub
 
         vres = self.verifier.verify_request(
             compact_token=compact_token,
@@ -688,10 +758,16 @@ class LineageSidecar:
             check_invocation_lattice=check_lattice,
             require_recipient_self=is_agent_delegation_route,
             require_direct_child_issuer=is_direct_result_route,
+            resource_owner_sub=eff_owner_sub,
+            allowed_co_auth_tools=self._allowed_co_auth_tools,
         )
 
         if not vres.allowed:
-            if vres.holder_spiffe_id and vres.status_code in (401, 403):
+            if (
+                vres.holder_spiffe_id
+                and vres.status_code in (401, 403)
+                and vres.reason_code != "TASK_AUTH_EXPIRED"
+            ):
                 self.detector.record_policy_violation(
                     spiffe_id=vres.holder_spiffe_id,
                     endpoint=auth_htu,
@@ -725,16 +801,17 @@ class LineageSidecar:
                     },
                     decision="DENY",
                 )
-            return (
-                vres.status_code,
-                {
-                    "error": vres.reason_code,
-                    "detail": vres.detail,
-                    "decision": vres.decision,
-                    "pruned_revoked_paths": list(vres.pruned_revoked_paths),
-                },
-                {},
-            )
+            deny_payload: Dict[str, Any] = {
+                "error": vres.reason_code,
+                "detail": vres.detail,
+                "decision": vres.decision,
+                "pruned_revoked_paths": list(vres.pruned_revoked_paths),
+            }
+            if vres.reason_code == "TASK_AUTH_EXPIRED" and vres.task_id:
+                saved_ckpts = self._task_checkpoints.get(vres.task_id, expected_sub=vres.sub)
+                if saved_ckpts:
+                    deny_payload["checkpoint"] = saved_ckpts[-1]
+            return vres.status_code, deny_payload, {}
 
         parsed_token = decode_token(compact_token)
         ch_ok, ch_err = self._verify_mtls_channel_binding(req, parsed_token)
@@ -745,7 +822,7 @@ class LineageSidecar:
                 {},
             )
         if (
-            isinstance(parsed_token, MultiParentToken)
+            isinstance(parsed_token, (MultiParentToken, CoAuthorizedToken))
             and parsed_token.holder_spiffe_id == self.identity.spiffe_id
             and parsed_token.signer_spiffe_id != self.identity.spiffe_id
         ):
@@ -753,6 +830,29 @@ class LineageSidecar:
             compact_token = parsed_token.encode_compact()
 
         if self.audit_emitter is not None:
+            in_action_detail: Dict[str, Any] = {
+                "path": norm_path,
+                "decision": vres.decision,
+                "active_paths": list(vres.active_paths),
+                "pruned_revoked_paths": list(vres.pruned_revoked_paths),
+                "peer_spiffe_id": req.peer_spiffe_id,
+                "peer_issuer_domain": (
+                    SpiffeId.parse(req.peer_spiffe_id).trust_domain
+                    if req.peer_spiffe_id
+                    else None
+                ),
+                "tls_version": req.tls_version,
+                "tls_cipher": req.tls_cipher,
+                "client_ip": req.client_ip,
+            }
+            if vres.co_authorized_principals:
+                in_action_detail["co_authorized_principals"] = list(vres.co_authorized_principals)
+            if vres.resumes_checkpoint_id:
+                in_action_detail["resumes_checkpoint_id"] = vres.resumes_checkpoint_id
+            in_idem = req.header("X-LCT-Idempotency-Key")
+            if in_idem:
+                in_action_detail["branch_idempotency_key"] = in_idem
+
             self.audit_emitter.emit(
                 event_type=AuditEventType.INBOUND_AUTHZ,
                 task_id=parsed_token.task_id,
@@ -766,21 +866,7 @@ class LineageSidecar:
                 multi_parent_hashes=vres.multi_parent_hashes,
                 dpop_jti=vres.dpop_jti,
                 permissions_summary=vres.effective_permissions,
-                action_detail={
-                    "path": norm_path,
-                    "decision": vres.decision,
-                    "active_paths": list(vres.active_paths),
-                    "pruned_revoked_paths": list(vres.pruned_revoked_paths),
-                    "peer_spiffe_id": req.peer_spiffe_id,
-                    "peer_issuer_domain": (
-                        SpiffeId.parse(req.peer_spiffe_id).trust_domain
-                        if req.peer_spiffe_id
-                        else None
-                    ),
-                    "tls_version": req.tls_version,
-                    "tls_cipher": req.tls_cipher,
-                    "client_ip": req.client_ip,
-                },
+                action_detail=in_action_detail,
                 decision=vres.decision,
             )
 
@@ -853,7 +939,15 @@ class LineageSidecar:
             "X-LCT-Sub": req_ctx.sub,
             "X-LCT-Lineage-Path": vres.lineage_path or "",
             "X-LCT-Decision": vres.decision,
+            "X-LCT-Root-Block-Hash": vres.root_block_hash or "",
         }
+        if vres.co_authorized_principals:
+            up_headers["X-LCT-Co-Authorized-Principals"] = ",".join(
+                vres.co_authorized_principals
+            )
+        in_idem_hdr = req.header("X-LCT-Idempotency-Key")
+        if in_idem_hdr:
+            up_headers["X-LCT-Idempotency-Key"] = in_idem_hdr
         a2a_ver = req.header("A2A-Version")
         if a2a_ver:
             up_headers["A2A-Version"] = a2a_ver
@@ -957,6 +1051,9 @@ class LineageSidecar:
                         "result_sha256": sha256_canonical_b64url(resp_json),
                         "active_paths": list(vres.active_paths),
                         "pruned_revoked_paths": list(vres.pruned_revoked_paths),
+                        "co_authorized_principals": list(vres.co_authorized_principals)
+                        if vres.co_authorized_principals
+                        else [],
                         "peer_spiffe_id": req.peer_spiffe_id,
                         "peer_issuer_domain": (
                             SpiffeId.parse(req.peer_spiffe_id).trust_domain
@@ -1033,10 +1130,12 @@ class LineageSidecar:
 
         body_json = req.json() if req.body else {}
         is_mcp_route = self.is_tool_server or norm_path == "/mcp"
+        oauth_tool_name = ""
         required_scopes: List[str] = []
         if is_mcp_route:
             params = body_json.get("params") or {}
             tool_name = str(params.get("name") or "") if isinstance(params, Mapping) else ""
+            oauth_tool_name = tool_name
             if tool_name == "execute_settlement":
                 required_scopes = ["travel:pay"]
             elif tool_name in (
@@ -1049,6 +1148,8 @@ class LineageSidecar:
                 "record_itinerary_audit",
             ):
                 required_scopes = ["travel:book"]
+        elif isinstance(body_json, Mapping) and body_json.get("private_tool"):
+            oauth_tool_name = str(body_json["private_tool"]).strip()
 
         own_cid = spiffe_id_to_oauth_client_id(self.identity.spiffe_id)
         try:
@@ -1061,6 +1162,24 @@ class LineageSidecar:
             err_msg = str(exc)
             st_err = 403 if "insufficient_oauth_scope" in err_msg else 401
             return st_err, {"error": "oauth_verification_failed", "detail": err_msg}, {}
+
+        if self.resource_owner_sub:
+            is_owner_gated = (
+                self._owner_protected_tools is None
+                or (bool(oauth_tool_name) and oauth_tool_name in self._owner_protected_tools)
+            )
+            if is_owner_gated and verified_jwt.canonical_lct_sub != self.resource_owner_sub:
+                return (
+                    403,
+                    {
+                        "error": "CROSS_PRINCIPAL_DENIED",
+                        "detail": (
+                            f"OAuth principal {verified_jwt.canonical_lct_sub!r} is forbidden from "
+                            f"accessing owner-protected resource of {self.resource_owner_sub!r}"
+                        ),
+                    },
+                    {},
+                )
 
         # Extract task_id from header or JSON-RPC message if present
         task_id = (req.header("X-LCT-Task-Id") or "").strip()
@@ -1239,16 +1358,20 @@ class LineageSidecar:
                 return 400, {"error": "missing_target_url_or_skill"}, {}
 
             sts_origins = self._resolve_oauth_sts_origins(delegation_mode, eff_trust_domain)
-            try:
-                ex_out = self.oauth_exchange_client.exchange_token(
-                    sts_origins=sts_origins,
-                    subject_token=subject_token,
-                    target_audience=eff_spiffe_id or req_skill or "mcp-tool",
-                    caller_spiffe_id=self.identity.spiffe_id,
-                    caller_workload_svid=self.identity.workload_svid,
-                )
-            except Exception as exc:
-                return 502, {"error": "oauth_sts_exchange_failed", "detail": str(exc)}, {}
+            ex_out: Optional[Any] = None
+            out_bearer = subject_token
+            if eff_spiffe_id != self.identity.spiffe_id:
+                try:
+                    ex_out = self.oauth_exchange_client.exchange_token(
+                        sts_origins=sts_origins,
+                        subject_token=subject_token,
+                        target_audience=eff_spiffe_id or req_skill or "mcp-tool",
+                        caller_spiffe_id=self.identity.spiffe_id,
+                        caller_workload_svid=self.identity.workload_svid,
+                    )
+                    out_bearer = ex_out.access_token
+                except Exception as exc:
+                    return 502, {"error": "oauth_sts_exchange_failed", "detail": str(exc)}, {}
 
             timeout_val = _require_finite_timeout(body.get("timeout"), 60.0)
             payload = body.get("payload") or {}
@@ -1270,7 +1393,7 @@ class LineageSidecar:
                             target_url,
                             json=payload,
                             headers={
-                                "Authorization": f"Bearer {ex_out.access_token}",
+                                "Authorization": f"Bearer {out_bearer}",
                                 "X-LCT-Delegation-Mode": delegation_mode,
                                 "X-LCT-Task-Id": task_id,
                             },
@@ -1290,13 +1413,17 @@ class LineageSidecar:
                     "converged_branch_payloads": converged_payloads,
                     "target_spiffe_id": eff_spiffe_id,
                     "resolved_locator": str(resp.request.url),
-                    "oauth_telemetry": {
-                        "delegation_mode": delegation_mode,
-                        "sts_endpoint": ex_out.sts_endpoint,
-                        "sts_rtt_ms": ex_out.rtt_ms,
-                        "sts_exchanges": 1,
-                        "exchanged_scope": ex_out.scope,
-                    },
+                    "oauth_telemetry": (
+                        {
+                            "delegation_mode": delegation_mode,
+                            "sts_endpoint": ex_out.sts_endpoint,
+                            "sts_rtt_ms": ex_out.rtt_ms,
+                            "sts_exchanges": 1,
+                            "exchanged_scope": ex_out.scope,
+                        }
+                        if ex_out is not None
+                        else None
+                    ),
                 },
                 {},
             )
@@ -1543,17 +1670,173 @@ class LineageSidecar:
                 redact_sensitive(r)
                 for r in self.get_direct_results(tid, expected_sub=sub_val)
             ]
+            scrubbed_ckpts = [
+                redact_sensitive(r)
+                for r in self._task_checkpoints.get(tid, expected_sub=sub_val)
+            ]
             return (
                 200,
                 {
                     "task_id": tid,
                     "skip_level_results": scrubbed_skip,
                     "direct_results": scrubbed_direct,
+                    "checkpoints": scrubbed_ckpts,
                     "converged_branch_payloads": conv_payloads,
                     "spiffe_id": self.identity.spiffe_id,
                 },
                 {},
             )
+
+        if action == "get_request_permissions":
+            req_id_q = str(body.get("request_id") or "").strip()
+            active_q = self.active_requests.get(req_id_q) if req_id_q else None
+            eff_dict: Optional[Dict[str, Any]] = None
+            if active_q is not None:
+                if active_q.verification.effective_permissions is not None:
+                    eff_dict = dict(active_q.verification.effective_permissions)
+                elif isinstance(active_q.parsed_token, LineageToken):
+                    eff_dict = active_q.parsed_token.leaf_permissions.to_dict()
+                elif isinstance(active_q.parsed_token, CoAuthorizedToken):
+                    eff_dict = active_q.parsed_token.effective_permissions.to_dict()
+            return (
+                200,
+                {
+                    "has_lct_permissions": eff_dict is not None,
+                    "effective_permissions": eff_dict,
+                },
+                {},
+            )
+
+        if action == "sign_checkpoint":
+            prior_tok_obj: Optional[LineageToken] = None
+            raw_pt = str(body.get("prior_token") or body.get("compact_token") or "").strip()
+            if raw_pt:
+                try:
+                    dec_pt = decode_token(raw_pt)
+                except TokenError as exc:
+                    return 403, {"error": "INVALID_PRIOR_TOKEN", "detail": str(exc)}, {}
+                if not isinstance(dec_pt, LineageToken):
+                    return 403, {"error": "INVALID_PRIOR_TOKEN", "detail": "prior_token must be LineageToken"}, {}
+                prior_tok_obj = dec_pt
+            elif body.get("request_id"):
+                act_ck = self.active_requests.get(str(body["request_id"]).strip())
+                if act_ck is not None and isinstance(act_ck.parsed_token, LineageToken):
+                    prior_tok_obj = act_ck.parsed_token
+
+            if prior_tok_obj is None:
+                return (
+                    403,
+                    {
+                        "error": "PRIOR_TOKEN_REQUIRED_FOR_CHECKPOINT",
+                        "detail": "sign_checkpoint requires verified prior_token or active LCT request_id",
+                    },
+                    {},
+                )
+            try:
+                verify_root_block_signature_ignoring_expiry(
+                    prior_tok_obj.root, self.trust_resolver
+                )
+            except TokenError as exc:
+                return 403, {"error": "INVALID_PRIOR_TOKEN_SIGNATURE", "detail": str(exc)}, {}
+
+            if prior_tok_obj.root.delegate_spiffe_id != self.identity.spiffe_id:
+                return (
+                    403,
+                    {
+                        "error": "CHECKPOINT_SIGNER_NOT_ENTRY_DELEGATE",
+                        "detail": (
+                            f"Sidecar {self.identity.spiffe_id!r} != prior RootBlock entry delegate "
+                            f"{prior_tok_obj.root.delegate_spiffe_id!r}"
+                        ),
+                    },
+                    {},
+                )
+            if body.get("task_id") and str(body["task_id"]) != prior_tok_obj.task_id:
+                return 403, {"error": "CHECKPOINT_TASK_MISMATCH"}, {}
+            if body.get("sub") and str(body["sub"]) != prior_tok_obj.sub:
+                return 403, {"error": "CHECKPOINT_SUB_MISMATCH"}, {}
+            if (
+                body.get("prior_root_block_hash")
+                and str(body["prior_root_block_hash"]) != prior_tok_obj.root_block_hash
+            ):
+                return 403, {"error": "CHECKPOINT_PRIOR_ROOT_MISMATCH"}, {}
+
+            try:
+                ckpt = TaskCheckpoint.create_and_sign(
+                    signer_identity=self.identity,
+                    task_id=prior_tok_obj.task_id,
+                    sub=prior_tok_obj.sub,
+                    prior_root_block_hash=prior_tok_obj.root_block_hash,
+                    original_max_amount=prior_tok_obj.root.permissions.max_amount,
+                    original_max_calls=int(prior_tok_obj.root.permissions.max_calls),
+                    completed_branches=body.get("completed_branches") or (),
+                    remaining_branches=body.get("remaining_branches") or (),
+                    consumed_amount=float(body.get("consumed_amount", 0.0)),
+                    consumed_calls=int(body.get("consumed_calls", 0)),
+                    checkpoint_id=body.get("checkpoint_id"),
+                )
+            except (KeyError, ValueError, TypeError, TokenError) as exc:
+                return 400, {"error": "invalid_checkpoint_request", "detail": str(exc)}, {}
+            self._task_checkpoints.append(ckpt.task_id, ckpt.to_dict(), sub=ckpt.sub)
+            return 200, {"checkpoint": ckpt.to_dict()}, {}
+
+        if action == "request_local_ca_consent":
+            if not self._local_ca_url or not self._sa_token_path or not self.resource_owner_sub:
+                return 503, {"error": "local_ca_consent_not_configured"}, {}
+            if not self._allowed_co_auth_tools:
+                return 403, {"error": "COAUTH_TOOL_NOT_PERMITTED", "detail": "No co-authorizable tools configured"}, {}
+            req_tools = [str(t).strip() for t in (body.get("tools") or ()) if str(t).strip()]
+            if not req_tools or not set(req_tools).issubset(self._allowed_co_auth_tools):
+                return (
+                    403,
+                    {
+                        "error": "COAUTH_TOOL_NOT_PERMITTED",
+                        "detail": f"Requested consent tools {req_tools!r} exceed allowed {sorted(self._allowed_co_auth_tools)!r}",
+                    },
+                    {},
+                )
+            user_oidc = str(body.get("user_oidc_token") or "").strip()
+            if not user_oidc:
+                return (
+                    401,
+                    {
+                        "error": "OWNER_CONSENT_PROOF_REQUIRED",
+                        "detail": "Cryptographic owner user_oidc_token is mandatory to mint consent",
+                    },
+                    {},
+                )
+            try:
+                with open(self._sa_token_path, "r", encoding="utf-8") as fh:
+                    sa_jwt = fh.read().strip()
+                ca_hdrs: Dict[str, str] = {"Authorization": f"Bearer {sa_jwt}"}
+                perms = PermissionLattice.create(
+                    tools=req_tools,
+                    max_calls=max(1, min(int(body.get("max_calls", 2)), 4)),
+                )
+                ca_req_json: Dict[str, Any] = {
+                    "trust_domain": self.identity.trust_domain,
+                    "sub": self.resource_owner_sub,
+                    "task_id": str(body["task_id"]),
+                    "sender_jkt": self.identity.jkt,
+                    "first_hop_spiffe_id": str(body["delegate_spiffe_id"]),
+                    "first_hop_jkt": str(body["delegate_jkt"]),
+                    "hop_segment": "OwnerConsent",
+                    "permissions": perms.to_dict(),
+                    "ttl_seconds": min(float(body.get("ttl_seconds", 120.0)), 300.0),
+                    "co_auth_consent": True,
+                    "requester_sub": str(body.get("requester_sub") or ""),
+                    "user_oidc_token": user_oidc,
+                }
+                r_ca = httpx.post(
+                    f"{self._local_ca_url}/v1/ca/mint-consent-token",
+                    json=ca_req_json,
+                    headers=ca_hdrs,
+                    timeout=10.0,
+                    trust_env=False,
+                )
+                return r_ca.status_code, r_ca.json(), {}
+            except Exception as exc:
+                return 502, {"error": "local_ca_consent_failed", "detail": str(exc)}, {}
 
         if action == "resolve_card":
             if self.directory_client is None:
@@ -1582,6 +1865,22 @@ class LineageSidecar:
                 {},
             )
 
+        if action == "list_skills":
+            if self.directory_client is None:
+                return 500, {"error": "directory_client_not_configured"}, {}
+            cards = self.directory_client.discover(only_healthy=True)
+            catalog: List[Dict[str, Any]] = [
+                {
+                    "spiffe_id": c.spiffe_id,
+                    "trust_domain": c.trust_domain,
+                    "name": c.name,
+                    "skills": sorted(c.skills),
+                    "priority": c.priority,
+                }
+                for c in cards
+            ]
+            return 200, {"peers": catalog}, {}
+
         request_id = body.get("request_id")
         use_converged = bool(body.get("use_converged_multiparent", False))
 
@@ -1599,7 +1898,7 @@ class LineageSidecar:
                 converged_payloads={},
             )
 
-        active_tok: LineageToken | MultiParentToken
+        active_tok: LineageToken | MultiParentToken | CoAuthorizedToken
         converged_payloads: Dict[str, dict] = {}
         if use_converged:
             task_id = str(body["task_id"])
@@ -1638,6 +1937,25 @@ class LineageSidecar:
             if ctx is None:
                 return 404, {"error": "unknown_or_expired_request_id"}, {}
             active_tok = ctx.parsed_token
+
+        raw_owner_consent = str(body.get("owner_consent_token") or "").strip()
+        if raw_owner_consent:
+            if not isinstance(active_tok, LineageToken):
+                return 400, {"error": "co_authorization_requires_single_chain_requester"}, {}
+            try:
+                parsed_consent = decode_token(raw_owner_consent)
+                if not isinstance(parsed_consent, LineageToken):
+                    raise TokenError("owner_consent_token must be a single-chain LineageToken")
+                self.verifier.verify_single_chain_full(parsed_consent, check_revocation=True)
+                active_tok = CoAuthorizedToken.assemble_and_sign(
+                    holder_identity=self.identity,
+                    requester_chain=active_tok,
+                    owner_consent_chain=parsed_consent,
+                )
+            except TokenExpiredError as exc:
+                return 401, {"error": "TASK_AUTH_EXPIRED", "detail": str(exc)}, {}
+            except Exception as exc:
+                return 403, {"error": "co_authorization_assembly_failed", "detail": str(exc)}, {}
 
         # Action 1: Direct Tool Invocation (or Converged MultiParent Tool Invocation)
         if action == "call_tool":
@@ -1695,6 +2013,11 @@ class LineageSidecar:
             payload = body.get("payload") or {}
             compact_out = active_tok.encode_compact()
             primary_tool_url = candidate_urls[0]
+            tool_idem_key = str(body.get("idempotency_key") or "").strip()
+            if not tool_idem_key and body.get("logical_branch_id"):
+                tool_idem_key = compute_branch_idempotency_key(
+                    active_tok.task_id, str(body["logical_branch_id"])
+                )
 
             resolved_tool_ip = _resolve_target_peer_ip(primary_tool_url)
             if self.audit_emitter is not None:
@@ -1715,10 +2038,28 @@ class LineageSidecar:
                             "target_spiffe_id": eff_spiffe_id,
                             "target_url": primary_tool_url,
                             "resolved_peer_ip": resolved_tool_ip,
+                            **({"branch_idempotency_key": tool_idem_key} if tool_idem_key else {}),
                         },
                         decision="ALLOW",
                     )
                 else:
+                    mp_action_detail: Dict[str, Any] = {
+                        "action": (
+                            "call_tool_coauthorized"
+                            if isinstance(active_tok, CoAuthorizedToken)
+                            else "call_tool_multiparent"
+                        ),
+                        "target_spiffe_id": eff_spiffe_id,
+                        "target_url": primary_tool_url,
+                        "branch_count": len(active_tok.parent_chains),
+                        "resolved_peer_ip": resolved_tool_ip,
+                    }
+                    if isinstance(active_tok, CoAuthorizedToken):
+                        mp_action_detail["co_authorized_principals"] = list(
+                            active_tok.co_authorized_principals
+                        )
+                    if tool_idem_key:
+                        mp_action_detail["branch_idempotency_key"] = tool_idem_key
                     self.audit_emitter.emit(
                         event_type=AuditEventType.OUTBOUND_DELEGATE,
                         task_id=active_tok.task_id,
@@ -1732,13 +2073,7 @@ class LineageSidecar:
                         multi_parent_hashes=tuple(
                             c.leaf_block_hash for c in active_tok.parent_chains
                         ),
-                        action_detail={
-                            "action": "call_tool_multiparent",
-                            "target_spiffe_id": eff_spiffe_id,
-                            "target_url": primary_tool_url,
-                            "branch_count": len(active_tok.parent_chains),
-                            "resolved_peer_ip": resolved_tool_ip,
-                        },
+                        action_detail=mp_action_detail,
                         decision="ALLOW",
                     )
 
@@ -1756,6 +2091,12 @@ class LineageSidecar:
                     if idx + 1 < len(candidate_urls)
                     else timeout_val
                 )
+                tool_hdrs = {
+                    "Authorization": f"DPoP {compact_out}",
+                    "DPoP": dpop,
+                }
+                if tool_idem_key:
+                    tool_hdrs["X-LCT-Idempotency-Key"] = tool_idem_key
                 try:
                     with httpx.Client(
                         verify=self._outbound_verify_kwarg(
@@ -1770,10 +2111,7 @@ class LineageSidecar:
                         resp = client.post(
                             target_url,
                             json=payload,
-                            headers={
-                                "Authorization": f"DPoP {compact_out}",
-                                "DPoP": dpop,
-                            },
+                            headers=tool_hdrs,
                         )
                     break
                 except httpx.HTTPError as exc:
@@ -1786,11 +2124,19 @@ class LineageSidecar:
                     {"error": "upstream_transport_error", "detail": str(last_tool_exc)},
                     {},
                 )
+            try:
+                parsed_up_body = resp.json()
+            except Exception:
+                parsed_up_body = {
+                    "error": "upstream_non_json_response",
+                    "status_code": resp.status_code,
+                    "detail": (resp.text or "")[:256],
+                }
             return (
                 resp.status_code,
                 {
                     "upstream_status": resp.status_code,
-                    "upstream_body": resp.json(),
+                    "upstream_body": parsed_up_body,
                     "converged_branch_payloads": converged_payloads,
                     "target_spiffe_id": eff_spiffe_id,
                     "resolved_locator": str(resp.request.url),
@@ -1836,6 +2182,12 @@ class LineageSidecar:
                     if "primary_card" in body and body["primary_card"]
                     else None
                 )
+                logical_br = str(
+                    body.get("logical_branch_id")
+                    or body.get("hop_segment")
+                    or body.get("required_skill")
+                ).strip()
+                explicit_idem = str(body.get("idempotency_key") or "").strip() or None
                 try:
                     res_json, final_tok, receipts = coord.invoke_with_prune_and_graft(
                         parent_token=active_tok,
@@ -1848,14 +2200,41 @@ class LineageSidecar:
                         timeout_seconds=timeout_pg,
                         max_failovers=int(body.get("max_failovers", 2)),
                         extra_headers=extra_del_headers,
+                        logical_branch_id=logical_br,
+                        branch_idempotency_key=explicit_idem,
                     )
+                except TokenExpiredError as exc:
+                    exp_out: Dict[str, Any] = {
+                        "error": "TASK_AUTH_EXPIRED",
+                        "detail": str(exc),
+                    }
+                    saved_ck = self._task_checkpoints.get(
+                        active_tok.task_id, expected_sub=active_tok.sub
+                    )
+                    if saved_ck:
+                        exp_out["checkpoint"] = saved_ck[-1]
+                    return 401, exp_out, {}
                 except (ResilienceError, TokenError) as exc:
+                    if isinstance(exc, TokenExpiredError) or "expired" in str(exc).lower():
+                        exp_out_fallback: Dict[str, Any] = {
+                            "error": "TASK_AUTH_EXPIRED",
+                            "detail": str(exc),
+                        }
+                        saved_ck_f = self._task_checkpoints.get(
+                            active_tok.task_id, expected_sub=active_tok.sub
+                        )
+                        if saved_ck_f:
+                            exp_out_fallback["checkpoint"] = saved_ck_f[-1]
+                        return 401, exp_out_fallback, {}
                     return (
                         502,
                         {"error": "prune_and_graft_failed", "detail": str(exc)},
                         {},
                     )
 
+                eff_out_idem = explicit_idem or compute_branch_idempotency_key(
+                    active_tok.task_id, logical_br
+                )
                 return (
                     200,
                     {
@@ -1863,6 +2242,8 @@ class LineageSidecar:
                         "upstream_body": res_json,
                         "delegated_lineage_path": final_tok.lineage_path,
                         "epoch": final_tok.current_epoch,
+                        "failover_occurred": len(receipts) > 0,
+                        "branch_idempotency_key": eff_out_idem,
                         "failover_receipts": [r.to_dict() for r in receipts],
                     },
                     {},
@@ -1906,9 +2287,17 @@ class LineageSidecar:
                 return 400, {"error": "missing_delegate_target_or_skill"}, {}
 
             hop_seg = body.get("hop_segment")
+            del_idem_key = str(body.get("idempotency_key") or "").strip()
+            if not del_idem_key and (body.get("logical_branch_id") or hop_seg or body.get("required_skill")):
+                del_idem_key = compute_branch_idempotency_key(
+                    active_tok.task_id,
+                    str(body.get("logical_branch_id") or hop_seg or body.get("required_skill")),
+                )
+            if del_idem_key:
+                extra_del_headers["X-LCT-Idempotency-Key"] = del_idem_key
             try:
                 if isinstance(active_tok, LineageToken):
-                    out_tok: LineageToken | MultiParentToken = active_tok.attenuate(
+                    out_tok: LineageToken | MultiParentToken | CoAuthorizedToken = active_tok.attenuate(
                         issuer_identity=self.identity,
                         delegate_spiffe_id=delegate_spiffe_id,
                         delegate_jkt=delegate_jkt,
@@ -1925,6 +2314,14 @@ class LineageSidecar:
                         hop_segment=str(hop_seg) if hop_seg else None,
                         issuer_return_endpoint=self.inbound_url,
                     )
+            except TokenExpiredError as exc:
+                exp_out2: Dict[str, Any] = {"error": "TASK_AUTH_EXPIRED", "detail": str(exc)}
+                saved_ck2 = self._task_checkpoints.get(
+                    active_tok.task_id, expected_sub=active_tok.sub
+                )
+                if saved_ck2:
+                    exp_out2["checkpoint"] = saved_ck2[-1]
+                return 401, exp_out2, {}
             except TokenError as exc:
                 return 403, {"error": "attenuation_rejected", "detail": str(exc)}, {}
 
@@ -1949,11 +2346,26 @@ class LineageSidecar:
                             "delegate_spiffe_id": delegate_spiffe_id,
                             "target_url": primary_del_url,
                             "resolved_peer_ip": resolved_del_ip,
+                            **({"branch_idempotency_key": del_idem_key} if del_idem_key else {}),
                         },
                         decision="ALLOW",
                     )
                 else:
+                    co_principals_meta = (
+                        list(out_tok.co_authorized_principals)
+                        if isinstance(out_tok, CoAuthorizedToken)
+                        else []
+                    )
                     for ch in out_tok.parent_chains:
+                        ch_detail: Dict[str, Any] = {
+                            "delegate_spiffe_id": delegate_spiffe_id,
+                            "target_url": primary_del_url,
+                            "resolved_peer_ip": resolved_del_ip,
+                        }
+                        if co_principals_meta:
+                            ch_detail["co_authorized_principals"] = co_principals_meta
+                        if del_idem_key:
+                            ch_detail["branch_idempotency_key"] = del_idem_key
                         self.audit_emitter.emit(
                             event_type=AuditEventType.OUTBOUND_DELEGATE,
                             task_id=ch.task_id,
@@ -1965,11 +2377,7 @@ class LineageSidecar:
                             parent_block_hash=ch.parent_block_hash,
                             current_block_hash=ch.leaf_block_hash,
                             permissions_summary=ch.leaf_permissions.to_dict(),
-                            action_detail={
-                                "delegate_spiffe_id": delegate_spiffe_id,
-                                "target_url": primary_del_url,
-                                "resolved_peer_ip": resolved_del_ip,
-                            },
+                            action_detail=ch_detail,
                             decision="ALLOW",
                         )
 

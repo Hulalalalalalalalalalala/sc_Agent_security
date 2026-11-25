@@ -1,0 +1,46 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m9-rehearsal-v7-s2-coauth",
+  "unilateral_foreign_probes": {
+    "hr_salary_read": {
+      "http_status": 403,
+      "error": "CROSS_PRINCIPAL_DENIED"
+    },
+    "calendar_write": {
+      "http_status": 403,
+      "error": "CROSS_PRINCIPAL_DENIED"
+    },
+    "calendar_free_busy": {
+      "http_status": 403,
+      "error": "CROSS_PRINCIPAL_DENIED"
+    }
+  },
+  "owner_only_consent_refusal_http": 403,
+  "co_authorized_calendar_free_busy": {
+    "owner": "user:bob@org-beta.io",
+    "tool": "calendar_free_busy",
+    "authorization_mode": "CO_AUTHORIZED",
+    "co_authorized_principals": [
+      "user:alice@org-alpha.io",
+      "user:bob@org-beta.io"
+    ],
+    "desensitized": true,
+    "slots": [
+      {
+        "window": "2026-12-01T09:00Z/10:30Z",
+        "status": "BUSY"
+      },
+      {
+        "window": "2026-12-01T10:30Z/12:00Z",
+        "status": "FREE"
+      },
+      {
+        "window": "2026-12-01T14:00Z/16:00Z",
+        "status": "FREE"
+      }
+    ]
+  },
+  "resilience_classifications": [
+    "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "mode": "decentralized_on_demand_bfs",
+  "task_id": "ws-m9-r2-clean-s5-degrade",
+  "nodes_queried": [
+    "ca:org-alpha.io",
+    "ca:org-beta.io",
+    "ca:org-payment.io",
+    "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+  ],
+  "nodes_queried_count": 7,
+  "unreachable_nodes": {},
+  "total_entries": 25,
+  "pull_latency_ms": 230.13,
+  "stream_integrity_ok": true,
+  "reconstructed_complete": true,
+  "resilience_classifications": [
+    "SMOOTH_DAG_DEGRADATION_ON_REVOCATION"
+  ],
+  "reconstruction": {
+    "task_id": "ws-m9-r2-clean-s5-degrade",
+    "sub": "user:alice@org-alpha.io",
+    "root_block_hash": "9iToylSlCQzAN87vHdaSSbbJEPIIFlRm3jU7uEv2udo",
+    "reconstructed_complete": true,
+    "lineage_paths_observed": [
+      "/ws-m9-r2-clean-s5-degrade/AssistantAlice",
+      "/ws-m9-r2-clean-s5-degrade/AssistantAlice/VaultLockTrigger",
+      "/ws-m9-r2-clean-s5-degrade/AssistantAlice/assistant-bob",
+      "/ws-m9-r2-clean-s5-degrade/AssistantAlice/assistant-bob/VaultConverge",
+      "/ws-m9-r2-clean-s5-degrade/AssistantAlice/assistant-carol",
+      "/ws-m9-r2-clean-s5-degrade/AssistantAlice/assistant-carol/VaultConverge"
+    ],
+    "verified_hops": 10,
+    "tool_invocations_verified": 3,
+    "resilience_classifications": [
+      "SMOOTH_DAG_DEGRADATION_ON_REVOCATION"
+    ],
+    "anomalies": []
+  },
+  "anomalies": []
+}

@@ -62,7 +62,14 @@ class AgentDirectoryService:
         descriptor_store: Optional[Any] = None,
         allowed_locator_cidrs: Optional[Iterable[str] | str] = None,
         on_descriptor_learned: Optional[Callable[[Any], None]] = None,
+        registry_mode: str = "federated",
     ) -> None:
+        clean_rmode = str(registry_mode or "federated").strip().lower()
+        if clean_rmode not in ("federated", "centralized"):
+            raise ValueError(
+                f"Invalid registry_mode {registry_mode!r}; expected 'federated' or 'centralized'"
+            )
+        self.registry_mode = clean_rmode
         self.trust_resolver = trust_resolver
         self.revocation_trie = revocation_trie
         self.revocation_replica = revocation_replica
@@ -206,7 +213,8 @@ class AgentDirectoryService:
             allowed_locator_cidrs=self.allowed_locator_cidrs,
         )
         if (
-            self.local_trust_domain is not None
+            self.registry_mode != "centralized"
+            and self.local_trust_domain is not None
             and card.trust_domain != self.local_trust_domain
         ):
             raise AgentCardError(
@@ -451,6 +459,33 @@ class AgentDirectoryService:
             "/v1/federation/descriptors",
         ):
             return self._dispatch(req)
+        if self.registry_mode == "centralized":
+            if req.method == "GET" and req.path in ("/v1/agents/discover", "/v1/agents/get"):
+                return self._dispatch(req)
+            if req.method == "POST" and req.path in ("/v1/agents/register", "/v1/agents/quarantine"):
+                if req.path == "/v1/agents/register" and req.peer_spiffe_id:
+                    body = req.json()
+                    card_payload = body.get("agent_card", body)
+                    raw_sid = (
+                        str(card_payload.get("spiffe_id") or "")
+                        if isinstance(card_payload, Mapping)
+                        else ""
+                    )
+                    peer_sp = SpiffeId.parse(req.peer_spiffe_id)
+                    if (
+                        raw_sid
+                        and req.peer_spiffe_id != raw_sid
+                        and peer_sp.path != "/ns/sys/sa/directory"
+                    ):
+                        return (
+                            403,
+                            {
+                                "error": "mtls_card_spiffe_mismatch",
+                                "detail": f"mTLS peer {req.peer_spiffe_id!r} cannot register card for {raw_sid!r}",
+                            },
+                            {},
+                        )
+                return self._dispatch(req)
         return (
             403,
             {
@@ -464,7 +499,16 @@ class AgentDirectoryService:
         self, req: HTTPRequestContext
     ) -> Tuple[int, Any, Dict[str, str]]:
         if req.method == "GET" and req.path == "/healthz":
-            return 200, {"status": "ok", "service": "agent-directory"}, {}
+            return (
+                200,
+                {
+                    "status": "ok",
+                    "service": "agent-directory",
+                    "registry_mode": self.registry_mode,
+                    "yellow_pages_untrusted": True,
+                },
+                {},
+            )
 
         if req.method == "GET" and req.path == "/readyz":
             if self._readiness_check is not None:
@@ -760,33 +804,93 @@ class AgentDirectoryService:
 
 
 class AgentDirectoryClient:
-    """HTTP client for AgentDirectoryService that locally re-verifies every AgentCard."""
+    """HTTP client for AgentDirectoryService / Public Yellow Pages that locally re-verifies every AgentCard."""
 
     def __init__(
         self,
-        directory_url: str,
-        trust_resolver: TrustBundleResolver,
+        directory_url: str = "",
+        trust_resolver: Optional[TrustBundleResolver] = None,
         timeout: float = 3.0,
         ssl_context: Optional[ssl.SSLContext] = None,
         allowed_locator_cidrs: Optional[Iterable[str] | str] = None,
+        locator_provider: Optional[Callable[[], Iterable[Any]]] = None,
+        mtls_bundle: Optional[WorkloadMTLSBundle] = None,
     ) -> None:
-        self.directory_url = directory_url.rstrip("/")
+        if trust_resolver is None:
+            raise TypeError("AgentDirectoryClient requires trust_resolver")
+        self.directory_url = (directory_url or "").strip().rstrip("/")
         self.trust_resolver = trust_resolver
         self.timeout = timeout
         self.ssl_context = ssl_context
         self.allowed_locator_cidrs = allowed_locator_cidrs
+        self.locator_provider = locator_provider
+        self.mtls_bundle = mtls_bundle
 
-    def _verify_kwarg(self) -> Any:
+    def _candidate_targets(self) -> List[Tuple[str, Optional[str]]]:
+        targets: List[Tuple[str, Optional[str]]] = []
+        if self.locator_provider is not None:
+            for item in self.locator_provider() or ():
+                if isinstance(item, str):
+                    u = item.strip().rstrip("/")
+                    if u and all(x != u for x, _ in targets):
+                        targets.append((u, None))
+                else:
+                    orig = str(getattr(item, "origin_url", "")).strip().rstrip("/")
+                    sid = getattr(item, "spiffe_id", None)
+                    if orig and all(x != orig for x, _ in targets):
+                        targets.append((orig, str(sid) if sid else None))
+        if self.directory_url and all(x != self.directory_url for x, _ in targets):
+            targets.append((self.directory_url, None))
+        if not targets:
+            raise AgentCardError("No Yellow Pages / AgentDirectory URL or locator available")
+        return targets
+
+    def _verify_kwarg(self, target_url: str, expected_spiffe_id: Optional[str] = None) -> Any:
+        if target_url.startswith("https://") and self.mtls_bundle is not None:
+            exp_td: Optional[str] = None
+            if expected_spiffe_id:
+                try:
+                    exp_td = SpiffeId.parse(expected_spiffe_id).trust_domain
+                except IdentityError:
+                    exp_td = None
+            return self.mtls_bundle.verify_for_target(
+                target_url=target_url,
+                expected_trust_domain=exp_td,
+                expected_spiffe_id=expected_spiffe_id,
+            )
         return self.ssl_context if self.ssl_context is not None else True
 
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Mapping[str, str]] = None,
+        json_body: Optional[Mapping[str, Any]] = None,
+    ) -> httpx.Response:
+        last_exc: Optional[Exception] = None
+        for base_url, exp_spiffe in self._candidate_targets():
+            full_url = f"{base_url}{path}"
+            try:
+                with httpx.Client(
+                    verify=self._verify_kwarg(full_url, exp_spiffe),
+                    timeout=self.timeout,
+                    trust_env=False,
+                ) as client:
+                    if method == "GET":
+                        return client.get(full_url, params=params)
+                    return client.post(full_url, json=json_body)
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
+
     def register(self, card: AgentCard) -> Dict[str, Any]:
-        with httpx.Client(
-            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
-        ) as client:
-            resp = client.post(
-                f"{self.directory_url}/v1/agents/register",
-                json={"agent_card": card.to_dict()},
-            )
+        resp = self._request(
+            "POST",
+            "/v1/agents/register",
+            json_body={"agent_card": card.to_dict()},
+        )
         if resp.status_code != 200:
             raise AgentCardError(
                 f"Directory rejected registration ({resp.status_code}): {resp.text}"
@@ -832,13 +936,11 @@ class AgentDirectoryClient:
                 "command_jws": cmd_jws,
             }
 
-        with httpx.Client(
-            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
-        ) as client:
-            resp = client.post(
-                f"{self.directory_url}/v1/agents/quarantine",
-                json=req_json,
-            )
+        resp = self._request(
+            "POST",
+            "/v1/agents/quarantine",
+            json_body=req_json,
+        )
         if resp.status_code != 200:
             raise AgentCardError(
                 f"Directory rejected quarantine ({resp.status_code}): {resp.text}"
@@ -846,13 +948,11 @@ class AgentDirectoryClient:
         return resp.json()
 
     def get_agent(self, spiffe_id: str) -> Optional[AgentCard]:
-        with httpx.Client(
-            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
-        ) as client:
-            resp = client.get(
-                f"{self.directory_url}/v1/agents/get",
-                params={"spiffe_id": spiffe_id},
-            )
+        resp = self._request(
+            "GET",
+            "/v1/agents/get",
+            params={"spiffe_id": spiffe_id},
+        )
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -883,13 +983,11 @@ class AgentDirectoryClient:
         if excluded_list:
             params["exclude"] = ",".join(excluded_list)
 
-        with httpx.Client(
-            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
-        ) as client:
-            resp = client.get(
-                f"{self.directory_url}/v1/agents/discover",
-                params=params,
-            )
+        resp = self._request(
+            "GET",
+            "/v1/agents/discover",
+            params=params,
+        )
         resp.raise_for_status()
         raw_agents = resp.json().get("agents", [])
         verified: List[AgentCard] = []
@@ -911,10 +1009,7 @@ class AgentDirectoryClient:
         return verified
 
     def get_descriptors(self) -> List[Dict[str, Any]]:
-        with httpx.Client(
-            verify=self._verify_kwarg(), timeout=self.timeout, trust_env=False
-        ) as client:
-            resp = client.get(f"{self.directory_url}/v1/federation/descriptors")
+        resp = self._request("GET", "/v1/federation/descriptors")
         resp.raise_for_status()
         data = resp.json()
         return list(data.get("descriptors") or [])

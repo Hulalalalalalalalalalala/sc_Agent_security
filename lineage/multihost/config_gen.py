@@ -160,6 +160,50 @@ ROLE_SPECS: Dict[str, RoleSpec] = {
     ),
 }
 
+WORKSPACE_ROLE_SLOTS: Dict[str, Tuple[str, ...]] = {
+    "alpha": (
+        "ca_federation",
+        "directory_federation",
+        "revocation_federation",
+        "assistant-alice",
+        "e2e_sync_hook",
+        "oauth_sts",
+    ),
+    "beta": (
+        "ca_federation",
+        "directory_federation",
+        "revocation_federation",
+        "assistant-bob",
+        "assistant-bob-standby",
+        "assistant-dave",
+        "oauth_sts",
+    ),
+    "pay": (
+        "ca_federation",
+        "directory_federation",
+        "revocation_federation",
+        "assistant-carol",
+        "assistant-carol-standby",
+        "assistant-vault",
+        "oauth_sts",
+    ),
+    "audit": (
+        "ca_federation",
+        "audit_collector",
+    ),
+}
+
+
+def get_role_slot_names(role: str, topology: str = "travel") -> Tuple[str, ...]:
+    if role not in ROLE_SPECS:
+        raise ValueError(f"Unknown role: {role!r}")
+    norm_top = (topology or "travel").strip().lower()
+    if norm_top == "workspace":
+        return WORKSPACE_ROLE_SLOTS[role]
+    if norm_top == "travel":
+        return ROLE_SPECS[role].slot_names
+    raise ValueError(f"Unsupported topology {topology!r}; expected 'travel' or 'workspace'")
+
 _STRICT_IPV4_RE = re.compile(r"^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$")
 _CROSS_DOMAIN_SUFFIXES = (
     ".org-alpha.io",
@@ -257,6 +301,7 @@ def allocate_role_ports(
     port_overrides: Optional[Mapping[str, int]] = None,
     check_host_free: bool = False,
     reserved_ports: Iterable[int] = (),
+    topology: str = "travel",
 ) -> Dict[str, int]:
     """Allocate per-machine local NodePorts for `role` without any global port convention.
 
@@ -267,6 +312,7 @@ def allocate_role_ports(
     if role not in ROLE_SPECS:
         raise ValueError(f"Unknown role: {role!r}")
     spec = ROLE_SPECS[role]
+    slots = get_role_slot_names(role, topology=topology)
     start_port = int(spec.default_base_port if base_port is None else base_port)
     if start_port < NODEPORT_MIN or start_port > NODEPORT_MAX:
         raise ValueError(
@@ -278,7 +324,7 @@ def allocate_role_ports(
     allocated: Dict[str, int] = {}
     cursor = start_port
 
-    for slot in spec.slot_names:
+    for slot in slots:
         explicit = overrides.get(f"{role}.{slot}", overrides.get(slot))
         if explicit is not None:
             p = int(explicit)
@@ -316,7 +362,9 @@ def allocate_role_ports(
     return allocated
 
 
-def read_cluster_role_ports(role: str) -> Optional[Dict[str, int]]:
+def read_cluster_role_ports(
+    role: str, topology: Optional[str] = None
+) -> Optional[Dict[str, int]]:
     """Read persisted local NodePort map from `Namespace/lineage-<role>` if cluster exists."""
     if role not in ROLE_SPECS:
         raise ValueError(f"Unknown role: {role!r}")
@@ -346,7 +394,11 @@ def read_cluster_role_ports(role: str) -> Optional[Dict[str, int]]:
         )
         if raw_json:
             parsed = json.loads(raw_json)
-            if isinstance(parsed, Mapping) and all(s in parsed for s in spec.slot_names):
+            if isinstance(parsed, Mapping) and parsed:
+                if topology is not None:
+                    expected_slots = get_role_slot_names(role, topology=topology)
+                    if not all(s in parsed for s in expected_slots):
+                        return None
                 return {str(k): int(v) for k, v in parsed.items()}
     except Exception:
         pass
@@ -387,15 +439,25 @@ def read_kind_node_published_ports(role: str) -> List[int]:
 def render_kind_cluster_config(
     role: str,
     role_ports: Optional[Mapping[str, int]] = None,
+    topology: str = "travel",
 ) -> str:
     """Generate Kind `v1alpha4` YAML with local `extraPortMappings` and disjoint CIDRs."""
     if role not in ROLE_SPECS:
         raise ValueError(f"Unknown role: {role!r}")
     spec = ROLE_SPECS[role]
-    ports_map = dict(role_ports) if role_ports is not None else allocate_role_ports(role)
+    ports_map = (
+        dict(role_ports)
+        if role_ports is not None
+        else allocate_role_ports(role, topology=topology)
+    )
     port_mappings = []
     seen_ports: Set[int] = set()
-    for slot in spec.slot_names:
+    slots = (
+        list(ports_map.keys())
+        if role_ports is not None
+        else list(get_role_slot_names(role, topology=topology))
+    )
+    for slot in slots:
         if slot not in ports_map:
             raise ValueError(f"Missing allocated port for {role}.{slot}")
         p = int(ports_map[slot])
@@ -678,6 +740,14 @@ def _agent_or_tool_deployment_docs(
     specialist_instance: Optional[str] = None,
     delegation_mode: str = "dual",
     local_sts_url: Optional[str] = None,
+    peer_name: Optional[str] = None,
+    peer_owner_sub: Optional[str] = None,
+    resource_owner_sub: Optional[str] = None,
+    owner_protected_tools: Optional[str] = None,
+    allowed_co_auth_tools: Optional[str] = None,
+    registry_mode: str = "federated",
+    audit_mode: Optional[str] = None,
+    authorized_auditors: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     sa_doc = {
         "apiVersion": "v1",
@@ -687,6 +757,10 @@ def _agent_or_tool_deployment_docs(
     app_env: List[Dict[str, str]] = [
         {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
     ]
+    if peer_name:
+        app_env.append({"name": "PEER_NAME", "value": peer_name})
+    if peer_owner_sub:
+        app_env.append({"name": "PEER_OWNER_SUB", "value": peer_owner_sub})
     if specialist_instance:
         app_env.append({"name": "SPECIALIST_INSTANCE", "value": specialist_instance})
     if llm_url:
@@ -735,6 +809,18 @@ def _agent_or_tool_deployment_docs(
     sidecar_env.append({"name": "AGENT_DISPLAY_NAME", "value": agent_display_name or name})
     if enable_fault_injection:
         sidecar_env.append({"name": "LCT_ENABLE_FAULT_INJECTION", "value": "true"})
+    if registry_mode and registry_mode != "federated":
+        sidecar_env.append({"name": "REGISTRY_MODE", "value": registry_mode})
+    if audit_mode:
+        sidecar_env.append({"name": "AUDIT_MODE", "value": audit_mode})
+    if authorized_auditors:
+        sidecar_env.append({"name": "AUTHORIZED_AUDITORS", "value": authorized_auditors})
+    if resource_owner_sub:
+        sidecar_env.append({"name": "RESOURCE_OWNER_SUB", "value": resource_owner_sub})
+    if owner_protected_tools:
+        sidecar_env.append({"name": "OWNER_PROTECTED_TOOLS", "value": owner_protected_tools})
+    if allowed_co_auth_tools:
+        sidecar_env.append({"name": "ALLOWED_CO_AUTH_TOOLS", "value": allowed_co_auth_tools})
 
     app_container: Dict[str, Any] = {
         "name": "app",
@@ -1137,7 +1223,14 @@ def _domain_control_plane_docs(
     svid_ttl_seconds: int,
     require_pinned_anchors: bool,
     authorized_gateway_sa: Optional[str] = None,
+    authorized_gateway_sas: Optional[Sequence[str]] = None,
     sts_enabled: bool = True,
+    enable_oidc_jwks_on_ca: bool = False,
+    registry_mode: str = "federated",
+    include_directory: bool = True,
+    audit_mode: Optional[str] = None,
+    authorized_auditors: Optional[str] = None,
+    consent_issuer_policy: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     ns = spec.namespace
     td = spec.trust_domain
@@ -1169,11 +1262,21 @@ def _domain_control_plane_docs(
     ]
     if authorized_gateway_sa:
         ca_env.append({"name": "AUTHORIZED_GATEWAY_SA", "value": authorized_gateway_sa})
+    if authorized_gateway_sas:
+        ca_env.append({"name": "AUTHORIZED_GATEWAY_SAS", "value": ",".join(authorized_gateway_sas)})
+    if registry_mode and registry_mode != "federated":
+        ca_env.append({"name": "REGISTRY_MODE", "value": registry_mode})
+    if audit_mode:
+        ca_env.append({"name": "AUDIT_MODE", "value": audit_mode})
+    if authorized_auditors:
+        ca_env.append({"name": "AUTHORIZED_AUDITORS", "value": authorized_auditors})
+    if consent_issuer_policy:
+        ca_env.append({"name": "CONSENT_ISSUER_POLICY", "value": consent_issuer_policy})
     if sts_enabled:
         local_sts_origin = f"http://{pfx}-sts.{ns}.svc.cluster.local:8095"
         ca_env.append({"name": "LOCAL_STS_URL", "value": local_sts_origin})
         ca_env.append({"name": "OAUTH_REALM", "value": DEFAULT_REALM_NAME})
-        if spec.role == "alpha":
+        if spec.role == "alpha" or enable_oidc_jwks_on_ca:
             ca_env.append(
                 {
                     "name": "OIDC_JWKS_URL",
@@ -1428,137 +1531,145 @@ def _domain_control_plane_docs(
                 ],
             },
         },
-        # Directory
-        {
-            "apiVersion": "v1",
-            "kind": "ServiceAccount",
-            "metadata": {"name": dir_name, "namespace": ns},
-        },
-        {
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {"name": dir_name, "namespace": ns},
-            "spec": {
-                "replicas": 1,
-                "selector": {"matchLabels": {"app": dir_name}},
-                "template": {
-                    "metadata": {"labels": {"app": dir_name, "lct.io/trust-domain": td}},
+        # Directory (deployed on every domain in federated mode, or ONLY on alpha in centralized Yellow Pages mode!)
+    ]
+    if include_directory:
+        dir_env = [
+            {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+            {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
+            {
+                "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
+                "value": "/etc/lct-descriptors/descriptors.json",
+            },
+            {"name": "LOCAL_CA_URL", "value": local_ca_url},
+            {"name": "REVOCATION_URL", "value": local_rev_url},
+            {"name": "DIRECTORY_FEDERATION_PORT", "value": "8491"},
+            {"name": "LCT_MTLS_RAM_DIR", "value": "/var/run/lct-mtls-ram"},
+            {"name": "LCT_TRUST_ANCHORS_DIR", "value": "/etc/lct-anchors"},
+            {
+                "name": "LCT_REQUIRE_PINNED_ANCHORS",
+                "value": "true" if require_pinned_anchors else "false",
+            },
+            {"name": "LCT_WAIT_FOR_PEERS_ON_BOOT", "value": "false"},
+            {
+                "name": "LCT_SVID_TTL_SECONDS",
+                "value": str(int(svid_ttl_seconds)),
+            },
+        ]
+        if registry_mode and registry_mode != "federated":
+            dir_env.append({"name": "REGISTRY_MODE", "value": registry_mode})
+        docs.extend(
+            [
+                {
+                    "apiVersion": "v1",
+                    "kind": "ServiceAccount",
+                    "metadata": {"name": dir_name, "namespace": ns},
+                },
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "metadata": {"name": dir_name, "namespace": ns},
                     "spec": {
-                        "serviceAccountName": dir_name,
-                        "automountServiceAccountToken": False,
-                        "volumes": [
-                            {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
-                            *_identity_addressing_volumes(include_node_locator=False),
-                            {
-                                "name": "lct-sa-token",
-                                "projected": {
-                                    "sources": [
-                                        {
-                                            "serviceAccountToken": {
-                                                "path": "token",
-                                                "expirationSeconds": 600,
-                                                "audience": "lct-federation-ca",
-                                            }
-                                        },
-                                        {
-                                            "configMap": {
-                                                "name": "kube-root-ca.crt",
-                                                "items": [{"key": "ca.crt", "path": "ca.crt"}],
-                                            }
-                                        },
-                                    ]
-                                },
-                            },
-                        ],
-                        "containers": [
-                            {
-                                "name": dir_name,
-                                "image": image,
-                                "imagePullPolicy": "Never",
-                                "args": ["--role", "domain-directory"],
-                                "env": [
-                                    {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
-                                    {"name": "LCT_SEEDS_DIR", "value": "/etc/lct-seeds"},
-                                    {
-                                        "name": "LCT_PERSISTED_DESCRIPTORS_FILE",
-                                        "value": "/etc/lct-descriptors/descriptors.json",
-                                    },
-                                    {"name": "LOCAL_CA_URL", "value": local_ca_url},
-                                    {"name": "REVOCATION_URL", "value": local_rev_url},
-                                    {"name": "DIRECTORY_FEDERATION_PORT", "value": "8491"},
-                                    {"name": "LCT_MTLS_RAM_DIR", "value": "/var/run/lct-mtls-ram"},
-                                    {"name": "LCT_TRUST_ANCHORS_DIR", "value": "/etc/lct-anchors"},
-                                    {
-                                        "name": "LCT_REQUIRE_PINNED_ANCHORS",
-                                        "value": "true" if require_pinned_anchors else "false",
-                                    },
-                                    {"name": "LCT_WAIT_FOR_PEERS_ON_BOOT", "value": "false"},
-                                    {
-                                        "name": "LCT_SVID_TTL_SECONDS",
-                                        "value": str(int(svid_ttl_seconds)),
-                                    },
-                                ],
-                                "ports": [
-                                    {"containerPort": 8091, "name": "dir-internal"},
-                                    {"containerPort": 8491, "name": "dir-fed-mtls"},
-                                ],
-                                "volumeMounts": [
+                        "replicas": 1,
+                        "selector": {"matchLabels": {"app": dir_name}},
+                        "template": {
+                            "metadata": {"labels": {"app": dir_name, "lct.io/trust-domain": td}},
+                            "spec": {
+                                "serviceAccountName": dir_name,
+                                "automountServiceAccountToken": False,
+                                "volumes": [
+                                    {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
+                                    *_identity_addressing_volumes(include_node_locator=False),
                                     {
                                         "name": "lct-sa-token",
-                                        "mountPath": "/var/run/lct-sa",
-                                        "readOnly": True,
+                                        "projected": {
+                                            "sources": [
+                                                {
+                                                    "serviceAccountToken": {
+                                                        "path": "token",
+                                                        "expirationSeconds": 600,
+                                                        "audience": "lct-federation-ca",
+                                                    }
+                                                },
+                                                {
+                                                    "configMap": {
+                                                        "name": "kube-root-ca.crt",
+                                                        "items": [{"key": "ca.crt", "path": "ca.crt"}],
+                                                    }
+                                                },
+                                            ]
+                                        },
                                     },
-                                    {"name": "lct-mtls-ram", "mountPath": "/var/run/lct-mtls-ram"},
-                                    *_identity_addressing_mounts(include_node_locator=False),
                                 ],
-                                "livenessProbe": {
-                                    "httpGet": {"path": "/healthz", "port": 8091},
-                                    "initialDelaySeconds": 15,
-                                    "periodSeconds": 10,
-                                    "timeoutSeconds": 5,
-                                    "failureThreshold": 6,
-                                },
-                                "readinessProbe": {
-                                    "httpGet": {"path": "/readyz", "port": 8091},
-                                    "initialDelaySeconds": 1,
-                                    "periodSeconds": 2,
-                                    "timeoutSeconds": 5,
-                                },
+                                "containers": [
+                                    {
+                                        "name": dir_name,
+                                        "image": image,
+                                        "imagePullPolicy": "Never",
+                                        "args": ["--role", "domain-directory"],
+                                        "env": dir_env,
+                                        "ports": [
+                                            {"containerPort": 8091, "name": "dir-internal"},
+                                            {"containerPort": 8491, "name": "dir-fed-mtls"},
+                                        ],
+                                        "volumeMounts": [
+                                            {
+                                                "name": "lct-sa-token",
+                                                "mountPath": "/var/run/lct-sa",
+                                                "readOnly": True,
+                                            },
+                                            {"name": "lct-mtls-ram", "mountPath": "/var/run/lct-mtls-ram"},
+                                            *_identity_addressing_mounts(include_node_locator=False),
+                                        ],
+                                        "livenessProbe": {
+                                            "httpGet": {"path": "/healthz", "port": 8091},
+                                            "initialDelaySeconds": 15,
+                                            "periodSeconds": 10,
+                                            "timeoutSeconds": 5,
+                                            "failureThreshold": 6,
+                                        },
+                                        "readinessProbe": {
+                                            "httpGet": {"path": "/readyz", "port": 8091},
+                                            "initialDelaySeconds": 1,
+                                            "periodSeconds": 2,
+                                            "timeoutSeconds": 5,
+                                        },
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                },
+                {
+                    "apiVersion": "v1",
+                    "kind": "Service",
+                    "metadata": {"name": dir_name, "namespace": ns},
+                    "spec": {
+                        "type": "ClusterIP",
+                        "publishNotReadyAddresses": True,
+                        "selector": {"app": dir_name},
+                        "ports": [{"name": "dir-internal", "port": 8091, "targetPort": 8091}],
+                    },
+                },
+                {
+                    "apiVersion": "v1",
+                    "kind": "Service",
+                    "metadata": {"name": f"{dir_name}-federation", "namespace": ns},
+                    "spec": {
+                        "type": "NodePort",
+                        "selector": {"app": dir_name},
+                        "ports": [
+                            {
+                                "name": "dir-fed-mtls",
+                                "port": 8491,
+                                "targetPort": 8491,
+                                "nodePort": int(dir_fed_nodeport),
                             }
                         ],
                     },
                 },
-            },
-        },
-        {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {"name": dir_name, "namespace": ns},
-            "spec": {
-                "type": "ClusterIP",
-                "publishNotReadyAddresses": True,
-                "selector": {"app": dir_name},
-                "ports": [{"name": "dir-internal", "port": 8091, "targetPort": 8091}],
-            },
-        },
-        {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {"name": f"{dir_name}-federation", "namespace": ns},
-            "spec": {
-                "type": "NodePort",
-                "selector": {"app": dir_name},
-                "ports": [
-                    {
-                        "name": "dir-fed-mtls",
-                        "port": 8491,
-                        "targetPort": 8491,
-                        "nodePort": int(dir_fed_nodeport),
-                    }
-                ],
-            },
-        },
-    ]
+            ]
+        )
     return docs
 
 
@@ -1602,13 +1713,35 @@ def render_role_k8s_manifests(
     sts_engine: str = "lightweight",
     keycloak_image: str = KEYCLOAK_IMAGE,
     delegation_mode: str = "dual",
+    topology: str = "travel",
+    registry_mode: str = "federated",
+    audit_mode: Optional[str] = None,
 ) -> str:
     """Render complete multi-document YAML manifest for a single multi-host role (zero peer IPs/ports/FQDNs)."""
     if role not in ROLE_SPECS:
         raise ValueError(f"Unknown role: {role!r}")
+    norm_top = (topology or "travel").strip().lower()
+    if norm_top not in ("travel", "workspace"):
+        raise ValueError(f"Unsupported topology {topology!r}; expected 'travel' or 'workspace'")
+    norm_reg = (registry_mode or "federated").strip().lower()
+    if norm_reg not in ("federated", "centralized"):
+        raise ValueError(f"Unsupported registry_mode {registry_mode!r}; expected 'federated' or 'centralized'")
+    eff_audit_mode = (
+        (audit_mode.strip().lower() if audit_mode else None)
+        or ("decentralized" if norm_top == "workspace" else None)
+    )
+    auditor_spiffe_csv = (
+        "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway"
+        if eff_audit_mode == "decentralized"
+        else None
+    )
     spec = ROLE_SPECS[role]
     ns = spec.namespace
-    ports = dict(role_ports) if role_ports is not None else allocate_role_ports(role)
+    ports = (
+        dict(role_ports)
+        if role_ports is not None
+        else allocate_role_ports(role, topology=norm_top)
+    )
     eff_sts_engine = (sts_engine or "lightweight").strip().lower()
     if eff_sts_engine not in ("keycloak", "lightweight", "none"):
         raise ValueError(f"Unsupported sts_engine: {sts_engine!r}")
@@ -1620,7 +1753,11 @@ def render_role_k8s_manifests(
             "kind": "Namespace",
             "metadata": {
                 "name": ns,
-                "labels": {"lct.io/trust-domain": spec.trust_domain},
+                "labels": {
+                    "lct.io/trust-domain": spec.trust_domain,
+                    "lct.io/topology": norm_top,
+                    "lct.io/registry-mode": norm_reg,
+                },
                 "annotations": {
                     "lct.io/role-ports-json": json.dumps(ports, sort_keys=True),
                 },
@@ -1958,33 +2095,80 @@ def render_role_k8s_manifests(
                 require_pinned_anchors=require_pinned_anchors,
                 authorized_gateway_sa="e2e-user-gateway",
                 sts_enabled=sts_enabled,
+                registry_mode=norm_reg,
+                include_directory=True,
+                audit_mode=eff_audit_mode,
+                authorized_auditors=auditor_spiffe_csv,
+                consent_issuer_policy=(
+                    "assistant-alice=user:alice@org-alpha.io:calendar_free_busy"
+                    if norm_top == "workspace"
+                    else None
+                ),
             )
         )
-        docs.extend(
-            _agent_or_tool_deployment_docs(
-                namespace=ns,
-                trust_domain=spec.trust_domain,
-                name="orchestrator-alpha",
-                image=image,
-                app_role="app-orchestrator",
-                local_ca_url=local_ca,
-                dir_url=local_dir,
-                rev_url=local_rev,
-                node_port=ports["orchestrator-alpha"],
-                svid_ttl_seconds=svid_ttl_seconds,
-                require_pinned_anchors=require_pinned_anchors,
-                llm_url=llm_url,
-                llm_model=llm_model,
-                agent_skills="travel.orchestrate",
-                agent_priority=10,
-                agent_display_name="Orchestrator Alpha",
-                enable_fault_injection=True,
-                delegation_mode=delegation_mode,
-                local_sts_url=local_sts,
+        if norm_top == "workspace":
+            docs.extend(
+                _agent_or_tool_deployment_docs(
+                    namespace=ns,
+                    trust_domain=spec.trust_domain,
+                    name="assistant-alice",
+                    image=image,
+                    app_role="app-peer-assistant",
+                    local_ca_url=local_ca,
+                    dir_url=local_dir,
+                    rev_url=local_rev,
+                    node_port=ports["assistant-alice"],
+                    svid_ttl_seconds=svid_ttl_seconds,
+                    require_pinned_anchors=require_pinned_anchors,
+                    llm_url=llm_url,
+                    llm_model=llm_model,
+                    agent_skills="workspace.orchestrate",
+                    agent_priority=10,
+                    agent_display_name="Alice Workspace Assistant",
+                    enable_fault_injection=True,
+                    delegation_mode=delegation_mode,
+                    local_sts_url=local_sts,
+                    peer_name="alice",
+                    peer_owner_sub="user:alice@org-alpha.io",
+                    resource_owner_sub="user:alice@org-alpha.io",
+                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
+                    allowed_co_auth_tools="calendar_free_busy",
+                    registry_mode=norm_reg,
+                    audit_mode=eff_audit_mode,
+                    authorized_auditors=auditor_spiffe_csv,
+                )
             )
-        )
+        else:
+            docs.extend(
+                _agent_or_tool_deployment_docs(
+                    namespace=ns,
+                    trust_domain=spec.trust_domain,
+                    name="orchestrator-alpha",
+                    image=image,
+                    app_role="app-orchestrator",
+                    local_ca_url=local_ca,
+                    dir_url=local_dir,
+                    rev_url=local_rev,
+                    node_port=ports["orchestrator-alpha"],
+                    svid_ttl_seconds=svid_ttl_seconds,
+                    require_pinned_anchors=require_pinned_anchors,
+                    llm_url=llm_url,
+                    llm_model=llm_model,
+                    agent_skills="travel.orchestrate",
+                    agent_priority=10,
+                    agent_display_name="Orchestrator Alpha",
+                    enable_fault_injection=True,
+                    delegation_mode=delegation_mode,
+                    local_sts_url=local_sts,
+                    registry_mode=norm_reg,
+                    audit_mode=eff_audit_mode,
+                    authorized_auditors=auditor_spiffe_csv,
+                )
+            )
         gw_env: List[Dict[str, str]] = [
             {"name": "LCT_IDENTITY_ADDRESSING", "value": "true"},
+            {"name": "TOPOLOGY", "value": norm_top},
+            {"name": "REGISTRY_MODE", "value": norm_reg},
             {"name": "DELEGATION_MODE", "value": delegation_mode},
             {"name": "OAUTH_REALM", "value": DEFAULT_REALM_NAME},
             {
@@ -2028,6 +2212,8 @@ def render_role_k8s_manifests(
         ]
         if local_sts:
             gw_env.append({"name": "LOCAL_STS_URL", "value": local_sts})
+        if eff_audit_mode:
+            gw_env.append({"name": "AUDIT_MODE", "value": eff_audit_mode})
         # User / Operator CLI Gateway (identity-addressed: ZERO peer URL constants!)
         docs.extend(
             [
@@ -2125,7 +2311,11 @@ def render_role_k8s_manifests(
 
     if role == "beta":
         local_ca = f"http://beta-ca.{ns}.svc.cluster.local:8090"
-        local_dir = f"http://beta-directory.{ns}.svc.cluster.local:8091"
+        local_dir = (
+            ""
+            if norm_reg == "centralized"
+            else f"http://beta-directory.{ns}.svc.cluster.local:8091"
+        )
         local_rev = f"http://beta-revocation.{ns}.svc.cluster.local:8092"
         local_sts = (
             f"http://beta-sts.{ns}.svc.cluster.local:8095" if sts_enabled else None
@@ -2150,8 +2340,115 @@ def render_role_k8s_manifests(
                 svid_ttl_seconds=svid_ttl_seconds,
                 require_pinned_anchors=require_pinned_anchors,
                 sts_enabled=sts_enabled,
+                enable_oidc_jwks_on_ca=(norm_top == "workspace" and sts_enabled),
+                registry_mode=norm_reg,
+                include_directory=(norm_reg == "federated"),
+                audit_mode=eff_audit_mode,
+                authorized_auditors=auditor_spiffe_csv,
+                consent_issuer_policy=(
+                    "assistant-bob=user:bob@org-beta.io:calendar_free_busy;"
+                    "assistant-bob-standby=user:bob@org-beta.io:calendar_free_busy"
+                    if norm_top == "workspace"
+                    else None
+                ),
             )
         )
+        if norm_top == "workspace":
+            docs.extend(
+                _agent_or_tool_deployment_docs(
+                    namespace=ns,
+                    trust_domain=spec.trust_domain,
+                    name="assistant-bob",
+                    image=image,
+                    app_role="app-peer-assistant",
+                    local_ca_url=local_ca,
+                    dir_url=local_dir,
+                    rev_url=local_rev,
+                    node_port=ports["assistant-bob"],
+                    svid_ttl_seconds=svid_ttl_seconds,
+                    require_pinned_anchors=require_pinned_anchors,
+                    llm_url=llm_url,
+                    llm_model=llm_model,
+                    agent_skills="workspace.tech_review,workspace.bob_private",
+                    supported_tools="hr_salary_read,calendar_write,calendar_free_busy",
+                    agent_priority=10,
+                    agent_display_name="Bob Workspace Assistant",
+                    enable_fault_injection=True,
+                    specialist_instance="primary",
+                    delegation_mode=delegation_mode,
+                    local_sts_url=local_sts,
+                    peer_name="bob",
+                    peer_owner_sub="user:bob@org-beta.io",
+                    resource_owner_sub="user:bob@org-beta.io",
+                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
+                    allowed_co_auth_tools="calendar_free_busy",
+                    registry_mode=norm_reg,
+                    audit_mode=eff_audit_mode,
+                    authorized_auditors=auditor_spiffe_csv,
+                )
+            )
+            docs.extend(
+                _agent_or_tool_deployment_docs(
+                    namespace=ns,
+                    trust_domain=spec.trust_domain,
+                    name="assistant-bob-standby",
+                    image=image,
+                    app_role="app-peer-assistant",
+                    local_ca_url=local_ca,
+                    dir_url=local_dir,
+                    rev_url=local_rev,
+                    node_port=ports["assistant-bob-standby"],
+                    svid_ttl_seconds=svid_ttl_seconds,
+                    require_pinned_anchors=require_pinned_anchors,
+                    llm_url=llm_url,
+                    llm_model=llm_model,
+                    agent_skills="workspace.tech_review",
+                    agent_priority=20,
+                    agent_display_name="Bob Standby Assistant",
+                    enable_fault_injection=True,
+                    specialist_instance="backup",
+                    delegation_mode=delegation_mode,
+                    local_sts_url=local_sts,
+                    peer_name="bob",
+                    peer_owner_sub="user:bob@org-beta.io",
+                    resource_owner_sub="user:bob@org-beta.io",
+                    owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
+                    allowed_co_auth_tools="calendar_free_busy",
+                    registry_mode=norm_reg,
+                    audit_mode=eff_audit_mode,
+                    authorized_auditors=auditor_spiffe_csv,
+                )
+            )
+            docs.extend(
+                _agent_or_tool_deployment_docs(
+                    namespace=ns,
+                    trust_domain=spec.trust_domain,
+                    name="assistant-dave",
+                    image=image,
+                    app_role="app-peer-assistant",
+                    local_ca_url=local_ca,
+                    dir_url=local_dir,
+                    rev_url=local_rev,
+                    node_port=ports["assistant-dave"],
+                    svid_ttl_seconds=svid_ttl_seconds,
+                    require_pinned_anchors=require_pinned_anchors,
+                    llm_url=llm_url,
+                    llm_model=llm_model,
+                    agent_skills="workspace.deep_analysis",
+                    agent_priority=10,
+                    agent_display_name="Dave Deep-Analysis Assistant",
+                    enable_fault_injection=True,
+                    delegation_mode=delegation_mode,
+                    local_sts_url=local_sts,
+                    peer_name="dave",
+                    peer_owner_sub="user:dave@org-beta.io",
+                    registry_mode=norm_reg,
+                    audit_mode=eff_audit_mode,
+                    authorized_auditors=auditor_spiffe_csv,
+                )
+            )
+            return yaml.safe_dump_all(docs, sort_keys=False)
+
         docs.extend(
             _agent_or_tool_deployment_docs(
                 namespace=ns,
@@ -2173,6 +2470,9 @@ def render_role_k8s_manifests(
                 enable_fault_injection=True,
                 delegation_mode=delegation_mode,
                 local_sts_url=local_sts,
+                registry_mode=norm_reg,
+                audit_mode=eff_audit_mode,
+                authorized_auditors=auditor_spiffe_csv,
             )
         )
         docs.extend(
@@ -2197,6 +2497,9 @@ def render_role_k8s_manifests(
                 specialist_instance="primary",
                 delegation_mode=delegation_mode,
                 local_sts_url=local_sts,
+                registry_mode=norm_reg,
+                audit_mode=eff_audit_mode,
+                authorized_auditors=auditor_spiffe_csv,
             )
         )
         docs.extend(
@@ -2221,13 +2524,20 @@ def render_role_k8s_manifests(
                 specialist_instance="backup",
                 delegation_mode=delegation_mode,
                 local_sts_url=local_sts,
+                registry_mode=norm_reg,
+                audit_mode=eff_audit_mode,
+                authorized_auditors=auditor_spiffe_csv,
             )
         )
         return yaml.safe_dump_all(docs, sort_keys=False)
 
     # role == "pay"
     local_ca = f"http://payment-ca.{ns}.svc.cluster.local:8090"
-    local_dir = f"http://payment-directory.{ns}.svc.cluster.local:8091"
+    local_dir = (
+        ""
+        if norm_reg == "centralized"
+        else f"http://payment-directory.{ns}.svc.cluster.local:8091"
+    )
     local_rev = f"http://payment-revocation.{ns}.svc.cluster.local:8092"
     local_sts = (
         f"http://payment-sts.{ns}.svc.cluster.local:8095" if sts_enabled else None
@@ -2252,8 +2562,112 @@ def render_role_k8s_manifests(
             svid_ttl_seconds=svid_ttl_seconds,
             require_pinned_anchors=require_pinned_anchors,
             sts_enabled=sts_enabled,
+            enable_oidc_jwks_on_ca=(norm_top == "workspace" and sts_enabled),
+            registry_mode=norm_reg,
+            include_directory=(norm_reg == "federated"),
+            audit_mode=eff_audit_mode,
+            authorized_auditors=auditor_spiffe_csv,
+            consent_issuer_policy=(
+                "assistant-carol=user:carol@org-payment.io:calendar_free_busy;"
+                "assistant-carol-standby=user:carol@org-payment.io:calendar_free_busy"
+                if norm_top == "workspace"
+                else None
+            ),
         )
     )
+    if norm_top == "workspace":
+        docs.extend(
+            _agent_or_tool_deployment_docs(
+                namespace=ns,
+                trust_domain=spec.trust_domain,
+                name="assistant-carol",
+                image=image,
+                app_role="app-peer-assistant",
+                local_ca_url=local_ca,
+                dir_url=local_dir,
+                rev_url=local_rev,
+                node_port=ports["assistant-carol"],
+                svid_ttl_seconds=svid_ttl_seconds,
+                require_pinned_anchors=require_pinned_anchors,
+                llm_url=llm_url,
+                llm_model=llm_model,
+                agent_skills="workspace.biz_procurement",
+                agent_priority=10,
+                agent_display_name="Carol Commercial Assistant",
+                enable_fault_injection=True,
+                specialist_instance="primary",
+                delegation_mode=delegation_mode,
+                local_sts_url=local_sts,
+                peer_name="carol",
+                peer_owner_sub="user:carol@org-payment.io",
+                resource_owner_sub="user:carol@org-payment.io",
+                owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
+                allowed_co_auth_tools="calendar_free_busy",
+                registry_mode=norm_reg,
+                audit_mode=eff_audit_mode,
+                authorized_auditors=auditor_spiffe_csv,
+            )
+        )
+        docs.extend(
+            _agent_or_tool_deployment_docs(
+                namespace=ns,
+                trust_domain=spec.trust_domain,
+                name="assistant-carol-standby",
+                image=image,
+                app_role="app-peer-assistant",
+                local_ca_url=local_ca,
+                dir_url=local_dir,
+                rev_url=local_rev,
+                node_port=ports["assistant-carol-standby"],
+                svid_ttl_seconds=svid_ttl_seconds,
+                require_pinned_anchors=require_pinned_anchors,
+                llm_url=llm_url,
+                llm_model=llm_model,
+                agent_skills="workspace.biz_procurement",
+                agent_priority=20,
+                agent_display_name="Carol Standby Assistant",
+                enable_fault_injection=True,
+                specialist_instance="backup",
+                delegation_mode=delegation_mode,
+                local_sts_url=local_sts,
+                peer_name="carol",
+                peer_owner_sub="user:carol@org-payment.io",
+                resource_owner_sub="user:carol@org-payment.io",
+                owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy",
+                allowed_co_auth_tools="calendar_free_busy",
+                registry_mode=norm_reg,
+                audit_mode=eff_audit_mode,
+                authorized_auditors=auditor_spiffe_csv,
+            )
+        )
+        docs.extend(
+            _agent_or_tool_deployment_docs(
+                namespace=ns,
+                trust_domain=spec.trust_domain,
+                name="assistant-vault",
+                image=image,
+                app_role="app-workspace-vault",
+                local_ca_url=local_ca,
+                dir_url=local_dir,
+                rev_url=local_rev,
+                node_port=ports["assistant-vault"],
+                svid_ttl_seconds=svid_ttl_seconds,
+                require_pinned_anchors=require_pinned_anchors,
+                llm_url=llm_url,
+                llm_model=llm_model,
+                agent_skills="workspace.vault_converge,mcp.workspace-vault",
+                supported_tools="reserve_cloud_budget,procure_vendor_quote,query_operation_status,lock_joint_project,record_compliance_note",
+                agent_priority=10,
+                agent_display_name="Workspace Vault & Converger",
+                delegation_mode=delegation_mode,
+                local_sts_url=local_sts,
+                registry_mode=norm_reg,
+                audit_mode=eff_audit_mode,
+                authorized_auditors=auditor_spiffe_csv,
+            )
+        )
+        return yaml.safe_dump_all(docs, sort_keys=False)
+
     docs.extend(
         _agent_or_tool_deployment_docs(
             namespace=ns,
@@ -2275,6 +2689,9 @@ def render_role_k8s_manifests(
             enable_fault_injection=True,
             delegation_mode=delegation_mode,
             local_sts_url=local_sts,
+            registry_mode=norm_reg,
+            audit_mode=eff_audit_mode,
+            authorized_auditors=auditor_spiffe_csv,
         )
     )
     docs.extend(
@@ -2297,6 +2714,9 @@ def render_role_k8s_manifests(
             agent_display_name="Travel Ops MCP Server",
             delegation_mode=delegation_mode,
             local_sts_url=local_sts,
+            registry_mode=norm_reg,
+            audit_mode=eff_audit_mode,
+            authorized_auditors=auditor_spiffe_csv,
         )
     )
     docs.extend(
@@ -2319,6 +2739,9 @@ def render_role_k8s_manifests(
             agent_display_name="Payment Vault MCP Server",
             delegation_mode=delegation_mode,
             local_sts_url=local_sts,
+            registry_mode=norm_reg,
+            audit_mode=eff_audit_mode,
+            authorized_auditors=auditor_spiffe_csv,
         )
     )
     return yaml.safe_dump_all(docs, sort_keys=False)
@@ -2595,10 +3018,12 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     p_alloc.add_argument("--base-port", type=int, default=None)
     p_alloc.add_argument("--port-override", action="append", default=[])
     p_alloc.add_argument("--check-host-free", action="store_true")
+    p_alloc.add_argument("--topology", default="travel")
 
     p_kind = sub.add_parser("kind-config")
     p_kind.add_argument("--role", required=True)
     p_kind.add_argument("--ports-json", default="")
+    p_kind.add_argument("--topology", default="travel")
 
     p_dns = sub.add_parser("sanitize-coredns")
     p_dns.add_argument("--roles", required=True)
@@ -2625,6 +3050,9 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     p_man.add_argument("--sts-engine", default="lightweight")
     p_man.add_argument("--keycloak-image", default=KEYCLOAK_IMAGE)
     p_man.add_argument("--delegation-mode", default="dual")
+    p_man.add_argument("--topology", default="travel")
+    p_man.add_argument("--registry-mode", default="federated")
+    p_man.add_argument("--audit-mode", default="")
     p_man.add_argument(
         "--skip-configmap",
         action="store_true",
@@ -2647,7 +3075,7 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
         reserved: Set[int] = set()
         out_map: Dict[str, Dict[str, int]] = {}
         for idx, r in enumerate(roles):
-            existing = read_cluster_role_ports(r)
+            existing = read_cluster_role_ports(r, topology=args.topology)
             if existing is not None:
                 out_map[r] = existing
                 reserved.update(existing.values())
@@ -2659,6 +3087,7 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
                 port_overrides=ovr,
                 check_host_free=args.check_host_free,
                 reserved_ports=reserved,
+                topology=args.topology,
             )
             out_map[r] = r_ports
             reserved.update(r_ports.values())
@@ -2667,7 +3096,9 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.cmd == "kind-config":
         rp = json.loads(args.ports_json) if args.ports_json.strip() else None
-        sys.stdout.write(render_kind_cluster_config(args.role, role_ports=rp))
+        sys.stdout.write(
+            render_kind_cluster_config(args.role, role_ports=rp, topology=args.topology)
+        )
         return 0
 
     if args.cmd == "sanitize-coredns":
@@ -2697,7 +3128,11 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     if args.cmd == "render-manifest":
         from lineage.common.locators import normalize_seed_endpoint
 
-        rp = json.loads(args.ports_json) if args.ports_json.strip() else read_cluster_role_ports(args.role)
+        rp = (
+            json.loads(args.ports_json)
+            if args.ports_json.strip()
+            else read_cluster_role_ports(args.role, topology=args.topology)
+        )
         seeds = [normalize_seed_endpoint(s) for s in (args.seed or []) if s and s.strip()]
         sys.stdout.write(
             render_role_k8s_manifests(
@@ -2713,6 +3148,9 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
                 sts_engine=args.sts_engine,
                 keycloak_image=args.keycloak_image,
                 delegation_mode=args.delegation_mode,
+                topology=args.topology,
+                registry_mode=args.registry_mode,
+                audit_mode=(args.audit_mode.strip() or None),
             )
         )
         return 0

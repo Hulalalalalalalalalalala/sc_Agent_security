@@ -34,6 +34,8 @@ from lineage.protocol.lattice import PermissionLattice
 from lineage.protocol.token import (
     LineageToken,
     TokenError,
+    TokenExpiredError,
+    compute_branch_idempotency_key,
     validate_clean_endpoint_url,
 )
 from lineage.registry.agent_card import AgentCard
@@ -102,11 +104,19 @@ class ResilientDelegationCoordinator:
         timeout_seconds: float = 2.0,
         max_failovers: int = 2,
         extra_headers: Optional[Mapping[str, str]] = None,
+        logical_branch_id: Optional[str] = None,
+        branch_idempotency_key: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], LineageToken, List[FailoverReceipt]]:
         """Delegate sub-task to a specialist; on fault, execute Atomic Prune-and-Graft."""
         attempted_spiffe_ids: Set[str] = set()
         receipts: List[FailoverReceipt] = []
         working_epoch = parent_token.current_epoch
+        eff_branch_id = str(logical_branch_id or required_skill).strip()
+        eff_idem_key = (
+            str(branch_idempotency_key).strip()
+            if branch_idempotency_key
+            else compute_branch_idempotency_key(parent_token.task_id, eff_branch_id)
+        )
 
         candidate = primary_card
         if candidate is None:
@@ -176,6 +186,8 @@ class ResilientDelegationCoordinator:
                         "skill": required_skill,
                         "target_url": primary_target_url,
                         "resolved_peer_ip": resolved_cand_ip,
+                        "logical_branch_id": eff_branch_id,
+                        "branch_idempotency_key": eff_idem_key,
                     },
                     decision="ALLOW",
                 )
@@ -217,6 +229,7 @@ class ResilientDelegationCoordinator:
                     req_hdrs = {
                         "Authorization": f"DPoP {compact_tok}",
                         "DPoP": dpop,
+                        "X-LCT-Idempotency-Key": eff_idem_key,
                     }
                     if extra_headers:
                         req_hdrs.update({str(k): str(v) for k, v in extra_headers.items()})
@@ -243,6 +256,9 @@ class ResilientDelegationCoordinator:
                         if 200 <= resp.status_code < 300:
                             self.detector.record_success(candidate.spiffe_id)
                             return resp.json(), child_token, receipts
+
+                        if resp.status_code == 401 and "TASK_AUTH_EXPIRED" in resp.text:
+                            raise TokenExpiredError(f"Downstream reported TASK_AUTH_EXPIRED: {resp.text[:200]}")
 
                         # Record single genuine HTTP failure against detector (NO artificial while loop!)
                         evidence = self.detector.classify_http_failure(

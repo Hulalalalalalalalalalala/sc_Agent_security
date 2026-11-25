@@ -43,6 +43,7 @@ BASE_PORT=""
 PORT_OVERRIDES=()
 LLM_URL="http://host.docker.internal:11434/v1"
 LLM_MODEL="qwen2.5:3b"
+TOPOLOGY="travel"
 SKIP_LLM_CHECK="false"
 REQUIRE_PEERS_UP="false"
 
@@ -68,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --port-override) PORT_OVERRIDES+=("${2:-}"); shift 2 ;;
     --llm-url) LLM_URL="${2:-}"; shift 2 ;;
     --llm-model) LLM_MODEL="${2:-}"; shift 2 ;;
+    --topology) TOPOLOGY="${2:-}"; shift 2 ;;
     --skip-llm-check) SKIP_LLM_CHECK="true"; shift ;;
     --require-peers-up) REQUIRE_PEERS_UP="true"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -93,7 +95,7 @@ DETECTED_JSON="$("${PY_BIN}" "${SCRIPT_DIR}/locator-agent.py" "${DETECT_ARGS[@]}
 DETECTED_SUMMARY="$("${PY_BIN}" -c "import json,sys; d=json.loads(sys.argv[1])['locators']; print(', '.join(f\"{x['host']} ({x['source']}, prio={x['priority']})\" for x in d))" "${DETECTED_JSON}")"
 
 # 2. Dynamic local NodePort allocation & conflict check
-ALLOC_ARGS=(allocate-ports --roles "${ROLES_SPEC}" --check-host-free)
+ALLOC_ARGS=(allocate-ports --roles "${ROLES_SPEC}" --topology "${TOPOLOGY}" --check-host-free)
 if [[ -n "${BASE_PORT}" ]]; then
   ALLOC_ARGS+=(--base-port "${BASE_PORT}")
 fi

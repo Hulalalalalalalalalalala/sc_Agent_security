@@ -14,11 +14,12 @@ Implements:
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 from urllib.parse import urlsplit
 
 from lineage.common.crypto import (
@@ -32,6 +33,7 @@ from lineage.common.crypto import (
     jws_verify_compact,
     require_finite_timestamp,
     sha256_canonical_b64url,
+    sha256_hex,
     strict_json_loads,
 )
 from lineage.identity.spiffe import IdentityError, SpiffeId, TrustDomainCA, WorkloadIdentity
@@ -39,9 +41,11 @@ from lineage.identity.trust_bundle import TrustBundleResolver
 from lineage.protocol.lattice import LatticeError, PermissionLattice
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,128}$")
+_EPOCH_SUFFIX_RE = re.compile(r"-e[0-9]+$")
 
 LCT_WIRE_PREFIX = "lct1."
 LCT_MP_WIRE_PREFIX = "lctmp1."
+LCT_COAUTH_WIRE_PREFIX = "lctco1."
 
 
 class TokenError(Exception):
@@ -62,6 +66,22 @@ class CycleDetectedError(TokenError):
 
 class TokenExpiredError(TokenError):
     """Raised when a cryptographically valid LCT chain has exceeded its temporal TTL."""
+
+
+class ContinuationBudgetError(TokenError):
+    """Raised when a continuation token request exceeds remaining post-checkpoint budget."""
+
+
+def compute_branch_idempotency_key(task_id: str, logical_branch_id: str) -> str:
+    """Compute epoch-invariant deterministic branch idempotency key `sha256(task_id:branch)`."""
+    clean_task = validate_segment(str(task_id).strip(), "task_id")
+    raw_branch = str(logical_branch_id or "").strip()
+    if not raw_branch:
+        raise TokenError("logical_branch_id must be non-empty")
+    normalized_branch = _EPOCH_SUFFIX_RE.sub("", raw_branch)
+    if not normalized_branch:
+        raise TokenError("logical_branch_id cannot be only an epoch suffix")
+    return sha256_hex(f"{clean_task}:{normalized_branch}".encode("utf-8"))
 
 
 def validate_clean_endpoint_url(url: str, field_name: str = "return_endpoint") -> str:
@@ -147,9 +167,12 @@ class RootBlock:
     iat: float
     exp: float
     jws_signature: str
+    resumes_checkpoint_id: Optional[str] = None
+    prior_root_block_hash: Optional[str] = None
+    consumed_before_resume: Optional[Dict[str, Any]] = None
 
     def core_claims(self) -> Dict[str, Any]:
-        return {
+        claims: Dict[str, Any] = {
             "version": self.version,
             "block_type": self.block_type,
             "jti": self.jti,
@@ -169,6 +192,13 @@ class RootBlock:
             "iat": self.iat,
             "exp": self.exp,
         }
+        if self.resumes_checkpoint_id is not None:
+            claims["resumes_checkpoint_id"] = self.resumes_checkpoint_id
+        if self.prior_root_block_hash is not None:
+            claims["prior_root_block_hash"] = self.prior_root_block_hash
+        if self.consumed_before_resume is not None:
+            claims["consumed_before_resume"] = self.consumed_before_resume
+        return claims
 
     def to_dict(self) -> Dict[str, Any]:
         d = self.core_claims()
@@ -232,6 +262,37 @@ class RootBlock:
             )
             iat_val = require_finite_timestamp(raw["iat"], "RootBlock.iat")
             exp_val = require_finite_timestamp(raw["exp"], "RootBlock.exp")
+            raw_ckpt_id = raw.get("resumes_checkpoint_id")
+            clean_ckpt_id = (
+                validate_segment(str(raw_ckpt_id), "resumes_checkpoint_id")
+                if raw_ckpt_id is not None
+                else None
+            )
+            raw_prior_root = raw.get("prior_root_block_hash")
+            clean_prior_root = (
+                str(raw_prior_root).strip()
+                if raw_prior_root is not None and str(raw_prior_root).strip()
+                else None
+            )
+            if raw_prior_root is not None and clean_prior_root is None:
+                raise TokenError("prior_root_block_hash cannot be empty when present")
+            raw_consumed = raw.get("consumed_before_resume")
+            clean_consumed: Optional[Dict[str, Any]] = None
+            if raw_consumed is not None:
+                if not isinstance(raw_consumed, Mapping):
+                    raise TokenError("consumed_before_resume must be a mapping")
+                c_amt = float(raw_consumed.get("consumed_amount", 0.0))
+                c_calls = int(raw_consumed.get("consumed_calls", 0))
+                if (
+                    isinstance(raw_consumed.get("consumed_amount"), bool)
+                    or isinstance(raw_consumed.get("consumed_calls"), bool)
+                    or not math.isfinite(c_amt)
+                    or c_amt < 0.0
+                    or c_calls < 0
+                ):
+                    raise TokenError("Invalid negative/non-finite consumed_before_resume")
+                clean_consumed = dict(raw_consumed)
+
             return cls(
                 version=str(raw["version"]),
                 block_type="ROOT",
@@ -252,6 +313,9 @@ class RootBlock:
                 iat=iat_val,
                 exp=exp_val,
                 jws_signature=str(raw["jws_signature"]),
+                resumes_checkpoint_id=clean_ckpt_id,
+                prior_root_block_hash=clean_prior_root,
+                consumed_before_resume=clean_consumed,
             )
         except (KeyError, ValueError, TypeError, IdentityError, LatticeError, CryptoError) as exc:
             if isinstance(exc, TokenError):
@@ -568,6 +632,87 @@ class LineageToken:
         return LCT_WIRE_PREFIX + b64url_encode(canonical_json_bytes(self.to_dict()))
 
 
+def verify_root_block_signature_ignoring_expiry(
+    root: RootBlock,
+    trust_resolver: TrustBundleResolver,
+) -> None:
+    """Verify `RootBlock` JWS signature and claims integrity against `trust_resolver` (ignoring `exp`)."""
+    validate_principal_domain_consistency(root.sub, root.issuer_trust_domain)
+    expected_root_iss = f"spiffe://{root.issuer_trust_domain}/authority/root"
+    expected_ca_iss = f"spiffe://{root.issuer_trust_domain}/authority/ca"
+    if root.issuer_spiffe_id not in (expected_root_iss, expected_ca_iss):
+        raise TokenError(
+            f"Invalid RootBlock issuer_spiffe_id: {root.issuer_spiffe_id!r}"
+        )
+    try:
+        _, signed_claims = trust_resolver.verify_domain_jws(
+            root.jws_signature,
+            expected_trust_domain=root.issuer_trust_domain,
+            expected_typ="lct-root+jwt",
+        )
+    except (IdentityError, CryptoError) as exc:
+        raise TokenError(f"RootBlock signature verification failed: {exc}") from exc
+    if canonical_json_bytes(signed_claims) != canonical_json_bytes(root.core_claims()):
+        raise TokenError("RootBlock claims tampered")
+
+
+def are_roots_continuously_linked(
+    chains_or_roots: Sequence[Union["LineageToken", RootBlock]],
+) -> bool:
+    """Return True iff all roots share identical `(task_id, sub, issuer_trust_domain)` and form a single directed linear chain."""
+    if not chains_or_roots:
+        return True
+    roots: List[RootBlock] = [
+        item.root if isinstance(item, LineageToken) else item
+        for item in chains_or_roots
+    ]
+    first = roots[0]
+    roots_by_hash: Dict[str, RootBlock] = {}
+    for r in roots:
+        if (
+            r.task_id != first.task_id
+            or r.sub != first.sub
+            or r.issuer_trust_domain != first.issuer_trust_domain
+        ):
+            return False
+        roots_by_hash[r.block_hash()] = r
+
+    if len(roots_by_hash) <= 1:
+        return True
+
+    in_deg: Dict[str, int] = {h: 0 for h in roots_by_hash}
+    out_deg: Dict[str, int] = {h: 0 for h in roots_by_hash}
+    next_hop: Dict[str, str] = {}
+
+    for h, r in roots_by_hash.items():
+        pr = r.prior_root_block_hash
+        if pr is not None and pr in roots_by_hash:
+            if pr == h:
+                return False
+            parent_root = roots_by_hash[pr]
+            if r.iat < parent_root.iat:
+                return False
+            out_deg[pr] += 1
+            in_deg[h] += 1
+            if out_deg[pr] > 1 or in_deg[h] > 1:
+                return False
+            next_hop[pr] = h
+
+    heads = [h for h, deg in in_deg.items() if deg == 0]
+    if len(heads) != 1:
+        return False
+
+    visited: Set[str] = set()
+    cur: Optional[str] = heads[0]
+    while cur is not None:
+        if cur in visited:
+            return False
+        visited.add(cur)
+        cur = next_hop.get(cur)
+
+    return len(visited) == len(roots_by_hash)
+
+
 @dataclass(frozen=True)
 class MultiParentToken:
     """Multi-Parent DAG Convergence Envelope (`lctmp1.<b64url>`) for N-to-1 & M-to-N topologies.
@@ -627,7 +772,10 @@ class MultiParentToken:
 
         task_id = chains_list[0].task_id
         sub = chains_list[0].sub
-        root_hash = chains_list[0].root_block_hash
+        if not are_roots_continuously_linked(chains_list):
+            raise TokenError(
+                "Cross-root splicing blocked in MultiParentToken: all parent chains must share identical or continuation-linked RootBlock"
+            )
 
         deduped: List[LineageToken] = []
         seen_paths: Set[str] = set()
@@ -641,10 +789,6 @@ class MultiParentToken:
             if chain.sub != sub:
                 raise TokenError(
                     f"Cross-principal splicing blocked in MultiParentToken: {chain.sub!r} != {sub!r}"
-                )
-            if chain.root_block_hash != root_hash:
-                raise TokenError(
-                    "Cross-root splicing blocked in MultiParentToken: all parent chains must share identical RootBlock"
                 )
             if chain.holder_spiffe_id != holder_identity.spiffe_id:
                 raise TokenError(
@@ -914,8 +1058,592 @@ def mint_root_token(
     return LineageToken(root=signed_root, hops=())
 
 
-def decode_token(compact_token: str) -> Union[LineageToken, MultiParentToken]:
-    """Decode a wire-encoded `lct1.<...>` or `lctmp1.<...>` token (structural parse only)."""
+@dataclass(frozen=True)
+class TaskCheckpoint:
+    """Workload-signed progress & consumed-budget checkpoint emitted on task auth expiry."""
+
+    checkpoint_id: str
+    task_id: str
+    sub: str
+    prior_root_block_hash: str
+    original_max_amount: Optional[float]
+    original_max_calls: int
+    completed_branches: Tuple[str, ...]
+    remaining_branches: Tuple[str, ...]
+    consumed_amount: float
+    consumed_calls: int
+    recorded_at: float
+    signer_spiffe_id: str
+    signer_svid: str
+    jws_signature: str
+
+    def core_claims(self) -> Dict[str, Any]:
+        return {
+            "checkpoint_id": self.checkpoint_id,
+            "task_id": self.task_id,
+            "sub": self.sub,
+            "prior_root_block_hash": self.prior_root_block_hash,
+            "original_max_amount": self.original_max_amount,
+            "original_max_calls": self.original_max_calls,
+            "completed_branches": list(self.completed_branches),
+            "remaining_branches": list(self.remaining_branches),
+            "consumed_amount": self.consumed_amount,
+            "consumed_calls": self.consumed_calls,
+            "recorded_at": self.recorded_at,
+            "signer_spiffe_id": self.signer_spiffe_id,
+            "signer_svid": self.signer_svid,
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = self.core_claims()
+        d["jws_signature"] = self.jws_signature
+        return d
+
+    def checkpoint_hash(self) -> str:
+        return sha256_canonical_b64url(self.to_dict())
+
+    @classmethod
+    def create_and_sign(
+        cls,
+        signer_identity: WorkloadIdentity,
+        task_id: str,
+        sub: str,
+        prior_root_block_hash: str,
+        original_max_amount: Optional[float],
+        original_max_calls: int,
+        completed_branches: Iterable[str] = (),
+        remaining_branches: Iterable[str] = (),
+        consumed_amount: float = 0.0,
+        consumed_calls: int = 0,
+        checkpoint_id: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> "TaskCheckpoint":
+        valid_task = validate_segment(str(task_id), "task_id")
+        clean_sub = str(sub).strip()
+        if not clean_sub:
+            raise TokenError("TaskCheckpoint requires non-empty sub")
+        clean_prior = str(prior_root_block_hash).strip()
+        if not clean_prior:
+            raise TokenError("TaskCheckpoint requires prior_root_block_hash")
+        c_amt = float(consumed_amount)
+        if isinstance(consumed_amount, bool) or not math.isfinite(c_amt) or c_amt < 0.0:
+            raise TokenError(f"Invalid consumed_amount: {consumed_amount!r}")
+        if isinstance(consumed_calls, bool) or int(consumed_calls) < 0:
+            raise TokenError(f"Invalid consumed_calls: {consumed_calls!r}")
+        if isinstance(original_max_calls, bool) or int(original_max_calls) < 1:
+            raise TokenError(f"Invalid original_max_calls: {original_max_calls!r}")
+        orig_amt: Optional[float] = None
+        if original_max_amount is not None:
+            if isinstance(original_max_amount, bool) or not math.isfinite(float(original_max_amount)) or float(original_max_amount) < 0.0:
+                raise TokenError(f"Invalid original_max_amount: {original_max_amount!r}")
+            orig_amt = float(original_max_amount)
+
+        ckpt_id = validate_segment(
+            checkpoint_id if checkpoint_id else f"ckpt-{uuid.uuid4().hex[:16]}",
+            "checkpoint_id",
+        )
+        ts = require_finite_timestamp(time.time() if now is None else now, "recorded_at")
+        provisional = cls(
+            checkpoint_id=ckpt_id,
+            task_id=valid_task,
+            sub=clean_sub,
+            prior_root_block_hash=clean_prior,
+            original_max_amount=orig_amt,
+            original_max_calls=int(original_max_calls),
+            completed_branches=tuple(str(b) for b in completed_branches if str(b).strip()),
+            remaining_branches=tuple(str(b) for b in remaining_branches if str(b).strip()),
+            consumed_amount=c_amt,
+            consumed_calls=int(consumed_calls),
+            recorded_at=ts,
+            signer_spiffe_id=signer_identity.spiffe_id,
+            signer_svid=signer_identity.workload_svid,
+            jws_signature="",
+        )
+        sig = jws_sign_compact(
+            payload=provisional.core_claims(),
+            keypair=signer_identity.keypair,
+            typ="lct-task-checkpoint+jwt",
+        )
+        return cls(**{**provisional.__dict__, "jws_signature": sig})
+
+    @classmethod
+    def from_dict_and_verify(
+        cls,
+        raw: Mapping[str, Any],
+        trust_resolver: TrustBundleResolver,
+        now: Optional[float] = None,
+    ) -> "TaskCheckpoint":
+        if not isinstance(raw, Mapping):
+            raise TokenError("Malformed TaskCheckpoint JSON")
+        try:
+            ckpt_id = validate_segment(str(raw["checkpoint_id"]), "checkpoint_id")
+            task_id = validate_segment(str(raw["task_id"]), "task_id")
+            sub = str(raw["sub"]).strip()
+            prior_root = str(raw["prior_root_block_hash"]).strip()
+            if not sub or not prior_root:
+                raise TokenError("TaskCheckpoint sub and prior_root_block_hash must be non-empty")
+            raw_orig_amt = raw.get("original_max_amount")
+            orig_amt: Optional[float] = None
+            if raw_orig_amt is not None:
+                if isinstance(raw_orig_amt, bool) or not math.isfinite(float(raw_orig_amt)) or float(raw_orig_amt) < 0.0:
+                    raise TokenError("Invalid original_max_amount in TaskCheckpoint")
+                orig_amt = float(raw_orig_amt)
+            orig_calls = int(raw["original_max_calls"])
+            if isinstance(raw["original_max_calls"], bool) or orig_calls < 1:
+                raise TokenError("Invalid original_max_calls in TaskCheckpoint")
+            c_amt = float(raw["consumed_amount"])
+            c_calls = int(raw["consumed_calls"])
+            if (
+                isinstance(raw["consumed_amount"], bool)
+                or isinstance(raw["consumed_calls"], bool)
+                or not math.isfinite(c_amt)
+                or c_amt < 0.0
+                or c_calls < 0
+            ):
+                raise TokenError("Invalid negative consumed_amount/consumed_calls in TaskCheckpoint")
+            rec_at = require_finite_timestamp(raw["recorded_at"], "TaskCheckpoint.recorded_at")
+            cur_ts = require_finite_timestamp(time.time() if now is None else now, "now")
+            if rec_at > cur_ts + 30.0:
+                raise TokenError("TaskCheckpoint recorded_at is in the future")
+            signer_spiffe = SpiffeId.parse(str(raw["signer_spiffe_id"])).uri
+            signer_svid = str(raw["signer_svid"])
+            sig = str(raw["jws_signature"])
+
+            svid_claims = trust_resolver.verify_workload_svid(
+                signer_svid,
+                expected_spiffe_id=signer_spiffe,
+                now=rec_at,
+            )
+            signer_jwk = svid_claims["cnf"]["jwk"]
+            _, signed_claims = jws_verify_compact(
+                sig, signer_jwk, expected_typ="lct-task-checkpoint+jwt"
+            )
+            obj = cls(
+                checkpoint_id=ckpt_id,
+                task_id=task_id,
+                sub=sub,
+                prior_root_block_hash=prior_root,
+                original_max_amount=orig_amt,
+                original_max_calls=orig_calls,
+                completed_branches=tuple(str(x) for x in (raw.get("completed_branches") or [])),
+                remaining_branches=tuple(str(x) for x in (raw.get("remaining_branches") or [])),
+                consumed_amount=c_amt,
+                consumed_calls=c_calls,
+                recorded_at=rec_at,
+                signer_spiffe_id=signer_spiffe,
+                signer_svid=signer_svid,
+                jws_signature=sig,
+            )
+            if canonical_json_bytes(signed_claims) != canonical_json_bytes(obj.core_claims()):
+                raise TokenError("TaskCheckpoint payload tampering detected")
+            return obj
+        except (KeyError, ValueError, TypeError, IdentityError, CryptoError) as exc:
+            if isinstance(exc, TokenError):
+                raise
+            raise TokenError(f"TaskCheckpoint verification failed: {exc}") from exc
+
+    @property
+    def remaining_amount(self) -> Optional[float]:
+        if self.original_max_amount is None:
+            return None
+        return max(0.0, round(float(self.original_max_amount) - float(self.consumed_amount), 6))
+
+    @property
+    def remaining_calls(self) -> int:
+        return max(0, int(self.original_max_calls) - int(self.consumed_calls))
+
+
+def mint_continuation_root_token(
+    authority_ca: TrustDomainCA,
+    checkpoint: TaskCheckpoint,
+    sender_jkt: str,
+    first_hop_spiffe_id: str,
+    first_hop_jkt: str,
+    permissions: PermissionLattice,
+    prior_permissions: Optional[PermissionLattice] = None,
+    max_depth: int = 6,
+    hop_segment: Optional[str] = None,
+    first_hop_public_jwk: Optional[Mapping[str, Any]] = None,
+    first_hop_return_endpoint: Optional[str] = None,
+    extra_ancestor_keys: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    ttl_seconds: float = 1800.0,
+    now: Optional[float] = None,
+) -> LineageToken:
+    """Mint a continuation RootBlock linked to `checkpoint`, enforcing strict budget deduction."""
+    clean_sub = validate_principal_domain_consistency(
+        checkpoint.sub, authority_ca.trust_domain
+    )
+    orig_amt = (
+        prior_permissions.max_amount
+        if prior_permissions is not None
+        else checkpoint.original_max_amount
+    )
+    orig_calls = (
+        prior_permissions.max_calls
+        if prior_permissions is not None
+        else checkpoint.original_max_calls
+    )
+    if orig_amt is not None:
+        rem_amt = round(float(orig_amt) - float(checkpoint.consumed_amount), 6)
+        if rem_amt < 0.0:
+            raise ContinuationBudgetError(
+                f"Prior budget fully exhausted: original_max_amount={orig_amt}, consumed_amount={checkpoint.consumed_amount}"
+            )
+        if permissions.max_amount is None or float(permissions.max_amount) > rem_amt + 1e-6:
+            raise ContinuationBudgetError(
+                f"Continuation max_amount={permissions.max_amount} exceeds remaining budget {rem_amt} "
+                f"(original={orig_amt} - consumed={checkpoint.consumed_amount})"
+            )
+
+    rem_calls = int(orig_calls) - int(checkpoint.consumed_calls)
+    if rem_calls < 1 or int(permissions.max_calls) > rem_calls:
+        raise ContinuationBudgetError(
+            f"Continuation max_calls={permissions.max_calls} exceeds remaining call quota {rem_calls} "
+            f"(original={orig_calls} - consumed={checkpoint.consumed_calls})"
+        )
+
+    if prior_permissions is not None:
+        if prior_permissions.max_amount is not None:
+            if (
+                checkpoint.original_max_amount is None
+                or float(checkpoint.original_max_amount) > float(prior_permissions.max_amount) + 1e-6
+            ):
+                raise ContinuationBudgetError(
+                    f"Checkpoint original_max_amount={checkpoint.original_max_amount} exceeds authoritative prior RootBlock max_amount={prior_permissions.max_amount}"
+                )
+        if int(checkpoint.original_max_calls) > int(prior_permissions.max_calls):
+            raise ContinuationBudgetError(
+                f"Checkpoint original_max_calls={checkpoint.original_max_calls} exceeds authoritative prior RootBlock max_calls={prior_permissions.max_calls}"
+            )
+        # Check non-numeric lattice dimensions (tools/methods/targets/scopes/params/bounds) against prior_permissions
+        capped_prior = PermissionLattice.create(
+            tools=prior_permissions.tools,
+            methods=prior_permissions.methods,
+            max_amount=rem_amt if orig_amt is not None else None,
+            numeric_bounds={k: list(v) for k, v in dict(prior_permissions.numeric_bounds).items()},
+            allowed_scopes=prior_permissions.allowed_scopes,
+            allowed_targets=prior_permissions.allowed_targets,
+            param_whitelist={k: sorted(v) for k, v in dict(prior_permissions.param_whitelist).items()},
+            max_calls=rem_calls,
+        )
+        viol = permissions.explain_violation_against(capped_prior)
+        if viol is not None:
+            raise ContinuationBudgetError(f"Continuation escalates beyond remaining lattice: {viol}")
+
+    base_tok = mint_root_token(
+        authority_ca=authority_ca,
+        task_id=checkpoint.task_id,
+        sub=clean_sub,
+        sender_jkt=sender_jkt,
+        first_hop_spiffe_id=first_hop_spiffe_id,
+        first_hop_jkt=first_hop_jkt,
+        permissions=permissions,
+        max_depth=max_depth,
+        hop_segment=hop_segment,
+        first_hop_public_jwk=first_hop_public_jwk,
+        first_hop_return_endpoint=first_hop_return_endpoint,
+        extra_ancestor_keys=extra_ancestor_keys,
+        ttl_seconds=ttl_seconds,
+        now=now,
+    )
+    consumed_meta = {
+        "consumed_amount": float(checkpoint.consumed_amount),
+        "consumed_calls": int(checkpoint.consumed_calls),
+        "completed_branches": list(checkpoint.completed_branches),
+        "remaining_branches": list(checkpoint.remaining_branches),
+    }
+    cont_provisional = RootBlock(
+        **{
+            **base_tok.root.__dict__,
+            "resumes_checkpoint_id": checkpoint.checkpoint_id,
+            "prior_root_block_hash": checkpoint.prior_root_block_hash,
+            "consumed_before_resume": consumed_meta,
+            "jws_signature": "",
+        }
+    )
+    cont_sig = jws_sign_compact(
+        payload=cont_provisional.core_claims(),
+        keypair=authority_ca.active_keypair,
+        typ="lct-root+jwt",
+    )
+    signed_cont_root = RootBlock(**{**cont_provisional.__dict__, "jws_signature": cont_sig})
+    return LineageToken(root=signed_cont_root, hops=())
+
+
+@dataclass(frozen=True)
+class CoAuthorizedToken:
+    """Explicit Dual-Principal Co-Authorization Envelope (`lctco1.<b64url>`).
+
+    Cryptographically binds:
+    - `requester_chain`: rooted in requester's home CA (e.g., `user:alice@org-alpha.io`), and
+    - `owner_consent_chain`: rooted in resource owner's home CA (e.g., `user:bob@org-beta.io`),
+    under a single `task_id` and holder key (`holder_spiffe_id` / `holder_cnf_jkt`).
+    Effective capability is strictly `requester_chain.leaf_permissions ⊓ owner_consent_chain.leaf_permissions`.
+    """
+
+    envelope_id: str
+    task_id: str
+    requester_sub: str
+    owner_sub: str
+    co_authorized_principals: Tuple[str, str]
+    holder_spiffe_id: str
+    holder_cnf_jkt: str
+    signer_spiffe_id: str
+    signer_jwk: Dict[str, Any]
+    signer_svid: str
+    requester_chain: LineageToken
+    owner_consent_chain: LineageToken
+    created_at: float
+    jws_signature: str
+
+    @property
+    def sub(self) -> str:
+        return self.requester_sub
+
+    @property
+    def parent_chains(self) -> Tuple[LineageToken, LineageToken]:
+        return (self.requester_chain, self.owner_consent_chain)
+
+    @property
+    def lineage_paths(self) -> List[str]:
+        return [self.requester_chain.lineage_path, self.owner_consent_chain.lineage_path]
+
+    @property
+    def envelope_hash(self) -> str:
+        return sha256_canonical_b64url(self.to_dict())
+
+    @property
+    def effective_permissions(self) -> PermissionLattice:
+        return self.requester_chain.leaf_permissions.intersect(
+            self.owner_consent_chain.leaf_permissions
+        )
+
+    def core_claims(self) -> Dict[str, Any]:
+        return {
+            "envelope_id": self.envelope_id,
+            "task_id": self.task_id,
+            "requester_sub": self.requester_sub,
+            "owner_sub": self.owner_sub,
+            "co_authorized_principals": list(self.co_authorized_principals),
+            "holder_spiffe_id": self.holder_spiffe_id,
+            "holder_cnf_jkt": self.holder_cnf_jkt,
+            "signer_spiffe_id": self.signer_spiffe_id,
+            "signer_jwk": self.signer_jwk,
+            "signer_svid": self.signer_svid,
+            "requester_leaf_hash": self.requester_chain.leaf_block_hash,
+            "owner_consent_leaf_hash": self.owner_consent_chain.leaf_block_hash,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def assemble_and_sign(
+        cls,
+        holder_identity: WorkloadIdentity,
+        requester_chain: LineageToken,
+        owner_consent_chain: LineageToken,
+        now: Optional[float] = None,
+    ) -> "CoAuthorizedToken":
+        if requester_chain.task_id != owner_consent_chain.task_id:
+            raise TokenError(
+                f"CoAuthorizedToken task_id mismatch: {requester_chain.task_id!r} != {owner_consent_chain.task_id!r}"
+            )
+        if requester_chain.sub == owner_consent_chain.sub:
+            raise TokenError(
+                "CoAuthorizedToken requires two distinct principals (requester_sub != owner_sub)"
+            )
+        for label, ch in (("requester_chain", requester_chain), ("owner_consent_chain", owner_consent_chain)):
+            if ch.holder_spiffe_id != holder_identity.spiffe_id:
+                raise TokenError(
+                    f"{label} holder {ch.holder_spiffe_id!r} != assembling holder {holder_identity.spiffe_id!r}"
+                )
+            if ch.holder_cnf_jkt != holder_identity.jkt:
+                raise TokenError(f"{label} cnf_jkt does not match assembling holder jkt")
+
+        intersected = requester_chain.leaf_permissions.intersect(
+            owner_consent_chain.leaf_permissions
+        )
+        if intersected.is_empty():
+            raise LatticeAttenuationError(
+                "CoAuthorizedToken requester_chain and owner_consent_chain have empty permission intersection"
+            )
+
+        ts = require_finite_timestamp(time.time() if now is None else now, "created_at")
+        provisional = cls(
+            envelope_id=f"coauth-{uuid.uuid4().hex}",
+            task_id=requester_chain.task_id,
+            requester_sub=requester_chain.sub,
+            owner_sub=owner_consent_chain.sub,
+            co_authorized_principals=(requester_chain.sub, owner_consent_chain.sub),
+            holder_spiffe_id=holder_identity.spiffe_id,
+            holder_cnf_jkt=holder_identity.jkt,
+            signer_spiffe_id=holder_identity.spiffe_id,
+            signer_jwk=holder_identity.public_jwk(),
+            signer_svid=holder_identity.workload_svid,
+            requester_chain=requester_chain,
+            owner_consent_chain=owner_consent_chain,
+            created_at=ts,
+            jws_signature="",
+        )
+        sig = jws_sign_compact(
+            payload=provisional.core_claims(),
+            keypair=holder_identity.keypair,
+            typ="lct-coauth+jwt",
+        )
+        return cls(**{**provisional.__dict__, "jws_signature": sig})
+
+    def attenuate_to_delegate(
+        self,
+        issuer_identity: WorkloadIdentity,
+        delegate_spiffe_id: str,
+        delegate_jkt: str,
+        requested_permissions: Optional[PermissionLattice] = None,
+        hop_segment: Optional[str] = None,
+        epoch: Optional[int] = None,
+        issuer_return_endpoint: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> "CoAuthorizedToken":
+        if issuer_identity.spiffe_id != self.holder_spiffe_id:
+            raise TokenError("Only current CoAuthorizedToken holder can attenuate downstream")
+        base_inter = self.effective_permissions
+        target_perms = (
+            base_inter.intersect(requested_permissions)
+            if requested_permissions is not None
+            else base_inter
+        )
+        if target_perms.is_empty():
+            raise LatticeAttenuationError(
+                "Requested downstream permissions have empty intersection with CoAuthorizedToken"
+            )
+        req_child = self.requester_chain.attenuate(
+            issuer_identity=issuer_identity,
+            delegate_spiffe_id=delegate_spiffe_id,
+            delegate_jkt=delegate_jkt,
+            permissions=self.requester_chain.leaf_permissions.intersect(target_perms),
+            hop_segment=hop_segment,
+            epoch=epoch,
+            issuer_return_endpoint=issuer_return_endpoint,
+            now=now,
+        )
+        own_child = self.owner_consent_chain.attenuate(
+            issuer_identity=issuer_identity,
+            delegate_spiffe_id=delegate_spiffe_id,
+            delegate_jkt=delegate_jkt,
+            permissions=self.owner_consent_chain.leaf_permissions.intersect(target_perms),
+            hop_segment=hop_segment,
+            epoch=epoch,
+            issuer_return_endpoint=issuer_return_endpoint,
+            now=now,
+        )
+        delegate_spiffe = SpiffeId.parse(delegate_spiffe_id)
+        ts = require_finite_timestamp(time.time() if now is None else now, "created_at")
+        provisional = CoAuthorizedToken(
+            envelope_id=f"coauth-{uuid.uuid4().hex}",
+            task_id=self.task_id,
+            requester_sub=self.requester_sub,
+            owner_sub=self.owner_sub,
+            co_authorized_principals=self.co_authorized_principals,
+            holder_spiffe_id=delegate_spiffe.uri,
+            holder_cnf_jkt=delegate_jkt,
+            signer_spiffe_id=issuer_identity.spiffe_id,
+            signer_jwk=issuer_identity.public_jwk(),
+            signer_svid=issuer_identity.workload_svid,
+            requester_chain=req_child,
+            owner_consent_chain=own_child,
+            created_at=ts,
+            jws_signature="",
+        )
+        sig = jws_sign_compact(
+            payload=provisional.core_claims(),
+            keypair=issuer_identity.keypair,
+            typ="lct-coauth+jwt",
+        )
+        return CoAuthorizedToken(**{**provisional.__dict__, "jws_signature": sig})
+
+    def rebind_as_holder(
+        self, holder_identity: WorkloadIdentity, now: Optional[float] = None
+    ) -> "CoAuthorizedToken":
+        return CoAuthorizedToken.assemble_and_sign(
+            holder_identity=holder_identity,
+            requester_chain=self.requester_chain,
+            owner_consent_chain=self.owner_consent_chain,
+            now=now,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "token_kind": "CO_AUTHORIZED",
+            "envelope_id": self.envelope_id,
+            "task_id": self.task_id,
+            "requester_sub": self.requester_sub,
+            "owner_sub": self.owner_sub,
+            "co_authorized_principals": list(self.co_authorized_principals),
+            "holder_spiffe_id": self.holder_spiffe_id,
+            "holder_cnf_jkt": self.holder_cnf_jkt,
+            "signer_spiffe_id": self.signer_spiffe_id,
+            "signer_jwk": self.signer_jwk,
+            "signer_svid": self.signer_svid,
+            "requester_chain": self.requester_chain.to_dict(),
+            "owner_consent_chain": self.owner_consent_chain.to_dict(),
+            "created_at": self.created_at,
+            "jws_signature": self.jws_signature,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "CoAuthorizedToken":
+        if not isinstance(raw, Mapping) or raw.get("token_kind") != "CO_AUTHORIZED":
+            raise TokenError("Malformed CoAuthorizedToken JSON")
+        try:
+            task_id = validate_segment(str(raw["task_id"]), "task_id")
+            holder_spiffe = SpiffeId.parse(str(raw["holder_spiffe_id"]))
+            signer_spiffe = SpiffeId.parse(str(raw["signer_spiffe_id"]))
+            signer_jwk = raw["signer_jwk"]
+            if not isinstance(signer_jwk, Mapping):
+                raise TokenError("signer_jwk must be a mapping")
+            jwk_to_public_key(signer_jwk)
+            req_chain = LineageToken.from_dict(raw["requester_chain"])
+            own_chain = LineageToken.from_dict(raw["owner_consent_chain"])
+            req_sub = str(raw["requester_sub"]).strip()
+            own_sub = str(raw["owner_sub"]).strip()
+            raw_principals = raw.get("co_authorized_principals")
+            if (
+                not isinstance(raw_principals, list)
+                or len(raw_principals) != 2
+                or str(raw_principals[0]) != req_sub
+                or str(raw_principals[1]) != own_sub
+            ):
+                raise TokenError("Invalid co_authorized_principals in CoAuthorizedToken")
+            created_at_val = require_finite_timestamp(
+                raw["created_at"], "CoAuthorizedToken.created_at"
+            )
+            return cls(
+                envelope_id=str(raw["envelope_id"]),
+                task_id=task_id,
+                requester_sub=req_sub,
+                owner_sub=own_sub,
+                co_authorized_principals=(req_sub, own_sub),
+                holder_spiffe_id=holder_spiffe.uri,
+                holder_cnf_jkt=str(raw["holder_cnf_jkt"]),
+                signer_spiffe_id=signer_spiffe.uri,
+                signer_jwk=dict(signer_jwk),
+                signer_svid=str(raw["signer_svid"]),
+                requester_chain=req_chain,
+                owner_consent_chain=own_chain,
+                created_at=created_at_val,
+                jws_signature=str(raw["jws_signature"]),
+            )
+        except (KeyError, ValueError, TypeError, IdentityError, CryptoError) as exc:
+            if isinstance(exc, TokenError):
+                raise
+            raise TokenError(f"Invalid CoAuthorizedToken structure: {exc}") from exc
+
+    def encode_compact(self) -> str:
+        return LCT_COAUTH_WIRE_PREFIX + b64url_encode(canonical_json_bytes(self.to_dict()))
+
+
+def decode_token(
+    compact_token: str,
+) -> Union[LineageToken, MultiParentToken, CoAuthorizedToken]:
+    """Decode a wire-encoded `lct1.<...>`, `lctmp1.<...>`, or `lctco1.<...>` token."""
     if not isinstance(compact_token, str):
         raise TokenError("Compact token must be a string")
     try:
@@ -927,12 +1655,16 @@ def decode_token(compact_token: str) -> Union[LineageToken, MultiParentToken]:
             raw_bytes = b64url_decode(compact_token[len(LCT_MP_WIRE_PREFIX) :])
             obj = strict_json_loads(raw_bytes)
             return MultiParentToken.from_dict(obj)
+        if compact_token.startswith(LCT_COAUTH_WIRE_PREFIX):
+            raw_bytes = b64url_decode(compact_token[len(LCT_COAUTH_WIRE_PREFIX) :])
+            obj = strict_json_loads(raw_bytes)
+            return CoAuthorizedToken.from_dict(obj)
     except CryptoError as exc:
         raise TokenError(f"Malformed token encoding or non-finite value: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise TokenError(f"Malformed token JSON payload: {exc}") from exc
 
-    raise TokenError("Unrecognized token prefix (expected 'lct1.' or 'lctmp1.')")
+    raise TokenError("Unrecognized token prefix (expected 'lct1.', 'lctmp1.', or 'lctco1.')")
 
 
 def is_lineage_segment_prefix(ancestor_prefix: str, target_prefix: str) -> bool:

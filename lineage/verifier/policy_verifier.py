@@ -23,6 +23,7 @@ from typing import (
     Any,
     Dict,
     FrozenSet,
+    Iterable,
     List,
     Mapping,
     Optional,
@@ -44,6 +45,7 @@ from lineage.protocol.dpop import DPoPError, DPoPVerifier
 from lineage.protocol.lattice import CompositePermission
 from lineage.protocol.token import (
     AttenuationBlock,
+    CoAuthorizedToken,
     LineageToken,
     MultiParentToken,
     RootBlock,
@@ -89,6 +91,11 @@ class RiskClassifier:
                 "write_ledger",
                 "delete_record",
                 "settle_order",
+                "reserve_cloud_budget",
+                "lock_joint_project",
+                "hr_salary_read",
+                "calendar_write",
+                "procure_vendor_quote",
             }
         )
     )
@@ -275,6 +282,8 @@ class VerificationResult:
     multi_parent_hashes: Tuple[str, ...] = ()
     dpop_jti: Optional[str] = None
     effective_permissions: Optional[Dict[str, Any]] = None
+    co_authorized_principals: Tuple[str, ...] = ()
+    resumes_checkpoint_id: Optional[str] = None
     latency_us: float = 0.0
 
 
@@ -422,15 +431,16 @@ class LeafVerifier:
         if canonical_json_bytes(signed_claims) != canonical_json_bytes(mpt.core_claims()):
             raise TokenError("MultiParentToken envelope claims tampered")
 
-        first_root_hash = mpt.parent_chains[0].root_block_hash
+        from lineage.protocol.token import are_roots_continuously_linked
+
+        if not are_roots_continuously_linked(mpt.parent_chains):
+            raise TokenError(
+                "MultiParentToken cross-root splicing blocked: mismatched RootBlock hashes"
+            )
         seen_paths: Set[str] = set()
         for chain in mpt.parent_chains:
             if chain.task_id != mpt.task_id or chain.sub != mpt.sub:
                 raise TokenError("MultiParentToken cross-task/cross-principal mismatch")
-            if chain.root_block_hash != first_root_hash:
-                raise TokenError(
-                    "MultiParentToken cross-root splicing blocked: mismatched RootBlock hashes"
-                )
             if (
                 chain.holder_spiffe_id != mpt.holder_spiffe_id
                 or chain.holder_cnf_jkt != mpt.holder_cnf_jkt
@@ -440,6 +450,21 @@ class LeafVerifier:
                 raise TokenError("Duplicate lineage_path in MultiParentToken")
             seen_paths.add(chain.lineage_path)
 
+        if mpt.signer_spiffe_id == mpt.holder_spiffe_id and signer_jkt == mpt.holder_cnf_jkt:
+            if (
+                mpt.holder_spiffe_id == self.self_spiffe_id
+                and self.self_jkt is not None
+                and mpt.holder_cnf_jkt != self.self_jkt
+            ):
+                raise TokenError("MultiParentToken holder_cnf_jkt mismatch with self")
+            for chain in mpt.parent_chains:
+                if (
+                    chain.target_audience is not None
+                    and chain.target_audience != self.self_spiffe_id
+                ):
+                    raise TokenError("MultiParentToken branch audience mismatch")
+            return mpt.holder_cnf_jkt
+
         if mpt.holder_spiffe_id == self.self_spiffe_id:
             if self.self_jkt is not None and mpt.holder_cnf_jkt != self.self_jkt:
                 raise TokenError("MultiParentToken holder_cnf_jkt mismatch with self")
@@ -448,17 +473,75 @@ class LeafVerifier:
                     raise TokenError("MultiParentToken upstream issuer mismatch")
             return signer_jkt
 
-        if mpt.signer_spiffe_id != mpt.holder_spiffe_id or signer_jkt != mpt.holder_cnf_jkt:
-            raise TokenError(
-                "MultiParentToken must be signed by current holder when invoking a tool"
+        raise TokenError(
+            "MultiParentToken must be signed by current holder when invoking a tool"
+        )
+
+    def _verify_coauthorized_envelope_crypto(
+        self, cot: CoAuthorizedToken, ts: float
+    ) -> str:
+        """Verify CoAuthorizedToken outer envelope signature, SVID, and dual-principal binding."""
+        signer_jkt = compute_jwk_thumbprint(cot.signer_jwk)
+        try:
+            self.trust_resolver.verify_workload_svid(
+                cot.signer_svid,
+                expected_spiffe_id=cot.signer_spiffe_id,
+                expected_jkt=signer_jkt,
+                now=ts,
             )
-        for chain in mpt.parent_chains:
+            _, signed_claims = jws_verify_compact(
+                cot.jws_signature,
+                cot.signer_jwk,
+                expected_typ="lct-coauth+jwt",
+            )
+        except (IdentityError, CryptoError) as exc:
+            raise TokenError(
+                f"CoAuthorizedToken envelope verification failed: {exc}"
+            ) from exc
+
+        if canonical_json_bytes(signed_claims) != canonical_json_bytes(cot.core_claims()):
+            raise TokenError("CoAuthorizedToken envelope claims tampered")
+
+        if cot.requester_sub == cot.owner_sub:
+            raise TokenError("CoAuthorizedToken requires two distinct principals")
+        if (
+            cot.requester_chain.task_id != cot.task_id
+            or cot.owner_consent_chain.task_id != cot.task_id
+            or cot.requester_chain.sub != cot.requester_sub
+            or cot.owner_consent_chain.sub != cot.owner_sub
+        ):
+            raise TokenError("CoAuthorizedToken chain task_id/sub mismatch")
+
+        for ch in cot.parent_chains:
             if (
-                chain.target_audience is not None
-                and chain.target_audience != self.self_spiffe_id
+                ch.holder_spiffe_id != cot.holder_spiffe_id
+                or ch.holder_cnf_jkt != cot.holder_cnf_jkt
             ):
-                raise TokenError("MultiParentToken branch audience mismatch")
-        return mpt.holder_cnf_jkt
+                raise TokenError("CoAuthorizedToken chain holder mismatch")
+
+        if cot.signer_spiffe_id == cot.holder_spiffe_id and signer_jkt == cot.holder_cnf_jkt:
+            if (
+                cot.holder_spiffe_id == self.self_spiffe_id
+                and self.self_jkt is not None
+                and cot.holder_cnf_jkt != self.self_jkt
+            ):
+                raise TokenError("CoAuthorizedToken holder_cnf_jkt mismatch with self")
+            for ch in cot.parent_chains:
+                if ch.target_audience is not None and ch.target_audience != self.self_spiffe_id:
+                    raise TokenError("CoAuthorizedToken branch audience mismatch")
+            return cot.holder_cnf_jkt
+
+        if cot.holder_spiffe_id == self.self_spiffe_id:
+            if self.self_jkt is not None and cot.holder_cnf_jkt != self.self_jkt:
+                raise TokenError("CoAuthorizedToken holder_cnf_jkt mismatch with self")
+            for ch in cot.parent_chains:
+                if not ch.hops or ch.hops[-1].issuer_spiffe_id != cot.signer_spiffe_id:
+                    raise TokenError("CoAuthorizedToken upstream issuer mismatch")
+            return signer_jkt
+
+        raise TokenError(
+            "CoAuthorizedToken must be signed by current holder when invoking a tool"
+        )
 
     def verify_request(
         self,
@@ -474,9 +557,11 @@ class LeafVerifier:
         check_invocation_lattice: bool = True,
         require_recipient_self: bool = False,
         require_direct_child_issuer: bool = False,
+        resource_owner_sub: Optional[str] = None,
+        allowed_co_auth_tools: Optional[Iterable[str]] = None,
         now: Optional[float] = None,
     ) -> VerificationResult:
-        """Verify an incoming HTTP request carrying an LCT or MultiParentToken + DPoP."""
+        """Verify an incoming HTTP request carrying an LCT, MultiParentToken, or CoAuthorizedToken + DPoP."""
         t0 = time.perf_counter()
         risk_tier = self.risk_classifier.classify(
             method=method,
@@ -636,6 +721,7 @@ class LeafVerifier:
                     "root_block_hash": parsed.root_block_hash,
                     "parent_block_hash": parsed.parent_block_hash,
                     "leaf_block_hash": parsed.leaf_block_hash,
+                    "resumes_checkpoint_id": parsed.root.resumes_checkpoint_id,
                 }
                 expected_dpop_jkt = self._resolve_expected_dpop_jkt_single(parsed)
             except (TokenError, CryptoError) as exc:
@@ -672,6 +758,10 @@ class LeafVerifier:
                         self._verify_hop_block_signature_only(parsed.hops[-1], ts)
                     else:
                         self._verify_root_block_crypto(parsed.root, ts)
+                except TokenExpiredError as exc:
+                    return _finish(
+                        False, 401, "DENY", "TASK_AUTH_EXPIRED", str(exc), **base_meta
+                    )
                 except (TokenError, CryptoError) as exc:
                     return _finish(
                         False, 401, "DENY", "LEAF_SIG_INVALID", str(exc), **base_meta
@@ -679,6 +769,15 @@ class LeafVerifier:
             else:
                 try:
                     self.verify_single_chain_full(parsed, now=ts, check_revocation=True)
+                except TokenExpiredError as exc:
+                    return _finish(
+                        False,
+                        401,
+                        "DENY",
+                        "TASK_AUTH_EXPIRED",
+                        str(exc),
+                        **base_meta,
+                    )
                 except (TokenError, CryptoError) as exc:
                     return _finish(
                         False,
@@ -692,6 +791,17 @@ class LeafVerifier:
                     return _finish(
                         False, 403, "DENY", "LINEAGE_REVOKED", str(exc), **base_meta
                     )
+
+            clean_owner = str(resource_owner_sub).strip() if resource_owner_sub else ""
+            if clean_owner and parsed.sub != clean_owner:
+                return _finish(
+                    False,
+                    403,
+                    "DENY",
+                    "CROSS_PRINCIPAL_DENIED",
+                    f"Unilateral principal {parsed.sub!r} is forbidden from accessing resource owned by {clean_owner!r}",
+                    **base_meta,
+                )
 
             if check_invocation_lattice:
                 # 1. Check parameter/tool/method constraints first
@@ -732,6 +842,180 @@ class LeafVerifier:
                 active_paths=(parsed.lineage_path,),
                 effective_permissions=parsed.leaf_permissions.to_dict(),
                 **base_meta,
+            )
+
+        # =====================================================================
+        # Branch 1B: Explicit Dual-Principal CoAuthorizedToken (`lctco1.`)
+        # =====================================================================
+        if isinstance(parsed, CoAuthorizedToken):
+            try:
+                co_hashes = (
+                    parsed.requester_chain.leaf_block_hash,
+                    parsed.owner_consent_chain.leaf_block_hash,
+                )
+                co_meta = {
+                    "anchored_revocation_version": anchored_ver,
+                    "task_id": parsed.task_id,
+                    "sub": parsed.requester_sub,
+                    "holder_spiffe_id": parsed.holder_spiffe_id,
+                    "lineage_path": "|".join(parsed.lineage_paths),
+                    "hop_index": max(c.depth for c in parsed.parent_chains),
+                    "epoch": max(c.current_epoch for c in parsed.parent_chains),
+                    "root_block_hash": parsed.requester_chain.root_block_hash,
+                    "parent_block_hash": None,
+                    "leaf_block_hash": parsed.envelope_hash,
+                    "multi_parent_hashes": co_hashes,
+                    "co_authorized_principals": parsed.co_authorized_principals,
+                }
+                expected_dpop_jkt = self._verify_coauthorized_envelope_crypto(parsed, ts)
+            except (TokenError, CryptoError) as exc:
+                return _finish(
+                    False,
+                    401,
+                    "DENY",
+                    "COAUTH_ENVELOPE_INVALID",
+                    str(exc),
+                    task_id=parsed.task_id,
+                    sub=parsed.requester_sub,
+                )
+
+            dpop_jti = None
+            if require_dpop:
+                try:
+                    dpop_info = self.dpop_verifier.verify_proof(
+                        dpop_proof=dpop_proof or "",
+                        expected_htm=htm,
+                        expected_htu=htu,
+                        access_token=compact_token,
+                        expected_jkt=expected_dpop_jkt,
+                        now=ts,
+                    )
+                    dpop_jti = str(dpop_info["jti"])
+                except DPoPError as exc:
+                    return _finish(False, 401, "DENY", "DPOP_FAILED", str(exc), **co_meta)
+
+            co_meta["dpop_jti"] = dpop_jti
+
+            # Both requester_chain AND owner_consent_chain MUST be valid, unexpired, and unrevoked!
+            for label, chain in (
+                ("requester_chain", parsed.requester_chain),
+                ("owner_consent_chain", parsed.owner_consent_chain),
+            ):
+                try:
+                    if self.mode == VerificationMode.LEAF_ONLY:
+                        if chain.hops:
+                            self._verify_hop_block_signature_only(chain.hops[-1], ts)
+                        else:
+                            self._verify_root_block_crypto(chain.root, ts)
+                    else:
+                        self.verify_single_chain_full(chain, now=ts, check_revocation=True)
+                except TokenExpiredError as exc:
+                    return _finish(
+                        False,
+                        401,
+                        "DENY",
+                        "TASK_AUTH_EXPIRED",
+                        f"{label}: {exc}",
+                        **co_meta,
+                    )
+                except RevocationError as exc:
+                    return _finish(
+                        False,
+                        403,
+                        "DENY",
+                        "LINEAGE_REVOKED",
+                        f"{label}: {exc}",
+                        **co_meta,
+                    )
+                except (TokenError, CryptoError) as exc:
+                    return _finish(
+                        False,
+                        403,
+                        "DENY",
+                        "INVALID_CHAIN_IN_COAUTH",
+                        f"{label} ({chain.lineage_path}): {exc}",
+                        **co_meta,
+                    )
+
+            clean_owner = str(resource_owner_sub).strip() if resource_owner_sub else ""
+            if clean_owner and parsed.owner_sub != clean_owner:
+                return _finish(
+                    False,
+                    403,
+                    "DENY",
+                    "CROSS_PRINCIPAL_DENIED",
+                    f"CoAuthorizedToken owner_sub {parsed.owner_sub!r} != resource owner {clean_owner!r}",
+                    **co_meta,
+                )
+
+            if allowed_co_auth_tools is not None and tool is not None:
+                co_allow_set = {str(t) for t in allowed_co_auth_tools if str(t).strip()}
+                if tool not in co_allow_set:
+                    return _finish(
+                        False,
+                        403,
+                        "DENY",
+                        "CROSS_PRINCIPAL_DENIED",
+                        f"Tool {tool!r} is owner-only and forbidden under cross-principal co-authorization",
+                        **co_meta,
+                    )
+
+            eff_perms = parsed.requester_chain.leaf_permissions.intersect(
+                parsed.owner_consent_chain.leaf_permissions
+            )
+            if check_invocation_lattice:
+                if eff_perms.is_empty():
+                    return _finish(
+                        False,
+                        403,
+                        "DENY",
+                        "LATTICE_PERMISSION_DENIED",
+                        "Empty permission intersection between requester and owner consent chains",
+                        **co_meta,
+                    )
+                ok, reason = eff_perms.check_invocation(
+                    method=method,
+                    tool=tool,
+                    arguments=arguments,
+                    call_index=1,
+                )
+                if not ok:
+                    code = (
+                        "QUOTA_EXCEEDED"
+                        if "max_calls" in reason
+                        else "LATTICE_PERMISSION_DENIED"
+                    )
+                    return _finish(False, 403, "DENY", code, reason, **co_meta)
+
+                combined_quota_blocks: List[Tuple[str, int]] = []
+                seen_qb: Set[str] = set()
+                for ch in parsed.parent_chains:
+                    ch_qb = (
+                        [(ch.leaf_block_hash, ch.leaf_permissions.max_calls)]
+                        if self.mode == VerificationMode.LEAF_ONLY
+                        else _chain_block_quotas(ch)
+                    )
+                    for bh, mc in ch_qb:
+                        if bh not in seen_qb:
+                            seen_qb.add(bh)
+                            combined_quota_blocks.append((bh, mc))
+                q_ok, q_reason = self._quota.try_consume_chain(
+                    parsed.task_id, combined_quota_blocks, now=ts
+                )
+                if not q_ok:
+                    return _finish(
+                        False, 403, "DENY", "QUOTA_EXCEEDED", q_reason, **co_meta
+                    )
+
+            return _finish(
+                True,
+                200,
+                "ALLOW_CO_AUTHORIZED",
+                "OK",
+                f"Authorized via verified Dual-Principal CoAuthorizedToken ({parsed.requester_sub} & {parsed.owner_sub})",
+                active_paths=tuple(parsed.lineage_paths),
+                effective_permissions=eff_perms.to_dict(),
+                **co_meta,
             )
 
         # =====================================================================
@@ -811,7 +1095,9 @@ class LeafVerifier:
                     **mp_meta,
                 )
 
-        # 2. Partition unexpired chains into surviving vs revoked (Fagin Multi-Path DAG Rule)
+        # 2. Partition unexpired chains into surviving vs revoked FIRST (before Step 2b
+        #    re-anchoring!) so a REVOKED continuation chain can NEVER resurrect an expired
+        #    pre-checkpoint branch (`[HIGH-M9-02]`).
         surviving_chains: List[LineageToken] = []
         revoked_chains: List[LineageToken] = []
 
@@ -841,6 +1127,59 @@ class LeafVerifier:
                 else:
                     revoked_chains.append(chain)
 
+        # 2b. Pre-checkpoint branches whose RootBlock hash is a strict directed ancestor
+        #     (`R_old <- ... <- R_live`) of at least one SURVIVING UNEXPIRED & UNREVOKED
+        #     CA-signed ContinuationToken remain valid after full signature, monotonicity,
+        #     and revocation verification (`[HIGH-M9-02]`).
+        if surviving_chains and expired_chains:
+            prior_map = {
+                ch.root_block_hash: ch.root.prior_root_block_hash
+                for ch in parsed.parent_chains
+            }
+            re_anchored_roots: Set[str] = set()
+            frontier_r = [
+                ch.root.prior_root_block_hash
+                for ch in surviving_chains
+                if ch.root.prior_root_block_hash is not None
+            ]
+            while frontier_r:
+                pr = frontier_r.pop()
+                if pr and pr not in re_anchored_roots:
+                    re_anchored_roots.add(pr)
+                    nxt_pr = prior_map.get(pr)
+                    if nxt_pr:
+                        frontier_r.append(nxt_pr)
+            if re_anchored_roots:
+                still_expired: List[LineageToken] = []
+                for exp_ch in expired_chains:
+                    if exp_ch.root_block_hash in re_anchored_roots:
+                        try:
+                            self.verify_single_chain_full(
+                                exp_ch, now=exp_ch.root.iat, check_revocation=False
+                            )
+                        except (TokenError, CryptoError) as exc:
+                            return _finish(
+                                False,
+                                403,
+                                "DENY",
+                                "INVALID_CHAIN_IN_MULTIPARENT",
+                                f"Re-anchored branch {exp_ch.lineage_path}: {exc}",
+                                **mp_meta,
+                            )
+                        if self.mode != VerificationMode.LEAF_ONLY:
+                            rev_exp = self.trie.check_chain(
+                                exp_ch.lineage_path,
+                                exp_ch.visited_subjects,
+                                trust_domain=exp_ch.root.issuer_trust_domain,
+                            )
+                            if rev_exp is not None:
+                                revoked_chains.append(exp_ch)
+                                continue
+                        surviving_chains.append(exp_ch)
+                    else:
+                        still_expired.append(exp_ch)
+                expired_chains = still_expired
+
         pruned_chains = expired_chains + revoked_chains
         pruned_paths = tuple(c.lineage_path for c in pruned_chains)
         if not surviving_chains:
@@ -855,6 +1194,18 @@ class LeafVerifier:
                 "DENY",
                 reason_code,
                 "All converging parent branches in MultiParentToken are revoked or expired",
+                pruned_revoked_paths=pruned_paths,
+                **mp_meta,
+            )
+
+        clean_owner_mp = str(resource_owner_sub).strip() if resource_owner_sub else ""
+        if clean_owner_mp and parsed.sub != clean_owner_mp:
+            return _finish(
+                False,
+                403,
+                "DENY",
+                "CROSS_PRINCIPAL_DENIED",
+                f"Unilateral MultiParentToken principal {parsed.sub!r} is forbidden from accessing resource owned by {clean_owner_mp!r}",
                 pruned_revoked_paths=pruned_paths,
                 **mp_meta,
             )

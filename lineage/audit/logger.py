@@ -166,6 +166,248 @@ class AuditEntry:
         )
 
 
+class LocalAuditStore:
+    """Bounded per-node signed audit log store supporting on-demand federated pull by `task_id`."""
+
+    def __init__(
+        self,
+        max_entries: int = 50_000,
+        max_streams: int = 10_000,
+        authorized_auditors: Iterable[str] = (),
+        allow_task_participant_query: bool = True,
+    ) -> None:
+        if max_entries <= 0 or max_streams <= 0:
+            raise ValueError("max_entries and max_streams must be positive")
+        self.max_entries = int(max_entries)
+        self.max_streams = int(max_streams)
+        self._authorized_auditors: FrozenSet[str] = frozenset(
+            str(s) for s in authorized_auditors if str(s).strip()
+        )
+        self._allow_task_participant_query = bool(allow_task_participant_query)
+        self._lock = threading.Lock()
+        self._entries: Deque[AuditEntry] = deque()
+        self._by_task: Dict[str, List[AuditEntry]] = {}
+        self._stream_last_seq_hash: "OrderedDict[str, Tuple[int, str]]" = OrderedDict()
+        self._query_replay_lock = threading.Lock()
+        self._seen_query_jtis: "OrderedDict[str, float]" = OrderedDict()
+
+    def record(self, entry: AuditEntry) -> None:
+        with self._lock:
+            prev_info = self._stream_last_seq_hash.get(entry.stream_id)
+            if prev_info is not None:
+                last_seq, last_hash = prev_info
+                if entry.stream_seq != last_seq + 1 or entry.prev_entry_hash != last_hash:
+                    raise AuditIngestError(
+                        f"LocalAuditStore stream continuity broken on {entry.stream_id!r}: "
+                        f"expected seq={last_seq + 1}/prev={last_hash!r}, got seq={entry.stream_seq}/prev={entry.prev_entry_hash!r}"
+                    )
+                self._stream_last_seq_hash.pop(entry.stream_id)
+            else:
+                if len(self._stream_last_seq_hash) >= self.max_streams:
+                    self._stream_last_seq_hash.popitem(last=False)
+            self._stream_last_seq_hash[entry.stream_id] = (entry.stream_seq, entry.entry_hash)
+
+            while len(self._entries) >= self.max_entries:
+                evicted = self._entries.popleft()
+                t_list = self._by_task.get(evicted.task_id)
+                if t_list:
+                    try:
+                        t_list.remove(evicted)
+                    except ValueError:
+                        pass
+                    if not t_list:
+                        self._by_task.pop(evicted.task_id, None)
+
+            self._entries.append(entry)
+            self._by_task.setdefault(entry.task_id, []).append(entry)
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    @property
+    def size(self) -> int:
+        return self.count()
+
+    def get_all(self) -> List[AuditEntry]:
+        with self._lock:
+            return list(self._entries)
+
+    def get_by_task(self, task_id: str) -> List[AuditEntry]:
+        with self._lock:
+            return list(self._by_task.get(str(task_id), ()))
+
+    def _is_task_participant(self, task_id: str, caller_spiffe: str) -> bool:
+        if not task_id or not caller_spiffe:
+            return False
+        with self._lock:
+            entries = self._by_task.get(task_id, [])
+            for item in entries:
+                if item.node_spiffe_id == caller_spiffe:
+                    return True
+                ad = item.action_detail or {}
+                for k in (
+                    "delegate_spiffe_id",
+                    "target_spiffe_id",
+                    "peer_spiffe_id",
+                    "first_hop_spiffe_id",
+                    "initiator_spiffe_id",
+                ):
+                    if ad.get(k) == caller_spiffe:
+                        return True
+        return False
+
+    def authorize_read_query(
+        self,
+        req: HTTPRequestContext,
+        trust_resolver: TrustBundleResolver,
+        require_task_id: bool = True,
+    ) -> Tuple[str, str]:
+        """Authenticate `GET /v1/audit/local?task_id=<id>` with anti-replay `lct-audit-query+jwt`."""
+        mode = (req.header("X-LCT-Audit-Mode") or "").strip()
+        auth_jws = (req.header("X-LCT-Audit-Auth") or "").strip()
+        if not mode or not auth_jws:
+            raise PermissionError(
+                "GET /v1/audit/local requires signed X-LCT-Audit-Mode + X-LCT-Audit-Auth headers"
+            )
+        raw_q_task = req.query.get("task_id", "")
+        if isinstance(raw_q_task, list):
+            raw_q_task = raw_q_task[0] if raw_q_task else ""
+        expected_task_filter = str(raw_q_task or "").strip()
+        if require_task_id and not expected_task_filter:
+            raise AuditIngestError("GET /v1/audit/local requires a non-empty task_id query parameter")
+
+        now_ts = time.time()
+        try:
+            if mode == "domain_authority":
+                domain = (req.header("X-LCT-Audit-Domain") or "").strip()
+                if not domain:
+                    raise AuditIngestError("Missing X-LCT-Audit-Domain header")
+                _, claims = trust_resolver.verify_domain_jws(
+                    auth_jws,
+                    expected_trust_domain=domain,
+                    expected_typ="lct-audit-query+jwt",
+                )
+                caller_id = f"domain:{domain}"
+            elif mode == "workload":
+                svid = (req.header("X-LCT-Audit-SVID") or "").strip()
+                if not svid:
+                    raise AuditIngestError("Missing X-LCT-Audit-SVID header")
+                svid_claims = trust_resolver.verify_workload_svid(svid, now=now_ts)
+                caller_spiffe = str(svid_claims["sub"])
+                parsed = SpiffeId.parse(caller_spiffe)
+                is_authorized = (
+                    caller_spiffe in self._authorized_auditors
+                    or parsed.path in _DEFAULT_AUTHORIZED_AUDITOR_PATHS
+                    or parsed.path.startswith("/ns/audit/sa/")
+                    or (
+                        self._allow_task_participant_query
+                        and bool(expected_task_filter)
+                        and self._is_task_participant(expected_task_filter, caller_spiffe)
+                    )
+                )
+                if not is_authorized:
+                    raise AuditIngestError(
+                        f"Workload {caller_spiffe!r} is not an authorized auditor or participant for task {expected_task_filter!r}"
+                    )
+                _, claims = jws_verify_compact(
+                    auth_jws,
+                    svid_claims["cnf"]["jwk"],
+                    expected_typ="lct-audit-query+jwt",
+                )
+                caller_id = caller_spiffe
+            else:
+                raise AuditIngestError(f"Unsupported X-LCT-Audit-Mode: {mode!r}")
+        except (IdentityError, CryptoError, KeyError, TypeError, ValueError) as exc:
+            raise AuditIngestError(f"Local audit query authentication failed: {exc}") from exc
+
+        iat = require_finite_timestamp(claims.get("iat"), "audit_query.iat")
+        if abs(now_ts - iat) > 60.0:
+            raise AuditIngestError("Audit query JWS iat outside 60s freshness window")
+        jti = str(claims.get("jti") or "").strip()
+        if not jti:
+            raise AuditIngestError("Audit query JWS missing jti")
+        if str(claims.get("task_id") or "") != expected_task_filter:
+            raise AuditIngestError("Signed task_id filter mismatch with query string")
+
+        replay_key = f"{caller_id}:{jti}"
+        with self._query_replay_lock:
+            while self._seen_query_jtis:
+                _, exp_at = next(iter(self._seen_query_jtis.items()))
+                if exp_at <= now_ts:
+                    self._seen_query_jtis.popitem(last=False)
+                else:
+                    break
+            if replay_key in self._seen_query_jtis:
+                raise AuditIngestError("Replayed audit query jti rejected")
+            if len(self._seen_query_jtis) >= 16_384:
+                self._seen_query_jtis.popitem(last=False)
+            self._seen_query_jtis[replay_key] = now_ts + 120.0
+
+        return caller_id, expected_task_filter
+
+    def serve_http_query(
+        self,
+        req: HTTPRequestContext,
+        trust_resolver: TrustBundleResolver,
+        node_spiffe_id: str = "",
+        require_task_id: bool = True,
+    ) -> Tuple[int, Dict[str, Any], Dict[str, str]]:
+        try:
+            _, task_filter = self.authorize_read_query(
+                req, trust_resolver, require_task_id=require_task_id
+            )
+        except PermissionError as exc:
+            return 401, {"error": "audit_auth_required", "detail": str(exc)}, {}
+        except (AuditIngestError, ValueError) as exc:
+            return 403, {"error": "unauthorized_auditor_principal", "detail": str(exc)}, {}
+
+        items = self.get_by_task(task_filter) if task_filter else self.get_all()
+        return (
+            200,
+            {
+                "node_spiffe_id": node_spiffe_id,
+                "task_id": task_filter,
+                "count": len(items),
+                "entries": [e.to_dict() for e in items],
+            },
+            {},
+        )
+
+
+def build_audit_query_headers(
+    signer: WorkloadIdentity | TrustDomainCA,
+    task_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """Mint a fresh anti-replay `lct-audit-query+jwt` header set for audit pull requests."""
+    query_claims = {
+        "jti": f"audq-{uuid.uuid4().hex}",
+        "iat": time.time(),
+        "task_id": task_id or "",
+    }
+    if isinstance(signer, TrustDomainCA):
+        q_jws = jws_sign_compact(
+            payload=query_claims,
+            keypair=signer.active_keypair,
+            typ="lct-audit-query+jwt",
+        )
+        return {
+            "X-LCT-Audit-Mode": "domain_authority",
+            "X-LCT-Audit-Domain": signer.trust_domain,
+            "X-LCT-Audit-Auth": q_jws,
+        }
+    q_jws = jws_sign_compact(
+        payload=query_claims,
+        keypair=signer.keypair,
+        typ="lct-audit-query+jwt",
+    )
+    return {
+        "X-LCT-Audit-Mode": "workload",
+        "X-LCT-Audit-SVID": signer.workload_svid,
+        "X-LCT-Audit-Auth": q_jws,
+    }
+
+
 class AuditStreamEmitter:
     """Per-node thread-safe hash-chained audit emitter with automatic secret redaction."""
 
@@ -176,10 +418,17 @@ class AuditStreamEmitter:
         stream_id: Optional[str] = None,
         best_effort_remote: bool = False,
         max_pending_remote: int = 4096,
+        local_store: Optional[LocalAuditStore] = None,
+        authorized_auditors: Iterable[str] = (),
     ) -> None:
         self._signer = signer
         self._collector = collector_client
         self._best_effort_remote = bool(best_effort_remote)
+        self.local_store: LocalAuditStore = (
+            local_store
+            if local_store is not None
+            else LocalAuditStore(authorized_auditors=authorized_auditors)
+        )
         if isinstance(signer, TrustDomainCA):
             self.node_spiffe_id = signer.root_authority_spiffe_id
             self.auth_mode = "domain_authority"
@@ -352,7 +601,8 @@ class AuditStreamEmitter:
             )
             self._seq += 1
             self._prev_hash = entry_h
-            self._local_entries.append(final_entry)
+            self.local_store.record(final_entry)
+            self._local_entries = self.local_store.get_all()
             if self._collector is not None and self._best_effort_remote:
                 self._pending_remote.append(final_entry)
 
@@ -365,8 +615,7 @@ class AuditStreamEmitter:
         return final_entry
 
     def local_entries(self) -> List[AuditEntry]:
-        with self._lock:
-            return list(self._local_entries)
+        return self.local_store.get_all()
 
 
 class AuditCollectorService:

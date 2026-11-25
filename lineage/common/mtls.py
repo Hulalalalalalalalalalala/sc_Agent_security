@@ -294,10 +294,11 @@ class X509DomainAuthority:
             san_entries.append(x509.IPAddress(ip_obj))
 
         now = dt.datetime.now(dt.timezone.utc)
+        cn_val = parsed.uri if len(parsed.uri) <= 64 else parsed.uri[-64:]
         subject = x509.Name(
             [
                 x509.NameAttribute(NameOID.ORGANIZATION_NAME, self.trust_domain),
-                x509.NameAttribute(NameOID.COMMON_NAME, parsed.uri),
+                x509.NameAttribute(NameOID.COMMON_NAME, cn_val),
             ]
         )
         leaf_ski = x509.SubjectKeyIdentifier.from_public_key(pub_key)

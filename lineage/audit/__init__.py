@@ -6,6 +6,10 @@ from lineage.audit.auditor import (
     CausalChainAuditor,
     TaskReconstruction,
 )
+from lineage.audit.distributed import (
+    DistributedAuditResult,
+    DistributedAuditor,
+)
 from lineage.audit.logger import (
     AuditCollectorClient,
     AuditCollectorService,
@@ -13,6 +17,8 @@ from lineage.audit.logger import (
     AuditEventType,
     AuditIngestError,
     AuditStreamEmitter,
+    LocalAuditStore,
+    build_audit_query_headers,
 )
 
 __all__ = [
@@ -25,5 +31,9 @@ __all__ = [
     "AuditReport",
     "AuditStreamEmitter",
     "CausalChainAuditor",
+    "DistributedAuditResult",
+    "DistributedAuditor",
+    "LocalAuditStore",
     "TaskReconstruction",
+    "build_audit_query_headers",
 ]

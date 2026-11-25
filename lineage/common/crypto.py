@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
@@ -544,6 +545,9 @@ def verify_canonical_object(
     verify_bytes_signature(pub_key, alg, canonical_json_bytes(envelope), sig_bytes)
 
 
+_EMBEDDED_LCT_TOKEN_RE = re.compile(r"\b(?:lct1|lctm1|lctmp1|lctco1)\.[A-Za-z0-9_-]+")
+
+
 def redact_sensitive(value: Any) -> Any:
     """Recursively redact sensitive keys or raw compact JWT/JWS tokens before logging."""
     if isinstance(value, Mapping):
@@ -558,9 +562,14 @@ def redact_sensitive(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [redact_sensitive(item) for item in value]
     if isinstance(value, str):
-        # Redact compact LCT single-chain (`lct1.`) and multi-parent (`lctm1.`/`lctmp1.`) bearer/DPoP tokens
-        if value.startswith(("lct1.", "lctm1.", "lctmp1.")):
+        # Redact compact LCT single-chain (`lct1.`), multi-parent (`lctm1.`/`lctmp1.`), and co-auth (`lctco1.`) tokens
+        if value.startswith(("lct1.", "lctm1.", "lctmp1.", "lctco1.")):
             return f"[REDACTED_LCT_TOKEN_SHA256:{sha256_hex(value.encode('utf-8'))[:12]}]"
+        if ("lct1." in value or "lctm1." in value or "lctmp1." in value or "lctco1." in value):
+            value = _EMBEDDED_LCT_TOKEN_RE.sub(
+                lambda m: f"[REDACTED_LCT_TOKEN_SHA256:{sha256_hex(m.group(0).encode('utf-8'))[:12]}]",
+                value,
+            )
         # Redact raw 3-part JWS/JWT strings if accidentally placed in log metadata
         if value.startswith("eyJ") and value.count(".") == 2 and len(value) > 40:
             return f"[REDACTED_JWS_SHA256:{sha256_hex(value.encode('utf-8'))[:12]}]"

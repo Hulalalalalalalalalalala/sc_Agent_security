@@ -36,9 +36,11 @@ packages = [
     "lineage.registry",
     "lineage.resilience",
     "lineage.revocation",
+    "lineage.scale",
     "lineage.sdk",
     "lineage.sdk.python",
     "lineage.sidecar",
     "lineage.tests",
     "lineage.verifier",
+    "lineage.workspace_agents",
 ]

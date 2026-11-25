@@ -230,7 +230,30 @@ bash lineage/scripts/multihost.sh e2e
    ```
    命令会自动输出 Markdown 对比表与脱敏 JSON 指标文件（`m8_protocol_comparison.md` / `.json`）；若 `alpha` 部署在远端机器且无需在对比中途缩放 `alpha-sts` 副本数，可附加 `--skip-sts-partition`。
 
-### 5.4 安全清理（`teardown.sh`）
+### 5.4 对称工作助手平台（Platform v2：`--topology workspace` + 去中心化按需审计）
+除传统四机订票拓扑外，`deploy` 支持一键切换至 **Platform v2 对称个人/组织工作助手拓扑**（仅需 `alpha`、`beta`、`pay` 三个业务信任域，**无需部署中心化 `audit` 集群**；所有签名审计链存储在各节点本地 `LocalAuditStore`，由 `DistributedAuditor` 按 `task_id` 经 mTLS 1.3 定向拉取重构）：
+
+```bash
+# 1. 部署对称工作助手网络（--registry-mode centralized 使用 alpha 上的不可信公共黄页；也可传 federated）
+#    单机三集群预演：
+bash lineage/scripts/multihost.sh deploy --roles alpha,beta,pay --topology workspace --registry-mode centralized --wait-all-ready
+#    三台独立物理机部署：
+#    Machine 1: bash lineage/scripts/multihost.sh deploy --roles alpha --topology workspace --registry-mode centralized
+#    Machine 2: bash lineage/scripts/multihost.sh deploy --roles beta  --topology workspace --registry-mode centralized --seed <M1_IP:PORT>
+#    Machine 3: bash lineage/scripts/multihost.sh deploy --roles pay   --topology workspace --registry-mode centralized --seed <M1_IP:PORT>
+
+# 2. 执行全部 5 组 Platform v2 场景（qwen2.5:3b 黄页意图路由、跨主体 403 与 [alice,bob] 联合授权 lctco1.、
+#    长任务到期 TaskCheckpoint 与剩余预算续期、提交后丢包幂等防双花、去中心化 DistributedAuditor 重构）
+bash lineage/scripts/multihost.sh workspace-demo --output-dir ./workspace-results
+
+# 3. 无中心收集器按需拉取任意 task_id 的全网签名因果图
+bash lineage/scripts/multihost.sh audit <task_id> --distributed
+
+# 4. 运行 4 / 12 / 24 节点规模化延迟、级联撤销与去中心化审计基准测试
+bash lineage/scripts/multihost.sh scale-bench --tiers 4,12,24 --output-dir lineage/scale/results
+```
+
+### 5.5 安全清理（`teardown.sh`）
 在每台参与实验的机器上执行以下命令，仅删除本机 `lctmh-*` 集群并干净停止后台 `locator-agent.py` 守护进程，绝不触碰任何其他 Docker 容器或既有实验环境：
 
 ```bash

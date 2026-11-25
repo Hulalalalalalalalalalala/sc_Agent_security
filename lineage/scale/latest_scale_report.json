@@ -1,0 +1,114 @@
+{
+  "benchmark": "platform_v2_distributed_peer_scale_and_decentralized_audit",
+  "generated_at": 1795613729.157171,
+  "tiers": [
+    {
+      "peer_nodes": 4,
+      "trust_domains": 4,
+      "yellow_pages_instances": 1,
+      "central_audit_collectors": 0,
+      "protocols": {
+        "oauth_centralized": {
+          "iterations": 2,
+          "logical_hops_per_workflow": 5,
+          "e2e_p50_ms": 76.32,
+          "e2e_p95_ms": 77.61,
+          "e2e_p99_ms": 77.72,
+          "per_hop_p50_ms": 15.26,
+          "online_sts_rpcs_per_workflow": 5,
+          "avg_sts_rtt_ms": 14.94
+        },
+        "oauth_federated": {
+          "iterations": 2,
+          "logical_hops_per_workflow": 5,
+          "e2e_p50_ms": 86.26,
+          "e2e_p95_ms": 96.64,
+          "e2e_p99_ms": 97.56,
+          "per_hop_p50_ms": 17.25,
+          "online_sts_rpcs_per_workflow": 5,
+          "avg_sts_rtt_ms": 23.66
+        },
+        "lct": {
+          "iterations": 2,
+          "logical_hops_per_workflow": 5,
+          "e2e_p50_ms": 93.28,
+          "e2e_p95_ms": 96.33,
+          "e2e_p99_ms": 96.61,
+          "per_hop_p50_ms": 18.66,
+          "online_sts_rpcs_per_workflow": 0,
+          "avg_sts_rtt_ms": 0.0
+        }
+      },
+      "cascading_revocation": {
+        "converged_peers": 4,
+        "total_peers": 4,
+        "convergence_ms": 75.06
+      },
+      "decentralized_audit": {
+        "task_id": "task-scale-n4-lct-1-10450e",
+        "nodes_queried": 7,
+        "total_mesh_nodes": 8,
+        "non_participating_peers_skipped": 1,
+        "total_signed_entries": 14,
+        "pull_and_reconstruct_ms": 29.37,
+        "reconstructed_complete": true,
+        "reconstruction_accuracy_pct": 100.0,
+        "anomalies_count": 0
+      }
+    },
+    {
+      "peer_nodes": 24,
+      "trust_domains": 4,
+      "yellow_pages_instances": 1,
+      "central_audit_collectors": 0,
+      "protocols": {
+        "oauth_centralized": {
+          "iterations": 2,
+          "logical_hops_per_workflow": 15,
+          "e2e_p50_ms": 140.29,
+          "e2e_p95_ms": 142.25,
+          "e2e_p99_ms": 142.42,
+          "per_hop_p50_ms": 9.35,
+          "online_sts_rpcs_per_workflow": 18,
+          "avg_sts_rtt_ms": 81.68
+        },
+        "oauth_federated": {
+          "iterations": 2,
+          "logical_hops_per_workflow": 15,
+          "e2e_p50_ms": 173.83,
+          "e2e_p95_ms": 187.42,
+          "e2e_p99_ms": 188.62,
+          "per_hop_p50_ms": 11.59,
+          "online_sts_rpcs_per_workflow": 18,
+          "avg_sts_rtt_ms": 122.17
+        },
+        "lct": {
+          "iterations": 2,
+          "logical_hops_per_workflow": 15,
+          "e2e_p50_ms": 184.38,
+          "e2e_p95_ms": 185.95,
+          "e2e_p99_ms": 186.09,
+          "per_hop_p50_ms": 12.29,
+          "online_sts_rpcs_per_workflow": 0,
+          "avg_sts_rtt_ms": 0.0
+        }
+      },
+      "cascading_revocation": {
+        "converged_peers": 24,
+        "total_peers": 24,
+        "convergence_ms": 345.93
+      },
+      "decentralized_audit": {
+        "task_id": "task-scale-n24-lct-1-4db03c",
+        "nodes_queried": 14,
+        "total_mesh_nodes": 28,
+        "non_participating_peers_skipped": 14,
+        "total_signed_entries": 43,
+        "pull_and_reconstruct_ms": 78.69,
+        "reconstructed_complete": true,
+        "reconstruction_accuracy_pct": 100.0,
+        "anomalies_count": 0
+      }
+    }
+  ]
+}

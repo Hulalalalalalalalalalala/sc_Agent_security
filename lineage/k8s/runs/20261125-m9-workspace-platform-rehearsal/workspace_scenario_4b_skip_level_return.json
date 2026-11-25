@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "alive_task_id": "ws-m9-rehearsal-v7-s4b-alive",
+  "alive_delivery_mode": "DIRECT_PARENT",
+  "skip_task_id": "ws-m9-rehearsal-v7-s4b-skip",
+  "skip_level_results_delivered_to_alice": 1,
+  "real_pod_kill_used": true
+}

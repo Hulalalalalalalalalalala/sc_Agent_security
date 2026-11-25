@@ -80,7 +80,7 @@ def _scrub(obj: Any) -> Any:
     if isinstance(base, list):
         return [_scrub(x) for x in base]
     if isinstance(base, str):
-        if base.startswith(("lct1.", "lctmp1.", "lctm1.")):
+        if base.startswith(("lct1.", "lctmp1.", "lctm1.", "lctco1.")):
             return f"[REDACTED_LCT_TOKEN_SHA256:{sha256_hex(base.encode('ascii'))[:12]}]"
         if base.startswith("eyJ") and base.count(".") == 2:
             return f"[REDACTED_JWS_SHA256:{sha256_hex(base.encode('ascii'))[:12]}]"
@@ -1302,6 +1302,39 @@ def _run_audit_in_gateway(args: argparse.Namespace) -> int:
 
     gw = GatewaySession()
     try:
+        use_dist = bool(getattr(args, "distributed", False)) or (
+            os.environ.get("AUDIT_MODE", "").strip().lower() == "decentralized"
+            and bool(args.task_id)
+        )
+        if use_dist:
+            if not args.task_id:
+                print(
+                    json.dumps(
+                        {
+                            "error": "task_id_required_for_distributed_audit",
+                            "detail": "Stateless DistributedAuditor pulls signed local fragments by task_id",
+                        },
+                        indent=2,
+                    )
+                )
+                return 2
+            from lineage.k8s.workspace_e2e import run_distributed_audit_for_task
+
+            entry_skill = (
+                "workspace.orchestrate"
+                if os.environ.get("TOPOLOGY", "").strip().lower() == "workspace"
+                else "travel.orchestrate"
+            )
+            dist_res = run_distributed_audit_for_task(
+                gw, args.task_id, entry_skill=entry_skill
+            )
+            print(json.dumps(_scrub(dist_res), indent=2, ensure_ascii=False))
+            return (
+                0
+                if (dist_res.get("reconstructed_complete") and not dist_res.get("anomalies"))
+                else 1
+            )
+
         entries = gw.audit_client.fetch_entries()
         auditor = CausalChainAuditor(
             gw.resolver,
@@ -1866,6 +1899,232 @@ def _run_e2e_suite_from_host(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_workspace_demo_from_host(args: argparse.Namespace) -> int:
+    """Orchestrate all 5 Platform v2 Symmetric Peer Workspace Assistant Scenarios on K8s."""
+    run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
+    out_clusters = subprocess.run(["kind", "get", "clusters"], capture_output=True, text=True)
+    local_clusters = set((out_clusters.stdout or "").splitlines())
+    if "lctmh-alpha" not in local_clusters:
+        raise RuntimeError(
+            "`workspace-demo` must be run on the host running `lctmh-alpha` (`e2e-user-gateway`)."
+        )
+    local_beta = ("lctmh-beta" in local_clusters) and (not args.remote_faults)
+    out_dir: Optional[Path] = Path(args.output_dir).resolve() if args.output_dir else None
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    summary: Dict[str, Any] = {
+        "run_id": run_id,
+        "platform": "v2-symmetric-workspace-assistants",
+        "central_audit_collector_deployed": ("lctmh-audit" in local_clusters),
+        "scenarios": {},
+    }
+
+    def _save_ws(key: str, data: Dict[str, Any]) -> None:
+        clean = _scrub(data)
+        summary["scenarios"][key] = clean
+        if out_dir is not None:
+            (out_dir / f"workspace_scenario_{key.lower()}.json").write_text(
+                json.dumps(clean, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+    print("[workspace-demo] Scenario 1: Real qwen2.5:3b Yellow-Pages Intent Routing + P2P 1->N Fan-Out + N->1 Vault Convergence...", flush=True)
+    _save_ws("1_intent_fanout_converge", _exec_e2e_driver_phase("ws_scenario1", run_id))
+    print("[workspace-demo] Scenario 1: PASS", flush=True)
+
+    print("[workspace-demo] Scenario 2: Cross-Principal Isolation (403) + Dual-Principal CoAuthorizedToken ([alice, bob] -> 200)...", flush=True)
+    s2_out = _exec_e2e_driver_phase("ws_scenario2", run_id)
+    if local_beta:
+        bob_sa_probe = subprocess.run(
+            [
+                "kubectl",
+                "--context",
+                "kind-lctmh-beta",
+                "-n",
+                "lineage-beta",
+                "exec",
+                "deploy/assistant-bob",
+                "-c",
+                "lct-sidecar",
+                "--",
+                "/app/.venv/bin/python3",
+                "-c",
+                (
+                    "import httpx; sa=open('/var/run/lct-sa/token').read().strip(); "
+                    "r=httpx.post('http://beta-ca.lineage-beta.svc.cluster.local:8090/v1/ca/mint-root-token', "
+                    "json={'trust_domain':'org-beta.io'}, headers={'Authorization':f'Bearer {sa}'}, timeout=5.0); "
+                    "assert r.status_code == 403, (r.status_code, r.text); print(r.status_code)"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        s2_out["assistant_bob_sa_mint_root_http"] = int(bob_sa_probe.stdout.strip())
+    _save_ws("2_cross_principal_and_coauth", s2_out)
+    print("[workspace-demo] Scenario 2: PASS", flush=True)
+
+    print("[workspace-demo] Scenario 3: Short-TTL Task Expiry -> TaskCheckpoint -> Budget-Clamped ContinuationToken + DAG Stitch...", flush=True)
+    _save_ws("3_expiry_checkpoint_continuation", _exec_e2e_driver_phase("ws_scenario3", run_id))
+    print("[workspace-demo] Scenario 3: PASS", flush=True)
+
+    print("[workspace-demo] Scenario 4A: Post-Commit Timeout Drop + Standby Epoch=1 Idempotency (1x Charge) + Zombie Primary 403...", flush=True)
+    _save_ws("4a_post_commit_idempotent_failover", _exec_e2e_driver_phase("ws_scenario4a", run_id))
+    print("[workspace-demo] Scenario 4A: PASS", flush=True)
+
+    print("[workspace-demo] Scenario 4B: 3-Tier Alice -> Bob -> Dave Upward Skip-Level Return...", flush=True)
+    if local_beta:
+        alpha_ports = read_cluster_role_ports("alpha", topology="workspace") or {}
+        sync_svc = render_e2e_sync_service_manifest(
+            namespace="lineage-alpha", node_port=alpha_ports.get("e2e_sync_hook")
+        )
+        subprocess.run(
+            ["kubectl", "--context", "kind-lctmh-alpha", "apply", "-f", "-"],
+            input=json.dumps(sync_svc),
+            text=True,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            [
+                "kubectl",
+                "--context",
+                "kind-lctmh-alpha",
+                "-n",
+                "lineage-alpha",
+                "exec",
+                "deploy/e2e-user-gateway",
+                "--",
+                "rm",
+                "-f",
+                "/tmp/ws_s4b_sync",
+                "/tmp/ws_s4b_sync.killed",
+            ],
+            check=False,
+        )
+        s4b_box: Dict[str, Any] = {}
+        s4b_err: List[BaseException] = []
+
+        def _s4b_worker() -> None:
+            try:
+                s4b_box["out"] = _exec_e2e_driver_phase(
+                    "ws_scenario4b",
+                    run_id,
+                    extra_args=("--sync-marker-file", "/tmp/ws_s4b_sync"),
+                )
+            except BaseException as exc:
+                s4b_err.append(exc)
+
+        t_w = threading.Thread(target=_s4b_worker, daemon=True)
+        t_w.start()
+        bob_killed = False
+        try:
+            dl = time.time() + 45.0
+            while time.time() < dl:
+                if s4b_err or not t_w.is_alive():
+                    break
+                chk = subprocess.run(
+                    [
+                        "kubectl",
+                        "--context",
+                        "kind-lctmh-alpha",
+                        "-n",
+                        "lineage-alpha",
+                        "exec",
+                        "deploy/e2e-user-gateway",
+                        "--",
+                        "test",
+                        "-f",
+                        "/tmp/ws_s4b_sync",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if chk.returncode == 0:
+                    break
+                time.sleep(0.25)
+            if s4b_err:
+                raise s4b_err[0]
+            fault_sh = REPO_ROOT / "lineage" / "scripts" / "multihost.sh"
+            subprocess.run(
+                ["bash", str(fault_sh), "fault", "--kill", "assistant-bob", "--fast"],
+                check=True,
+            )
+            bob_killed = True
+            subprocess.run(
+                [
+                    "kubectl",
+                    "--context",
+                    "kind-lctmh-alpha",
+                    "-n",
+                    "lineage-alpha",
+                    "exec",
+                    "deploy/e2e-user-gateway",
+                    "--",
+                    "sh",
+                    "-c",
+                    "echo KILLED > /tmp/ws_s4b_sync.killed",
+                ],
+                check=True,
+            )
+            t_w.join(timeout=65.0)
+            if s4b_err:
+                raise s4b_err[0]
+            if "out" not in s4b_box:
+                raise RuntimeError("Scenario 4B worker timed out")
+            _save_ws("4b_skip_level_return", s4b_box["out"])
+        finally:
+            if bob_killed:
+                fault_sh = REPO_ROOT / "lineage" / "scripts" / "multihost.sh"
+                subprocess.run(
+                    ["bash", str(fault_sh), "fault", "--restore", "assistant-bob"],
+                    check=True,
+                )
+            subprocess.run(
+                [
+                    "kubectl",
+                    "--context",
+                    "kind-lctmh-alpha",
+                    "-n",
+                    "lineage-alpha",
+                    "delete",
+                    "svc",
+                    "e2e-user-gateway-sync",
+                    "--ignore-not-found",
+                ],
+                stdout=subprocess.DEVNULL,
+                check=False,
+            )
+    else:
+        _save_ws("4b_skip_level_return", _exec_e2e_driver_phase("ws_scenario4b", run_id, extra_args=("--sync-marker-file", "")))
+    print("[workspace-demo] Scenario 4B: PASS", flush=True)
+
+    print("[workspace-demo] Scenario 5: Single-Branch Degradation + OAuth vs LCT Compare + Stateless DistributedAuditor BFS Pull...", flush=True)
+    _save_ws("5_degradation_compare_and_audit", _exec_e2e_driver_phase("ws_scenario5", run_id))
+    print("[workspace-demo] Scenario 5: PASS", flush=True)
+
+    summary["overall_status"] = "PASS"
+    clean_sum = _scrub(summary)
+    if out_dir is not None:
+        (out_dir / "workspace_platform_v2_summary.json").write_text(
+            json.dumps(clean_sum, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    print(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "overall_status": "PASS",
+                "central_audit_collector_deployed": summary["central_audit_collector_deployed"],
+                "scenarios": list(summary["scenarios"].keys()),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def format_m8_comparison_markdown(comp: Mapping[str, Any]) -> str:
     """Render a side-by-side empirical Markdown report from `run_m8_protocol_comparison` output."""
     dims = comp.get("dimensions") or {}
@@ -2309,6 +2568,11 @@ def build_cli_parser() -> argparse.ArgumentParser:
         "audit", help="Fetch signed audit log over TLS 1.3 and reconstruct causal tree"
     )
     p_audit.add_argument("task_id", nargs="?", default="", help="Task ID (omit for all tasks)")
+    p_audit.add_argument(
+        "--distributed",
+        action="store_true",
+        help="Use stateless DistributedAuditor BFS pull across local peer stores (0 central collector)",
+    )
 
     # e2e
     p_e2e = sub.add_parser(
@@ -2336,6 +2600,15 @@ def build_cli_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip Dimension 5 alpha-sts scale-to-0 outage probe",
     )
+
+    # workspace-demo
+    p_ws = sub.add_parser(
+        "workspace-demo",
+        help="Run Platform v2 Symmetric Peer Workspace Assistant suite (all 5 scenarios + DistributedAuditor)",
+    )
+    p_ws.add_argument("--run-id", default="")
+    p_ws.add_argument("--output-dir", default="")
+    p_ws.add_argument("--remote-faults", action="store_true")
 
     # oauth
     p_oauth = sub.add_parser(
@@ -2427,6 +2700,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _run_e2e_suite_from_host(args)
     if args.subcmd == "compare":
         return _run_compare_from_host(args)
+    if args.subcmd == "workspace-demo":
+        return _run_workspace_demo_from_host(args)
 
     if not args.in_gateway and not _in_gateway_pod():
         fwd = [a for a in raw_argv if a != "--in-gateway"]

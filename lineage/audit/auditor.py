@@ -170,6 +170,8 @@ class CausalChainAuditor:
             s_entries.sort(key=lambda x: x.stream_seq)
             expected_seq = 0
             expected_prev = "GENESIS"
+            slice_prev_seq: Optional[int] = None
+            slice_prev_hash: Optional[str] = None
 
             for item in s_entries:
                 sig_err = self._verify_entry_signature(item)
@@ -215,6 +217,35 @@ class CausalChainAuditor:
                         )
                     expected_seq = item.stream_seq + 1
                     expected_prev = item.entry_hash
+                else:
+                    if slice_prev_seq is not None:
+                        if item.stream_seq <= slice_prev_seq:
+                            stream_ok = False
+                            anomalies.append(
+                                AuditAnomaly(
+                                    code="STREAM_SEQ_GAP_OR_DUPLICATE",
+                                    task_id=item.task_id,
+                                    stream_id=stream_id,
+                                    stream_seq=item.stream_seq,
+                                    detail=f"Duplicate/out-of-order stream_seq={item.stream_seq} after {slice_prev_seq}",
+                                )
+                            )
+                        elif (
+                            item.stream_seq == slice_prev_seq + 1
+                            and item.prev_entry_hash != slice_prev_hash
+                        ):
+                            stream_ok = False
+                            anomalies.append(
+                                AuditAnomaly(
+                                    code="PREV_HASH_CHAIN_BROKEN",
+                                    task_id=item.task_id,
+                                    stream_id=stream_id,
+                                    stream_seq=item.stream_seq,
+                                    detail=f"Contiguous prev_entry_hash={item.prev_entry_hash!r} != {slice_prev_hash!r}",
+                                )
+                            )
+                    slice_prev_seq = item.stream_seq
+                    slice_prev_hash = item.entry_hash
 
         # ---------------------------------------------------------------------
         # Phase 2: Global DPoP Replay Detection across INBOUND_AUTHZ events
@@ -285,29 +316,127 @@ class CausalChainAuditor:
                 rec.anomalies.append(anom)
                 anomalies.append(anom)
 
-            # 3.1 Locate ROOT_MINT anchor(s)
+            # 3.1 Locate ROOT_MINT anchor(s), including verified Continuations & Dual-Principal Co-Auth
             roots = [e for e in t_entries if e.event_type == AuditEventType.ROOT_MINT]
+            authorized_root_hashes: Set[str] = set()
+            authorized_subs: Set[str] = set()
+            root_entry_by_hash: Dict[str, AuditEntry] = {}
+
+            co_auth_owner_subs: Set[str] = set()
+            for e_scan in t_entries:
+                if e_scan.decision.startswith("ALLOW"):
+                    raw_cp = (e_scan.action_detail or {}).get("co_authorized_principals")
+                    if isinstance(raw_cp, list) and len(raw_cp) == 2:
+                        co_auth_owner_subs.add(str(raw_cp[1]))
+
             if not roots:
                 _flag(
                     "MISSING_ROOT_ANCHOR",
                     t_entries[0],
                     f"Task {task_id!r} has no ROOT_MINT authorization anchor (possible delete_hop or modify_parent orphan)",
                 )
-            elif len(roots) > 1:
-                distinct_root_hashes = {r.current_block_hash for r in roots}
-                if len(distinct_root_hashes) > 1:
-                    _flag(
-                        "CORRELATION_MISMATCH",
-                        roots[1],
-                        f"Multiple conflicting ROOT_MINT blocks for task {task_id!r}",
-                    )
+            else:
+                primary_root = roots[0]
+                for cand_r in roots:
+                    if not (cand_r.action_detail or {}).get("co_auth_consent") and not (
+                        cand_r.action_detail or {}
+                    ).get("resumes_checkpoint_id"):
+                        primary_root = cand_r
+                        break
+                rec.root_block_hash = primary_root.current_block_hash
+                rec.sub = primary_root.sub
+                authorized_root_hashes.add(primary_root.current_block_hash)
+                authorized_subs.add(primary_root.sub)
+                root_entry_by_hash[primary_root.current_block_hash] = primary_root
+
+                seen_continuation_ckpts: Set[str] = set()
+                seen_continuation_priors: Set[str] = set()
+                for r in roots:
+                    if r.current_block_hash in authorized_root_hashes:
+                        continue
+                    r_ad = r.action_detail or {}
+                    ckpt_id = str(r_ad.get("resumes_checkpoint_id") or "").strip()
+                    prior_h = str(
+                        r_ad.get("prior_root_block_hash") or r.parent_block_hash or ""
+                    ).strip()
+                    if (
+                        ckpt_id
+                        and prior_h in authorized_root_hashes
+                        and r.sub == primary_root.sub
+                    ):
+                        cont_dup_or_fork = False
+                        if ckpt_id in seen_continuation_ckpts:
+                            cont_dup_or_fork = True
+                            _flag(
+                                f"DUPLICATE_CHECKPOINT_CONTINUATION:{ckpt_id}",
+                                r,
+                                f"Duplicate continuation ROOT_MINT replaying checkpoint {ckpt_id!r}",
+                            )
+                        else:
+                            seen_continuation_ckpts.add(ckpt_id)
+
+                        if prior_h in seen_continuation_priors:
+                            cont_dup_or_fork = True
+                            _flag(
+                                f"FORKED_CONTINUATION_ROOT:{prior_h}",
+                                r,
+                                f"Forked sibling continuation ROOT_MINT off superseded prior root {prior_h!r}",
+                            )
+                        else:
+                            seen_continuation_priors.add(prior_h)
+
+                        prior_r = root_entry_by_hash.get(prior_h)
+                        if (
+                            prior_r is not None
+                            and prior_r.permissions_summary is not None
+                            and r.permissions_summary is not None
+                        ):
+                            try:
+                                p_lat = PermissionLattice.from_dict(prior_r.permissions_summary)
+                                c_lat = PermissionLattice.from_dict(r.permissions_summary)
+                                c_amt = float(r_ad.get("consumed_amount", 0.0))
+                                c_calls = int(r_ad.get("consumed_calls", 0))
+                                if p_lat.max_amount is not None and (
+                                    c_lat.max_amount is None
+                                    or c_lat.max_amount > float(p_lat.max_amount) - c_amt + 1e-6
+                                ):
+                                    _flag(
+                                        "PRIVILEGE_ESCALATION",
+                                        r,
+                                        f"Continuation root max_amount={c_lat.max_amount} exceeds remaining {float(p_lat.max_amount) - c_amt}",
+                                    )
+                                if c_lat.max_calls > int(p_lat.max_calls) - c_calls:
+                                    _flag(
+                                        "PRIVILEGE_ESCALATION",
+                                        r,
+                                        f"Continuation root max_calls={c_lat.max_calls} exceeds remaining {int(p_lat.max_calls) - c_calls}",
+                                    )
+                            except (LatticeError, ValueError, TypeError) as exc:
+                                _flag("PRIVILEGE_ESCALATION", r, str(exc))
+                        if not cont_dup_or_fork:
+                            authorized_root_hashes.add(r.current_block_hash)
+                            root_entry_by_hash[r.current_block_hash] = r
+                            rec.resilience_classifications.append("VERIFIED_TASK_CONTINUATION")
+                    elif r.sub != primary_root.sub and (
+                        bool(r_ad.get("co_auth_consent")) or r.sub in co_auth_owner_subs
+                    ):
+                        authorized_root_hashes.add(r.current_block_hash)
+                        authorized_subs.add(r.sub)
+                        root_entry_by_hash[r.current_block_hash] = r
+                        rec.resilience_classifications.append("VERIFIED_DUAL_PRINCIPAL_COAUTH")
+                    else:
+                        _flag(
+                            "CORRELATION_MISMATCH",
+                            r,
+                            f"Multiple conflicting ROOT_MINT blocks for task {task_id!r}",
+                        )
 
             task_root_td: Optional[str] = None
-            if roots:
-                rec.root_block_hash = roots[0].current_block_hash
-                rec.sub = roots[0].sub
+            if rec.root_block_hash and rec.root_block_hash in root_entry_by_hash:
                 try:
-                    task_root_td = SpiffeId.parse(roots[0].node_spiffe_id).trust_domain
+                    task_root_td = SpiffeId.parse(
+                        root_entry_by_hash[rec.root_block_hash].node_spiffe_id
+                    ).trust_domain
                 except IdentityError:
                     task_root_td = None
 
@@ -331,7 +460,7 @@ class CausalChainAuditor:
                 start_hash: str,
                 active_stack: Set[str],
             ) -> Tuple[bool, Optional[str], Optional[str]]:
-                """Complete DFS across ALL single & MultiParent branches back to ROOT_MINT."""
+                """Complete DFS across ALL single, Continuation, CoAuth & MultiParent branches back to ROOT_MINT."""
                 if start_hash in verified_root_memo:
                     return True, None, None
                 if start_hash in active_stack:
@@ -355,11 +484,11 @@ class CausalChainAuditor:
                     )
 
                 if prod.event_type == AuditEventType.ROOT_MINT and prod.hop_index == 0:
-                    if rec.root_block_hash and start_hash != rec.root_block_hash:
+                    if authorized_root_hashes and start_hash not in authorized_root_hashes:
                         return (
                             False,
                             "CORRELATION_MISMATCH",
-                            f"Ancestry reached foreign root {start_hash!r} != {rec.root_block_hash!r}",
+                            f"Ancestry reached unauthorized foreign root {start_hash!r}",
                         )
                     verified_root_memo.add(start_hash)
                     return True, None, None
@@ -396,17 +525,17 @@ class CausalChainAuditor:
 
             for e in t_entries:
                 if e.event_type != AuditEventType.REVOCATION_ISSUED:
-                    if rec.root_block_hash and e.root_block_hash != rec.root_block_hash:
+                    if authorized_root_hashes and e.root_block_hash not in authorized_root_hashes:
                         _flag(
                             "CORRELATION_MISMATCH",
                             e,
-                            f"root_block_hash {e.root_block_hash!r} != task root {rec.root_block_hash!r} (mix_record / modify_parent)",
+                            f"root_block_hash {e.root_block_hash!r} not in authorized task roots {sorted(authorized_root_hashes)} (mix_record / modify_parent)",
                         )
-                    if rec.sub and e.sub != rec.sub:
+                    if authorized_subs and e.sub not in authorized_subs:
                         _flag(
                             "CORRELATION_MISMATCH",
                             e,
-                            f"Principal sub {e.sub!r} != task sub {rec.sub!r}",
+                            f"Principal sub {e.sub!r} not in authorized task principals {sorted(authorized_subs)}",
                         )
 
                 raw_paths = [p for p in e.lineage_path.split("|") if p]
@@ -504,6 +633,14 @@ class CausalChainAuditor:
                             rec.verified_hops += 1
                         elif e.event_type == AuditEventType.TOOL_INVOCATION:
                             rec.tool_invocations_verified += 1
+                        if (
+                            e.decision == "ALLOW_DEGRADED_DAG"
+                            and "SMOOTH_DAG_DEGRADATION_ON_REVOCATION"
+                            not in rec.resilience_classifications
+                        ):
+                            rec.resilience_classifications.append(
+                                "SMOOTH_DAG_DEGRADATION_ON_REVOCATION"
+                            )
 
                 # Verify cryptographic Resilience Receipts (`[HIGH-04]`)
                 if e.event_type == AuditEventType.FAILOVER_PRUNE_GRAFT:
@@ -590,10 +727,10 @@ class CausalChainAuditor:
                                     "SkipLevelReceipt target or task mismatch",
                                 )
                             elif (
-                                rec.root_block_hash is None
-                                or embedded_tok.root_block_hash != rec.root_block_hash
-                                or rec.sub is None
-                                or embedded_tok.sub != rec.sub
+                                not authorized_root_hashes
+                                or embedded_tok.root_block_hash not in authorized_root_hashes
+                                or not authorized_subs
+                                or embedded_tok.sub not in authorized_subs
                             ):
                                 _flag(
                                     "ILLEGAL_SKIP_LEVEL_SPOOF",
@@ -613,7 +750,7 @@ class CausalChainAuditor:
             ]
             rec.anomalies.extend(task_stream_anoms)
             rec.reconstructed_complete = (
-                len(roots) == 1 and len(rec.anomalies) == 0
+                len(roots) >= 1 and len(authorized_root_hashes) >= 1 and len(rec.anomalies) == 0
             )
 
         return AuditReport(
@@ -623,3 +760,17 @@ class CausalChainAuditor:
             tasks=task_reports,
             anomalies=anomalies,
         )
+
+    def reconstruct(
+        self,
+        entries: Iterable[AuditEntry],
+        task_id: Optional[str] = None,
+        check_stream_continuity: bool = False,
+    ) -> AuditReport:
+        """Reconstruct causal DAG for an on-demand federated pull slice (`task_id` optional filter)."""
+        filtered = (
+            [e for e in entries if e.task_id == task_id]
+            if task_id
+            else list(entries)
+        )
+        return self.audit(filtered, check_stream_continuity=check_stream_continuity)

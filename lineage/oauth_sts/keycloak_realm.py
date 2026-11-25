@@ -31,6 +31,13 @@ STANDARD_OAUTH_CLIENT_IDS: Tuple[str, ...] = (
     "settlement-converger",
     "travel-ops-mcp",
     "payment-vault-mcp",
+    "assistant-alice",
+    "assistant-bob",
+    "assistant-bob-standby",
+    "assistant-dave",
+    "assistant-carol",
+    "assistant-carol-standby",
+    "assistant-vault",
 )
 
 SPIFFE_SUFFIX_TO_CLIENT_ID: Dict[str, str] = {
@@ -42,6 +49,13 @@ SPIFFE_SUFFIX_TO_CLIENT_ID: Dict[str, str] = {
     "/sa/settlement-converger": "settlement-converger",
     "/sa/travel-ops-mcp": "travel-ops-mcp",
     "/sa/payment-vault-mcp": "payment-vault-mcp",
+    "/sa/assistant-alice": "assistant-alice",
+    "/sa/assistant-bob": "assistant-bob",
+    "/sa/assistant-bob-standby": "assistant-bob-standby",
+    "/sa/assistant-dave": "assistant-dave",
+    "/sa/assistant-carol": "assistant-carol",
+    "/sa/assistant-carol-standby": "assistant-carol-standby",
+    "/sa/assistant-vault": "assistant-vault",
 }
 
 DEFAULT_FLAT_OAUTH_SCOPES: Tuple[str, ...] = ("travel:book", "travel:pay")
@@ -165,7 +179,7 @@ def generate_keycloak_realm_bundle(
     kc_clients: List[Dict[str, Any]] = []
     for cid in c_ids:
         mappers = [sub_mapper, username_mapper] + [
-            _audience_mapper(other) for other in c_ids if other != cid
+            _audience_mapper(other) for other in c_ids
         ]
         kc_clients.append(
             {

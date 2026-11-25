@@ -159,9 +159,27 @@ class OllamaClient:
             meta["invoked_arguments"] = args_dict
             return fn_name, args_dict, meta
 
-        # Fallback if model emitted JSON tool call inside `content`
+        # Fallback if model emitted JSON tool call inside `content` or Ollama's OpenAI-compat
+        # `<tool_call>` parser stripped `content` to `""` despite non-zero completion tokens.
         content = str(msg.get("content") or "")
-        obj = _extract_json_object(content)
+        if not content.strip():
+            tool_specs = [
+                f"{t.get('function', {}).get('name')}({list((t.get('function', {}).get('parameters', {}).get('properties') or {}).keys())})"
+                for t in tools_schema
+                if isinstance(t, Mapping)
+            ]
+            obj, meta_json = self.chat_json(
+                system_prompt=(
+                    f"{system_prompt} Available tools: {', '.join(tool_specs)}. "
+                    "Reply strictly in JSON with keys 'name' (tool name) and 'arguments' (JSON object)."
+                ),
+                user_prompt=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            meta = meta_json
+        else:
+            obj = _extract_json_object(content)
         fn_name = str(obj.get("name") or obj.get("tool") or "")
         raw_args = obj.get("arguments") or obj.get("parameters") or obj
         if not fn_name and len(tools_schema) == 1:

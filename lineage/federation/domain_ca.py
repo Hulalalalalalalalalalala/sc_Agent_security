@@ -14,10 +14,12 @@ Eliminates shared multi-domain CA private keys:
 
 from __future__ import annotations
 
+from collections import OrderedDict
+import json
 import ssl
 import threading
 import time
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, Mapping, Optional, Sequence, Tuple
 
 from lineage.audit import AuditCollectorClient, AuditEventType, AuditStreamEmitter
 from lineage.common.crypto import (
@@ -40,14 +42,56 @@ from lineage.federation.locators import (
 from lineage.identity import IdentityError, TrustBundleResolver, TrustDomainCA
 from lineage.k8s.bootstrap_services import K8sServiceAccountVerifier, _extract_bearer
 from lineage.protocol import (
+    ContinuationBudgetError,
     DPoPError,
     JTIReplayCache,
     LatticeError,
+    LineageToken,
     PermissionLattice,
+    RootBlock,
+    TaskCheckpoint,
     TokenError,
+    decode_token,
+    mint_continuation_root_token,
     mint_root_token,
 )
+from lineage.protocol.token import verify_root_block_signature_ignoring_expiry
 from lineage.revocation import RevocationError, RevocationEvent
+
+
+def parse_consent_issuer_policy(
+    raw: Optional[Mapping[str, Tuple[str, Iterable[str]]] | str],
+) -> Dict[str, Tuple[str, FrozenSet[str]]]:
+    """Parse `k8s_sa -> (bound_owner_sub, allowed_consent_tools)` policy map or semicolon string."""
+    if raw is None:
+        return {}
+    out: Dict[str, Tuple[str, FrozenSet[str]]] = {}
+    if isinstance(raw, Mapping):
+        for sa_key, val in raw.items():
+            clean_sa = str(sa_key or "").strip()
+            if not clean_sa:
+                continue
+            owner_sub, tools_iter = val
+            clean_owner = str(owner_sub or "").strip()
+            clean_tools = frozenset(str(t).strip() for t in tools_iter if str(t).strip())
+            if clean_owner and clean_tools:
+                out[clean_sa] = (clean_owner, clean_tools)
+        return out
+
+    for entry in str(raw).split(";"):
+        part = entry.strip()
+        if not part or "=" not in part:
+            continue
+        sa_name, rhs = part.split("=", 1)
+        clean_sa = sa_name.strip()
+        if ":" not in rhs:
+            continue
+        owner_sub, tools_csv = rhs.rsplit(":", 1)
+        clean_owner = owner_sub.strip()
+        clean_tools = frozenset(t.strip() for t in tools_csv.split(",") if t.strip())
+        if clean_sa and clean_owner and clean_tools:
+            out[clean_sa] = (clean_owner, clean_tools)
+    return out
 
 class AutonomousDomainCAService:
     """Physically isolated single-domain CA issuing `JWT-SVID` + `X.509-SVID`."""
@@ -58,6 +102,7 @@ class AutonomousDomainCAService:
         allowed_k8s_namespace: str,
         audit_collector_url: Optional[str] = None,
         authorized_gateway_sa: Optional[str] = None,
+        authorized_gateway_sas: Optional[Iterable[str]] = None,
         authorized_revocation_sas: Optional[Iterable[str]] = None,
         authorized_directory_sas: Optional[Iterable[str]] = None,
         sa_path_overrides: Optional[Mapping[str, str]] = None,
@@ -78,10 +123,24 @@ class AutonomousDomainCAService:
         on_descriptor_learned: Optional[Callable[[SignedDomainDescriptor], None]] = None,
         oidc_verifier: Optional[Any] = None,
         require_oidc_user_token: bool = False,
+        federation_trust_resolver: Optional[TrustBundleResolver] = None,
+        authorized_auditors: Iterable[str] = (),
+        consent_issuer_policy: Optional[Mapping[str, Tuple[str, Iterable[str]]] | str] = None,
+        max_tracked_roots: int = 16_384,
     ) -> None:
         self.trust_domain = trust_domain
         self.allowed_k8s_namespace = allowed_k8s_namespace
         self.authorized_gateway_sa = authorized_gateway_sa
+        gw_set = {str(s).strip() for s in (authorized_gateway_sas or ()) if str(s).strip()}
+        if authorized_gateway_sa:
+            gw_set.add(str(authorized_gateway_sa).strip())
+        self._authorized_gateway_sas = frozenset(gw_set)
+        self._consent_issuer_policy = parse_consent_issuer_policy(consent_issuer_policy)
+        self._max_tracked_roots = max(256, int(max_tracked_roots))
+        self._cont_lock = threading.Lock()
+        self._issued_roots: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._consumed_checkpoint_ids: "OrderedDict[str, float]" = OrderedDict()
+        self._superseded_prior_roots: "OrderedDict[Tuple[str, str], str]" = OrderedDict()
         self.sa_path_overrides: Dict[str, str] = dict(sa_path_overrides or {})
         self.descriptor_store = descriptor_store
         self.allowed_locator_cidrs = allowed_locator_cidrs
@@ -132,26 +191,32 @@ class AutonomousDomainCAService:
         )
         self.local_resolver = TrustBundleResolver()
         self.local_resolver.register_domain_ca(self.ca)
+        self.federation_trust_resolver: TrustBundleResolver = (
+            federation_trust_resolver if federation_trust_resolver is not None else self.local_resolver
+        )
+        self.federation_trust_resolver.register_domain_ca(self.ca)
 
         default_auds = (f"lct-ca-{trust_domain}", "lct-federation-ca")
         self.k8s_verifier = k8s_verifier or K8sServiceAccountVerifier(
             allowed_audiences=allowed_audiences or default_auds
         )
         self._pop_replay_cache = JTIReplayCache(ttl_seconds=300.0)
-        self._audit_emitter: Optional[AuditStreamEmitter] = (
-            AuditStreamEmitter(
-                self.ca,
-                collector_client=AuditCollectorClient(
-                    audit_collector_url or "",
-                    ssl_context_provider=audit_ssl_context_provider,
-                    locator_provider=audit_locator_provider,
-                    ssl_context_for_locator=audit_ssl_for_locator,
-                ),
-                stream_id=f"spiffe://{trust_domain}/authority/root",
-                best_effort_remote=best_effort_audit,
+        remote_collector = (
+            AuditCollectorClient(
+                audit_collector_url or "",
+                ssl_context_provider=audit_ssl_context_provider,
+                locator_provider=audit_locator_provider,
+                ssl_context_for_locator=audit_ssl_for_locator,
             )
             if (audit_collector_url or audit_locator_provider is not None)
             else None
+        )
+        self._audit_emitter: AuditStreamEmitter = AuditStreamEmitter(
+            self.ca,
+            collector_client=remote_collector,
+            stream_id=f"spiffe://{trust_domain}/authority/root",
+            best_effort_remote=best_effort_audit,
+            authorized_auditors=authorized_auditors,
         )
         self.http = ManagedHTTPService(
             service_name=f"domain-ca-{trust_domain}",
@@ -227,6 +292,80 @@ class AutonomousDomainCAService:
             self.descriptor_store.set_own_descriptor(desc)
         return desc
 
+    def _record_issued_root(self, root: RootBlock) -> None:
+        """Record an issued `RootBlock` in the CA's bounded authoritative root ledger."""
+        rh = root.block_hash()
+        rec = {
+            "root_block_hash": rh,
+            "task_id": root.task_id,
+            "sub": root.sub,
+            "delegate_spiffe_id": root.delegate_spiffe_id,
+            "permissions": root.permissions,
+            "issuer_trust_domain": root.issuer_trust_domain,
+            "iat": root.iat,
+            "exp": root.exp,
+        }
+        with self._cont_lock:
+            if rh in self._issued_roots:
+                self._issued_roots.pop(rh)
+            elif len(self._issued_roots) >= self._max_tracked_roots:
+                self._issued_roots.popitem(last=False)
+            self._issued_roots[rh] = rec
+
+    def _resolve_verified_prior_root(
+        self,
+        ckpt: TaskCheckpoint,
+        raw_prior_root_token: Any = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Authoritatively resolve & verify `ckpt.prior_root_block_hash` (fail-closed)."""
+        with self._cont_lock:
+            existing = self._issued_roots.get(ckpt.prior_root_block_hash)
+            if existing is not None:
+                if (
+                    existing["task_id"] == ckpt.task_id
+                    and existing["sub"] == ckpt.sub
+                    and existing["issuer_trust_domain"] == self.trust_domain
+                ):
+                    return dict(existing)
+
+        if raw_prior_root_token is None or raw_prior_root_token == "":
+            return None
+        try:
+            prior_root: Optional[RootBlock] = None
+            if isinstance(raw_prior_root_token, Mapping):
+                prior_root = RootBlock.from_dict(raw_prior_root_token)
+            elif isinstance(raw_prior_root_token, str):
+                s = raw_prior_root_token.strip()
+                if s.startswith("{"):
+                    prior_root = RootBlock.from_dict(json.loads(s))
+                else:
+                    parsed_t = decode_token(s)
+                    if isinstance(parsed_t, LineageToken):
+                        prior_root = parsed_t.root
+            if prior_root is None:
+                return None
+            if (
+                prior_root.issuer_trust_domain != self.trust_domain
+                or prior_root.task_id != ckpt.task_id
+                or prior_root.sub != ckpt.sub
+                or prior_root.block_hash() != ckpt.prior_root_block_hash
+            ):
+                return None
+            verify_root_block_signature_ignoring_expiry(prior_root, self.local_resolver)
+            self._record_issued_root(prior_root)
+            return {
+                "root_block_hash": prior_root.block_hash(),
+                "task_id": prior_root.task_id,
+                "sub": prior_root.sub,
+                "delegate_spiffe_id": prior_root.delegate_spiffe_id,
+                "permissions": prior_root.permissions,
+                "issuer_trust_domain": prior_root.issuer_trust_domain,
+                "iat": prior_root.iat,
+                "exp": prior_root.exp,
+            }
+        except Exception:
+            return None
+
     def _resolve_workload_path(self, k8s_ns: str, k8s_sa: str) -> str:
         if k8s_ns != self.allowed_k8s_namespace:
             raise PermissionError(
@@ -293,6 +432,13 @@ class AutonomousDomainCAService:
                 self.descriptor_store,
                 on_descriptor_learned=self.on_descriptor_learned,
             )
+        if req.method == "GET" and req.path == "/v1/audit/local":
+            return self._audit_emitter.local_store.serve_http_query(
+                req,
+                self.federation_trust_resolver,
+                node_spiffe_id=self.ca.root_authority_spiffe_id,
+                require_task_id=True,
+            )
         return (
             403,
             {
@@ -325,6 +471,14 @@ class AutonomousDomainCAService:
             if self.descriptor_store is None:
                 return 200, {"trust_domain": self.trust_domain, "descriptors": []}, {}
             return 200, self.descriptor_store.export_gossip_payload(), {}
+
+        if req.method == "GET" and req.path == "/v1/audit/local":
+            return self._audit_emitter.local_store.serve_http_query(
+                req,
+                self.federation_trust_resolver,
+                node_spiffe_id=self.ca.root_authority_spiffe_id,
+                require_task_id=True,
+            )
 
         # All mutating CA routes require a K8s SA JWT strictly in `self.allowed_k8s_namespace`!
         try:
@@ -417,11 +571,175 @@ class AutonomousDomainCAService:
             )
             return status_code, out_body, hdrs
 
-        # Root user-token minting & domain-CA audit logging gated to authorized entry gateway SA
-        if (
-            self.authorized_gateway_sa is None
-            or k8s_sa != self.authorized_gateway_sa
-        ):
+        if req.method == "POST" and req.path == "/v1/ca/mint-consent-token":
+            if k8s_sa not in self._consent_issuer_policy:
+                return (
+                    403,
+                    {
+                        "error": "CONSENT_ISSUER_FORBIDDEN",
+                        "caller": f"{k8s_ns}/{k8s_sa}",
+                        "detail": "Caller ServiceAccount is not authorized in CONSENT_ISSUER_POLICY",
+                    },
+                    {},
+                )
+            bound_owner_sub, allowed_consent_tools = self._consent_issuer_policy[k8s_sa]
+            body = req.json()
+            req_td = str(body.get("trust_domain", self.trust_domain))
+            if req_td != self.trust_domain:
+                return 403, {"error": "cross_domain_root_mint_forbidden"}, {}
+
+            requested_sub = str(body.get("sub") or bound_owner_sub).strip()
+            if requested_sub != bound_owner_sub:
+                return (
+                    403,
+                    {
+                        "error": "CONSENT_SUB_MISMATCH",
+                        "detail": f"Caller {k8s_sa!r} may only mint consent for {bound_owner_sub!r}, got {requested_sub!r}",
+                    },
+                    {},
+                )
+
+            raw_oidc_consent = str(body.get("user_oidc_token") or "").strip()
+            if not raw_oidc_consent:
+                return (
+                    401,
+                    {
+                        "error": "OWNER_CONSENT_PROOF_REQUIRED",
+                        "detail": "Cryptographic owner user_oidc_token is mandatory for /v1/ca/mint-consent-token",
+                    },
+                    {},
+                )
+            if self.oidc_verifier is None:
+                return (
+                    403,
+                    {
+                        "error": "OWNER_CONSENT_PROOF_REQUIRED",
+                        "detail": "Domain CA oidc_verifier is not configured to verify owner consent",
+                    },
+                    {},
+                )
+            try:
+                verified_owner = self.oidc_verifier.verify_jwt(raw_oidc_consent)
+            except Exception as exc:
+                return (
+                    401,
+                    {
+                        "error": "INVALID_OWNER_CONSENT_PROOF",
+                        "detail": str(exc),
+                    },
+                    {},
+                )
+            if verified_owner.canonical_lct_sub != bound_owner_sub:
+                return (
+                    403,
+                    {
+                        "error": "CONSENT_OIDC_SUB_MISMATCH",
+                        "detail": f"Verified OIDC owner {verified_owner.canonical_lct_sub!r} != bound {bound_owner_sub!r}",
+                    },
+                    {},
+                )
+
+            try:
+                perms_c = PermissionLattice.from_dict(body["permissions"])
+                if not perms_c.tools or not set(perms_c.tools).issubset(allowed_consent_tools):
+                    return (
+                        403,
+                        {
+                            "error": "CONSENT_TOOL_FORBIDDEN",
+                            "detail": f"Requested consent tools {sorted(perms_c.tools)!r} exceed allowed {sorted(allowed_consent_tools)!r}",
+                        },
+                        {},
+                    )
+                if perms_c.max_amount is not None and float(perms_c.max_amount) != 0.0:
+                    return (
+                        403,
+                        {
+                            "error": "CONSENT_MAX_AMOUNT_FORBIDDEN",
+                            "detail": "Co-authorization consent tokens cannot carry positive max_amount spend authority",
+                        },
+                        {},
+                    )
+                consent_ttl = require_finite_timestamp(
+                    body.get("ttl_seconds", 120.0), "ttl_seconds"
+                )
+                if consent_ttl < 1.0 or consent_ttl > 300.0:
+                    return (
+                        403,
+                        {
+                            "error": "CONSENT_TTL_EXCEEDED",
+                            "detail": "Consent token ttl_seconds must be within [1.0, 300.0]",
+                        },
+                        {},
+                    )
+                consent_tok = mint_root_token(
+                    self.ca,
+                    task_id=str(body["task_id"]),
+                    sub=bound_owner_sub,
+                    sender_jkt=str(body["sender_jkt"]),
+                    first_hop_spiffe_id=str(body["first_hop_spiffe_id"]),
+                    first_hop_jkt=str(body["first_hop_jkt"]),
+                    permissions=perms_c,
+                    max_depth=min(int(body.get("max_depth", 4)), 6),
+                    ttl_seconds=consent_ttl,
+                    hop_segment=str(body.get("hop_segment", "OwnerConsent")),
+                )
+            except (
+                KeyError,
+                ValueError,
+                TypeError,
+                CryptoError,
+                IdentityError,
+                TokenError,
+                LatticeError,
+            ) as exc:
+                return 400, {"error": "invalid_consent_mint_request", "detail": str(exc)}, {}
+
+            self._record_issued_root(consent_tok.root)
+            consent_detail: Dict[str, Any] = {
+                "first_hop_spiffe_id": consent_tok.holder_spiffe_id,
+                "consent_grant": True,
+                "co_auth_consent": True,
+                "hop0_oidc_bridged": True,
+                "oidc_issuer": verified_owner.issuer,
+                "oidc_username": verified_owner.username,
+                "oidc_jti": verified_owner.jti,
+            }
+            if body.get("requester_sub"):
+                consent_detail["requester_sub"] = str(body["requester_sub"])
+                consent_detail["co_authorized_principals"] = [
+                    str(body["requester_sub"]),
+                    consent_tok.sub,
+                ]
+            if self._audit_emitter is not None:
+                self._audit_emitter.emit(
+                    event_type=AuditEventType.ROOT_MINT,
+                    task_id=consent_tok.task_id,
+                    sub=consent_tok.sub,
+                    lineage_path=consent_tok.lineage_path,
+                    hop_index=0,
+                    epoch=0,
+                    root_block_hash=consent_tok.root_block_hash,
+                    current_block_hash=consent_tok.leaf_block_hash,
+                    decision="ALLOW",
+                    permissions_summary=perms_c.to_dict(),
+                    action_detail=consent_detail,
+                )
+            return (
+                200,
+                {
+                    "compact_token": consent_tok.encode_compact(),
+                    "task_id": consent_tok.task_id,
+                    "sub": consent_tok.sub,
+                    "lineage_path": consent_tok.lineage_path,
+                    "root_block_hash": consent_tok.root_block_hash,
+                    "consent_grant": True,
+                    "hop0_oidc_bridged": True,
+                },
+                {},
+            )
+
+        # Root user-token minting & domain-CA audit logging gated to authorized entry gateway SA(s)
+        if not self._authorized_gateway_sas or k8s_sa not in self._authorized_gateway_sas:
             return (
                 403,
                 {"error": "gateway_only_endpoint", "caller": f"{k8s_ns}/{k8s_sa}"},
@@ -533,6 +851,21 @@ class AutonomousDomainCAService:
             ) as exc:
                 return 400, {"error": "invalid_mint_request", "detail": str(exc)}, {}
 
+            self._record_issued_root(tok.root)
+            mint_action_detail: Dict[str, Any] = {
+                "first_hop_spiffe_id": tok.holder_spiffe_id,
+            }
+            if hop0_oidc_detail:
+                mint_action_detail.update(hop0_oidc_detail)
+            if bool(body.get("co_auth_consent")):
+                mint_action_detail["co_auth_consent"] = True
+                if body.get("requester_sub"):
+                    mint_action_detail["requester_sub"] = str(body["requester_sub"])
+                    mint_action_detail["co_authorized_principals"] = [
+                        str(body["requester_sub"]),
+                        tok.sub,
+                    ]
+
             if self._audit_emitter is not None:
                 self._audit_emitter.emit(
                     event_type=AuditEventType.ROOT_MINT,
@@ -545,7 +878,7 @@ class AutonomousDomainCAService:
                     current_block_hash=tok.leaf_block_hash,
                     decision="ALLOW",
                     permissions_summary=perms.to_dict(),
-                    action_detail=hop0_oidc_detail,
+                    action_detail=mint_action_detail,
                 )
             out_mint: Dict[str, Any] = {
                 "compact_token": tok.encode_compact(),
@@ -558,6 +891,222 @@ class AutonomousDomainCAService:
             if hop0_oidc_detail:
                 out_mint["oidc_bridge"] = hop0_oidc_detail
             return 200, out_mint, {}
+
+        if req.method == "POST" and req.path == "/v1/ca/mint-continuation-token":
+            body = req.json()
+            req_td = str(body.get("trust_domain", self.trust_domain))
+            if req_td != self.trust_domain:
+                return (
+                    403,
+                    {
+                        "error": "cross_domain_root_mint_forbidden",
+                        "detail": (
+                            f"Autonomous CA for {self.trust_domain!r} cannot mint continuation tokens for {req_td!r}"
+                        ),
+                    },
+                    {},
+                )
+            raw_oidc_token = str(body.get("user_oidc_token") or "").strip()
+            hop0_oidc_detail_c: Optional[Dict[str, Any]] = None
+            if raw_oidc_token or self.require_oidc_user_token:
+                if not raw_oidc_token or self.oidc_verifier is None:
+                    return 401, {"error": "missing_or_unconfigured_user_oidc_token"}, {}
+                try:
+                    verified_oidc = self.oidc_verifier.verify_jwt(raw_oidc_token)
+                except Exception as exc:
+                    return 401, {"error": "invalid_user_oidc_token", "detail": str(exc)}, {}
+                hop0_oidc_detail_c = {
+                    "hop0_oidc_bridged": True,
+                    "oidc_issuer": verified_oidc.issuer,
+                    "oidc_username": verified_oidc.username,
+                    "oidc_jti": verified_oidc.jti,
+                }
+
+            raw_ckpt = body.get("checkpoint")
+            if not isinstance(raw_ckpt, Mapping):
+                return 400, {"error": "missing_checkpoint"}, {}
+            try:
+                ckpt = TaskCheckpoint.from_dict_and_verify(
+                    raw_ckpt, self.federation_trust_resolver
+                )
+            except TokenError as exc:
+                return 403, {"error": "invalid_task_checkpoint", "detail": str(exc)}, {}
+
+            if hop0_oidc_detail_c and ckpt.sub != verified_oidc.canonical_lct_sub:
+                return 403, {"error": "oidc_sub_mismatch_with_checkpoint"}, {}
+
+            # 1. Fail-closed verification of authoritative prior RootBlock (`[HIGH-M9-01]`)
+            prior_root_rec = self._resolve_verified_prior_root(
+                ckpt, body.get("prior_root_token")
+            )
+            if prior_root_rec is None:
+                return (
+                    403,
+                    {
+                        "error": "PRIOR_ROOT_NOT_VERIFIED",
+                        "detail": (
+                            f"Prior RootBlock {ckpt.prior_root_block_hash!r} could not be cryptographically "
+                            "verified via CA ledger or prior_root_token"
+                        ),
+                    },
+                    {},
+                )
+
+            expected_entry_delegate = str(prior_root_rec["delegate_spiffe_id"])
+            if ckpt.signer_spiffe_id != expected_entry_delegate:
+                return (
+                    403,
+                    {
+                        "error": "CHECKPOINT_SIGNER_MISMATCH",
+                        "detail": (
+                            f"Checkpoint signer {ckpt.signer_spiffe_id!r} != authorized entry delegate "
+                            f"{expected_entry_delegate!r}"
+                        ),
+                    },
+                    {},
+                )
+            req_first_hop = str(body.get("first_hop_spiffe_id") or "").strip()
+            if req_first_hop != expected_entry_delegate:
+                return (
+                    403,
+                    {
+                        "error": "CONTINUATION_HOLDER_MISMATCH",
+                        "detail": (
+                            f"Requested first_hop_spiffe_id {req_first_hop!r} != authorized entry delegate "
+                            f"{expected_entry_delegate!r}"
+                        ),
+                    },
+                    {},
+                )
+            prior_perms: PermissionLattice = prior_root_rec["permissions"]
+
+            # 2. Atomic check-and-consume anti-replay & single-successor lock (`[CRITICAL-M9-01]`)
+            with self._cont_lock:
+                if ckpt.checkpoint_id in self._consumed_checkpoint_ids:
+                    return (
+                        409,
+                        {
+                            "error": "CONTINUATION_REPLAY_REJECTED",
+                            "detail": f"Checkpoint {ckpt.checkpoint_id!r} has already been consumed",
+                        },
+                        {},
+                    )
+                if (ckpt.task_id, ckpt.prior_root_block_hash) in self._superseded_prior_roots:
+                    return (
+                        409,
+                        {
+                            "error": "CONTINUATION_REPLAY_REJECTED",
+                            "detail": (
+                                f"Prior RootBlock {ckpt.prior_root_block_hash!r} for task "
+                                f"{ckpt.task_id!r} has already been superseded"
+                            ),
+                        },
+                        {},
+                    )
+
+                try:
+                    mint_ttl_c = require_finite_timestamp(
+                        body.get("ttl_seconds", 900.0), "ttl_seconds"
+                    )
+                    if mint_ttl_c < 1.0 or mint_ttl_c > 7200.0:
+                        raise ValueError("ttl_seconds must be within [1.0, 7200.0]")
+                    max_depth_c = int(body.get("max_depth", 6))
+                    if isinstance(body.get("max_depth"), bool) or max_depth_c < 1 or max_depth_c > 16:
+                        raise ValueError("max_depth must be within [1, 16]")
+                    req_perms = PermissionLattice.from_dict(body["permissions"])
+                    cont_tok = mint_continuation_root_token(
+                        authority_ca=self.ca,
+                        checkpoint=ckpt,
+                        sender_jkt=str(body["sender_jkt"]),
+                        first_hop_spiffe_id=req_first_hop,
+                        first_hop_jkt=str(body["first_hop_jkt"]),
+                        permissions=req_perms,
+                        prior_permissions=prior_perms,
+                        max_depth=max_depth_c,
+                        hop_segment=str(body.get("hop_segment", "AssistantAliceCont")),
+                        first_hop_public_jwk=body.get("first_hop_public_jwk"),
+                        first_hop_return_endpoint=body.get("first_hop_return_endpoint"),
+                        ttl_seconds=mint_ttl_c,
+                    )
+                except ContinuationBudgetError as exc:
+                    return (
+                        403,
+                        {"error": "CONTINUATION_BUDGET_EXCEEDED", "detail": str(exc)},
+                        {},
+                    )
+                except (
+                    KeyError,
+                    ValueError,
+                    TypeError,
+                    CryptoError,
+                    IdentityError,
+                    TokenError,
+                    LatticeError,
+                ) as exc:
+                    return 400, {"error": "invalid_continuation_request", "detail": str(exc)}, {}
+
+                if len(self._consumed_checkpoint_ids) >= self._max_tracked_roots:
+                    self._consumed_checkpoint_ids.popitem(last=False)
+                self._consumed_checkpoint_ids[ckpt.checkpoint_id] = time.time()
+
+                if len(self._superseded_prior_roots) >= self._max_tracked_roots:
+                    self._superseded_prior_roots.popitem(last=False)
+                self._superseded_prior_roots[(ckpt.task_id, ckpt.prior_root_block_hash)] = (
+                    cont_tok.root_block_hash
+                )
+                if len(self._issued_roots) >= self._max_tracked_roots:
+                    self._issued_roots.popitem(last=False)
+                self._issued_roots[cont_tok.root_block_hash] = {
+                    "root_block_hash": cont_tok.root_block_hash,
+                    "task_id": cont_tok.task_id,
+                    "sub": cont_tok.sub,
+                    "delegate_spiffe_id": cont_tok.root.delegate_spiffe_id,
+                    "permissions": cont_tok.root.permissions,
+                    "issuer_trust_domain": cont_tok.root.issuer_trust_domain,
+                    "iat": cont_tok.root.iat,
+                    "exp": cont_tok.root.exp,
+                }
+
+            cont_detail: Dict[str, Any] = {
+                "continuation": True,
+                "resumes_checkpoint_id": ckpt.checkpoint_id,
+                "prior_root_block_hash": ckpt.prior_root_block_hash,
+                "consumed_amount": ckpt.consumed_amount,
+                "consumed_calls": ckpt.consumed_calls,
+                "completed_branches": list(ckpt.completed_branches),
+                "remaining_branches": list(ckpt.remaining_branches),
+                "first_hop_spiffe_id": cont_tok.holder_spiffe_id,
+            }
+            if hop0_oidc_detail_c:
+                cont_detail.update(hop0_oidc_detail_c)
+
+            self._audit_emitter.emit(
+                event_type=AuditEventType.ROOT_MINT,
+                task_id=cont_tok.task_id,
+                sub=cont_tok.sub,
+                lineage_path=cont_tok.lineage_path,
+                hop_index=0,
+                epoch=0,
+                root_block_hash=cont_tok.root_block_hash,
+                parent_block_hash=ckpt.prior_root_block_hash,
+                current_block_hash=cont_tok.leaf_block_hash,
+                decision="ALLOW",
+                permissions_summary=req_perms.to_dict(),
+                action_detail=cont_detail,
+            )
+            return (
+                200,
+                {
+                    "compact_token": cont_tok.encode_compact(),
+                    "task_id": cont_tok.task_id,
+                    "sub": cont_tok.sub,
+                    "lineage_path": cont_tok.lineage_path,
+                    "root_block_hash": cont_tok.root_block_hash,
+                    "prior_root_block_hash": ckpt.prior_root_block_hash,
+                    "resumes_checkpoint_id": ckpt.checkpoint_id,
+                },
+                {},
+            )
 
         if req.method == "POST" and req.path == "/v1/ca/emit-revocation-audit":
             body = req.json()

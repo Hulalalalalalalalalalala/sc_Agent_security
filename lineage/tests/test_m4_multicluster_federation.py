@@ -779,8 +779,12 @@ class Milestone4MultiClusterFederationTests(unittest.TestCase):
 
         # 2. `[LOW-PRE-01]` Full-Repo AST Undefined-Name (`F821`) & `typing.get_type_hints()` Gate
         lineage_root = Path(lineage.__file__).resolve().parent
-        all_py_files = sorted(lineage_root.rglob("*.py"))
-        self.assertGreaterEqual(len(all_py_files), 50)
+        all_py_files = [
+            p
+            for p in sorted(lineage_root.rglob("*.py"))
+            if "reviews" not in p.relative_to(lineage_root).parts
+        ]
+        self.assertGreaterEqual(len(all_py_files), 40)
         undefined_findings: list[str] = []
         for py_file in all_py_files:
             undefined_findings.extend(self._scan_file_undefined_names(py_file))

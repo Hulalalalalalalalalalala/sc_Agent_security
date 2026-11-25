@@ -166,3 +166,26 @@ bash lineage/k8s/run-e2e-multicluster-ollama.sh
    `AutonomousDomainCAService`（`POST /v1/ca/mint-root-token`）通过 `OIDCTokenVerifier` 对可选入参 `user_oidc_token` 执行 `RS256` 签名、`iss` 域描述符白名单与有效期校验，将已认证人类身份（如 `alice` → `user:alice@org-alpha.io`）密码学桥接写入 LCT 根块 `B_0` 及 `ROOT_MINT` 审计链，实现“首跳标准 OIDC 认证 + 后续全跳离线格缩权”。
 3. **同一四机部署的三协议实证对比（`multihost.sh compare`）**：
    业务容器（`specialist_apps.py`、`mcp_servers.py`）零协议分叉；`LineageSidecar` 在同一套 Pod 上透明处理 **`oauth_centralized`**（每跳跨机回调 `alpha-sts`）、**`oauth_federated`**（跨域边界经对端域 STS 验签中继并压入 `act` 链）与 **`lct`**（`DPoP` + 离线格缩权 + 多父 DAG 信封），在六大维度自动采集真实测量指标：(1) 多跳跨机延迟与在线 STS RPC 次数；(2) 动态细粒度参数越权（`$950`/`Paris` 在扁平 `travel:book` 下放行 vs. LCT `403` 拦截）；(3) 多父汇聚与单分支取消（线性 `act` 无分支隔离 vs. LCT Fagin 平滑降级）；(4) 慢主节点故障切换后的僵尸双花（未吊销 `T_1` `200` 双花 vs. LCT `403 LINEAGE_REVOKED`）；(5) 中心 `alpha-sts` 断连影响；(6) 跨组织因果审计图重构覆盖率（STS 孤立日志 `0%` vs. LCT `100%` 哈希链 DAG 重构）。
+
+---
+
+## 8. 对称对等工作助手平台（Platform v2：不可信公共黄页 + 全分布式执行与本地审计 — Milestone 9）
+
+Milestone 9（`lineage/workspace_agents/`、`lineage/audit/distributed.py`、`lineage/scale/`）将系统从传统 C/S 订票代理演进为面向多自然人/多组织的**对称对等工作助手网络（Symmetric Peer-to-Peer Workspace Assistants）**：
+
+1. **不可信公共黄页与全分布式安全平面分离（`--registry-mode centralized|federated`）**：
+   - **发现平面（Untrusted Public Yellow Pages）**：`AgentDirectoryService` 可选以单实例公共黄页模式（`registry_mode="centralized"`）或按域联邦模式（`registry_mode="federated"`）运行，仅存储经域根 SVID 与持有者 `cnf.jkt` 双重验签及单调版本号防回滚校验的公开 `AgentCard`（**零私钥、零授权状态、零审计日志**），调用方本地二次重验每张卡片签名；
+   - **执行与审计平面（零中心审计收集器）**：每个自治域 CA（`AutonomousDomainCAService`）与每个对等助手 `LineageSidecar` 在本地维护有界签名哈希链存储 `LocalAuditStore`（`max_entries=50,000`、`max_streams=10,000`），通过防重放 `lct-audit-query+jwt` 认证暴露 `GET /v1/audit/local?task_id=<id>`。无状态 `DistributedAuditor` 按 `task_id` 从入口节点出发沿因果引用（`delegate_spiffe_id`、`target_spiffe_id`、`issuer_spiffe_id`、`co_authorized_principals`、`prior_root_block_hash`）执行有界定向 BFS 按需拉取并完成 `100%` 因果 DAG 重构，彻底消除中心化 `audit-collector` 单点瓶颈。
+2. **跨主体隐私隔离（`403 CROSS_PRINCIPAL_DENIED`）与双主体联合授权（`CoAuthorizedToken` `lctco1.`）**：
+   - 普通 `MultiParentToken` 严格维持单一主体（`sub`）不变式，阻断异构主体混拼；
+   - 资源宿主 Sidecar 可声明 `resource_owner_sub` 与 `owner_protected_tools`（如 Bob 的 `hr_salary_read`、`calendar_write`、`calendar_free_busy`）：任何外部主体（如 Alice）单方持令牌访问一律返回 **`403 CROSS_PRINCIPAL_DENIED`**；
+   - 新增显式联合授权信封 **`CoAuthorizedToken`**（线格式前缀 `lctco1.`，全链路日志自动脱敏），同时绑定请求方链 `requester_chain` 与资源所有者显式同意链 `owner_consent_chain`（如 `[user:alice@org-alpha.io, user:bob@org-beta.io]`），验证器严格按两链权限格交集（`owner_consent ⊓ requester`）与 `allowed_co_auth_tools` 白名单求值，仅放行脱敏 `calendar_free_busy`，继续阻断仅限本人访问的 `hr_salary_read` 与 `calendar_write`。
+3. **长任务到期检查点（`TaskCheckpoint`）与剩余预算续期根块（`ContinuationToken`）**：
+   - 工作负载机器 SVID 在 `50%` TTL 自动续期**绝不延长**人类任务授权 `RootBlock.exp` / `AttenuationBlock.exp`；任务授权自然到期时验证器精确返回 **`401 TASK_AUTH_EXPIRED`**（不误触发恶意越权隔离）并附带持有者签名的 `TaskCheckpoint`（记录已完成分支与已消耗预算/调用次数）；
+   - `POST /v1/ca/mint-continuation-token` 对照域 CA 本地 `LocalAuditStore` 中的原始 `ROOT_MINT` 记录强校验剩余额度扣减单调性（任何超额续期请求立即返回 **`403 CONTINUATION_BUDGET_EXCEEDED`**），签发携带 `resumes_checkpoint_id` 与 `prior_root_block_hash` 的续期根块，`CausalChainAuditor` 自动缝合续期前后两段因果树（`VERIFIED_TASK_CONTINUATION`）。
+4. **Epoch 无关分支幂等键（`branch_idempotency_key`）与提交后响应丢失防双花**：
+   - 协调器对所有协作分支统一启用 `use_prune_and_graft=True`，并计算与故障切换代数 `epoch` 无关的确定性幂等键 `branch_idempotency_key = sha256(f"{task_id}:{logical_branch_id}")`（`X-LCT-Idempotency-Key`）；
+   - 当主节点（`epoch=0`）已在金库 `IdempotencyLedger` 落账但因网络丢包/超时触发 `Atomic Prune-and-Graft` 切换至备节点（`epoch=1`）时，备节点通过预接管状态查询 `query_operation_status` 或携带相同 `branch_idempotency_key` 重试，获得原始收据且 **`idempotent_replay=True`（唯一扣费次数严格等于 `1`）**，而延迟苏醒的旧主节点仍被撤销前缀树以 **`403 LINEAGE_REVOKED`** 阻断。
+5. **真实 `qwen2.5:3b` 黄页动态意图路由与 24 节点分布式扩展性基准（`lineage/scale/`）**：
+   - `WorkspaceIntentRouter` 实时读取公共黄页可用 `AgentCard` 技能目录并调用 `Ollama qwen2.5:3b` 动态规划跨组织协作分支与子预算，同时在代码层强制与父级 `PermissionLattice` 求交钳制，彻底免疫提示词注入提权；
+   - `python3 -m lineage.scale.distributed_benchmark --tiers 4,12,24` 在 `4 / 12 / 24` 个真实 HTTP/Sidecar 对等节点（横跨 4 个自治信任域、`1` 个不可信公共黄页、`0` 个中心审计收集器）上实测对比 `oauth_centralized`、`oauth_federated` 与 `lct` 多跳延迟、在线 STS RPC 次数（`N=24` 时 OAuth `19` 次 vs. LCT **`0` 次**）、全域级联撤销收敛时间以及 `DistributedAuditor` 定向 BFS 拉取延迟与 `100.0%` DAG 重构准确率（详见 [`scale/latest_scale_report.md`](./scale/latest_scale_report.md)）。

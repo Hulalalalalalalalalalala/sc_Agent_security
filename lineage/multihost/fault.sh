@@ -87,8 +87,17 @@ resolve_target_deployment() {
     converger|settlement-converger)
       echo "kind-lctmh-pay lineage-pay settlement-converger"
       ;;
+    bob-primary|assistant-bob)
+      echo "kind-lctmh-beta lineage-beta assistant-bob"
+      ;;
+    carol-primary|assistant-carol)
+      echo "kind-lctmh-pay lineage-pay assistant-carol"
+      ;;
+    dave|assistant-dave)
+      echo "kind-lctmh-beta lineage-beta assistant-dave"
+      ;;
     *)
-      echo "ERROR: Unsupported target '$1' (expected hotel-primary, flight-specialist, or settlement-converger)" >&2
+      echo "ERROR: Unsupported target '$1' (expected hotel-primary, flight-specialist, settlement-converger, assistant-bob, assistant-carol, or assistant-dave)" >&2
       exit 2
       ;;
   esac

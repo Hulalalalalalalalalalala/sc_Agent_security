@@ -19,13 +19,18 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from lineage.identity.spiffe import WorkloadIdentity
-from lineage.protocol.token import LineageToken, MultiParentToken, TokenError
+from lineage.protocol.token import (
+    CoAuthorizedToken,
+    LineageToken,
+    MultiParentToken,
+    TokenError,
+)
 from lineage.verifier.policy_verifier import VerificationResult
 
-TokenUnion = Union[LineageToken, MultiParentToken]
+TokenUnion = Union[LineageToken, MultiParentToken, CoAuthorizedToken]
 
 
 @dataclass(frozen=True)
@@ -166,20 +171,17 @@ class MultiParentConvergenceInbox:
                 bucket_chains = []
                 p_map = {}
 
-            expected_root = (
-                bucket_chains[0].root_block_hash
-                if bucket_chains
-                else incoming[0].root_block_hash
-            )
+            candidate_all = list(bucket_chains) + list(incoming)
+            from lineage.protocol.token import are_roots_continuously_linked
+
+            if not are_roots_continuously_linked(candidate_all):
+                self._buckets[key] = (bucket_chains, p_map, ts + self.ttl_seconds)
+                raise TokenError(
+                    "Cross-root splicing rejected in MultiParentConvergenceInbox"
+                )
             existing_hashes = {c.leaf_block_hash for c in bucket_chains}
 
             for ch in incoming:
-                if ch.root_block_hash != expected_root:
-                    # Restore unmodified bucket before raising
-                    self._buckets[key] = (bucket_chains, p_map, ts + self.ttl_seconds)
-                    raise TokenError(
-                        "Cross-root splicing rejected in MultiParentConvergenceInbox"
-                    )
                 if ch.leaf_block_hash not in existing_hashes:
                     bucket_chains.append(ch)
                     existing_hashes.add(ch.leaf_block_hash)
@@ -214,13 +216,38 @@ class MultiParentConvergenceInbox:
                 f"No converged parent chains found for task_id={task_id!r}, sub={sub!r}"
             )
 
-        # Prefer unexpired chains if any remain; if all expired, retain so verifier emits exact expiry code
+        # Prefer unexpired chains PLUS any pre-checkpoint chains explicitly re-anchored by a live continuation chain!
         live_chains = [
             ch
             for ch in chains
             if (ch.hops[-1].exp if ch.hops else ch.root.exp) > ts - 5.0
         ]
-        selected = live_chains if live_chains else chains
+        if live_chains:
+            prior_by_hash = {
+                ch.root_block_hash: ch.root.prior_root_block_hash for ch in chains
+            }
+            re_anchored_roots: Set[str] = set()
+            frontier = [
+                ch.root.prior_root_block_hash
+                for ch in live_chains
+                if ch.root.prior_root_block_hash is not None
+            ]
+            while frontier:
+                pr = frontier.pop()
+                if pr and pr not in re_anchored_roots:
+                    re_anchored_roots.add(pr)
+                    nxt_pr = prior_by_hash.get(pr)
+                    if nxt_pr:
+                        frontier.append(nxt_pr)
+            live_hashes = {ch.leaf_block_hash for ch in live_chains}
+            selected = [
+                ch
+                for ch in chains
+                if ch.leaf_block_hash in live_hashes
+                or ch.root_block_hash in re_anchored_roots
+            ]
+        else:
+            selected = chains
 
         mpt = MultiParentToken.assemble_and_sign(
             holder_identity=holder_identity,

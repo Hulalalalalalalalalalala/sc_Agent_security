@@ -94,7 +94,32 @@ See [`multihost/MULTIHOST_GUIDE.md`](./multihost/MULTIHOST_GUIDE.md) for Windows
 
 ---
 
-## 5. Safe GitHub Packaging & Push (`push_to_github.sh`)
+## 5. Platform v2: Symmetric Peer-to-Peer Workspace Assistants & 24-Node Scale Benchmark (Milestone 9)
+
+Platform v2 (`--topology workspace --registry-mode centralized|federated`) deploys symmetric autonomous peer assistants (`assistant-alice`, `assistant-bob` + standby + `assistant-dave`, `assistant-carol` + standby + `assistant-vault`) backed by **1 Untrusted Public Yellow Pages** (`0` private keys, `0` auth state, `0` audit logs) and **0 Central Audit Collectors** (`LocalAuditStore` per node + stateless on-demand `DistributedAuditor` targeted BFS pull):
+
+```bash
+# 1. Deploy 3-domain symmetric workspace peers (alpha + beta + pay; zero audit cluster needed!)
+bash lineage/scripts/multihost.sh deploy \
+  --roles alpha,beta,pay \
+  --topology workspace \
+  --registry-mode centralized \
+  --wait-all-ready
+
+# 2. Run all 5 Platform v2 scenarios (LLM Yellow-Pages routing, CoAuthorizedToken lctco1.,
+#    TaskCheckpoint + ContinuationToken, post-commit idempotent failover, & DistributedAuditor)
+bash lineage/scripts/multihost.sh workspace-demo
+
+# 3. Query any task's causal DAG on-demand via stateless DistributedAuditor (0 central collector)
+bash lineage/scripts/multihost.sh audit <task_id> --distributed
+
+# 4. Run the 4 / 12 / 24-peer distributed scaling & decentralized audit benchmark
+bash lineage/scripts/multihost.sh scale-bench --tiers 4,12,24 --output-dir lineage/scale/results
+```
+
+---
+
+## 6. Safe GitHub Packaging & Push (`push_to_github.sh`)
 
 ```bash
 # Pre-flight verification (0 files > 50 MB, 0 private keys/tokens, .tools/ & src/ excluded)

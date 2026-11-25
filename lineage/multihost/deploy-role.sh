@@ -60,6 +60,9 @@ IMAGE_TAG="${LCT_IMAGE_TAG:-lineage-lct:m8}"
 KEYCLOAK_IMAGE="${LCT_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.5.2}"
 STS_ENGINE="auto"
 DELEGATION_MODE="dual"
+TOPOLOGY="travel"
+REGISTRY_MODE="federated"
+AUDIT_MODE=""
 OAUTH_CREDS_FILE=""
 AUTO_PIN_LOCAL="true"
 WAIT_ALL_READY="false"
@@ -76,6 +79,8 @@ Usage:
     [--discover mdns] \
     [--sts-engine auto|keycloak|lightweight|none] [--with-keycloak] \
     [--delegation-mode dual|lct|oauth_centralized|oauth_federated] \
+    [--topology travel|workspace] [--registry-mode federated|centralized] \
+    [--audit-mode centralized|decentralized] \
     [--oauth-creds-file <file>] \
     [--base-port <30000..32700>] [--port-override <slot=port>]... \
     [--anchors-output <file>] \
@@ -95,6 +100,9 @@ while [[ $# -gt 0 ]]; do
     --without-keycloak) STS_ENGINE="lightweight"; shift ;;
     --keycloak-image) KEYCLOAK_IMAGE="${2:-}"; shift 2 ;;
     --delegation-mode) DELEGATION_MODE="${2:-}"; shift 2 ;;
+    --topology) TOPOLOGY="${2:-}"; shift 2 ;;
+    --registry-mode) REGISTRY_MODE="${2:-}"; shift 2 ;;
+    --audit-mode) AUDIT_MODE="${2:-}"; shift 2 ;;
     --oauth-creds-file) OAUTH_CREDS_FILE="${2:-}"; shift 2 ;;
     --base-port) BASE_PORT="${2:-}"; shift 2 ;;
     --port-override) PORT_OVERRIDES+=("${2:-}"); shift 2 ;;
@@ -134,7 +142,7 @@ ORIG_KUBE_CTX="$(kubectl config current-context 2>/dev/null || true)"
 trap 'restore_kube_context "${ORIG_KUBE_CTX}"' EXIT
 
 if [[ "${SKIP_PREFLIGHT}" != "true" ]]; then
-  PF_ARGS=(--roles "${ROLES_SPEC}" --llm-url "${LLM_URL}" --llm-model "${LLM_MODEL}")
+  PF_ARGS=(--roles "${ROLES_SPEC}" --topology "${TOPOLOGY}" --llm-url "${LLM_URL}" --llm-model "${LLM_MODEL}")
   if [[ -n "${ADVERTISE_IP}" ]]; then
     PF_ARGS+=(--advertise-ip "${ADVERTISE_IP}")
   fi
@@ -151,7 +159,7 @@ if [[ "${SKIP_PREFLIGHT}" != "true" ]]; then
 fi
 
 # 1. Allocate conflict-free local NodePorts per role
-ALLOC_ARGS=(allocate-ports --roles "${ROLES_SPEC}" --check-host-free)
+ALLOC_ARGS=(allocate-ports --roles "${ROLES_SPEC}" --topology "${TOPOLOGY}" --check-host-free)
 if [[ -n "${BASE_PORT}" ]]; then
   ALLOC_ARGS+=(--base-port "${BASE_PORT}")
 fi
@@ -241,7 +249,7 @@ for r in ${ROLES_LIST}; do
     echo "[deploy] Kind cluster '${cname}' already exists; reusing."
   else
     echo "[deploy] Creating Kind cluster '${cname}' with local extraPortMappings (${role_ports_j})..."
-    "${PY_BIN}" -m lineage.multihost.config_gen kind-config --role "${r}" --ports-json "${role_ports_j}" | \
+    "${PY_BIN}" -m lineage.multihost.config_gen kind-config --role "${r}" --topology "${TOPOLOGY}" --ports-json "${role_ports_j}" | \
       kind create cluster --name "${cname}" ${KIND_IMG_ARGS[@]+"${KIND_IMG_ARGS[@]}"} --config -
   fi
   restore_kube_context "${ORIG_KUBE_CTX}"
@@ -301,7 +309,11 @@ for r in ${ROLES_LIST}; do
   for s in ${SEEDS[@]+"${SEEDS[@]}"}; do
     seed_flags+=(--seed "${s}")
   done
-  echo "[deploy] Applying identity-addressed manifests for role '${r}' (ns=${ns}, sts=${r_sts_eng}, mode=${DELEGATION_MODE}, svid_ttl=${SVID_TTL}s)..."
+  audit_flag=()
+  if [[ -n "${AUDIT_MODE}" ]]; then
+    audit_flag=(--audit-mode "${AUDIT_MODE}")
+  fi
+  echo "[deploy] Applying identity-addressed manifests for role '${r}' (ns=${ns}, topology=${TOPOLOGY}, registry=${REGISTRY_MODE}, sts=${r_sts_eng}, mode=${DELEGATION_MODE}, svid_ttl=${SVID_TTL}s)..."
   "${PY_BIN}" -m lineage.multihost.config_gen render-manifest \
     --role "${r}" \
     --image "${IMAGE_TAG}" \
@@ -311,6 +323,9 @@ for r in ${ROLES_LIST}; do
     --sts-engine "${r_sts_eng}" \
     --keycloak-image "${KEYCLOAK_IMAGE}" \
     --delegation-mode "${DELEGATION_MODE}" \
+    --topology "${TOPOLOGY}" \
+    --registry-mode "${REGISTRY_MODE}" \
+    ${audit_flag[@]+"${audit_flag[@]}"} \
     --ports-json "${role_ports_j}" \
     ${seed_flags[@]+"${seed_flags[@]}"} \
     ${skip_cm_flag[@]+"${skip_cm_flag[@]}"} | kubectl --context "${ctx}" apply -f - >/dev/null

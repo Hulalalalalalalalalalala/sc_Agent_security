@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import socket
@@ -12,6 +13,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional, Tuple, Union
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
+MAX_HEADER_LINE_BYTES = 262144  # 256 KiB bounded header guard for deep MultiParentToken DAGs
+if getattr(http.client, "_MAXLINE", 65536) < MAX_HEADER_LINE_BYTES:
+    http.client._MAXLINE = MAX_HEADER_LINE_BYTES
 MAX_BODY_BYTES = 2 * 1024 * 1024  # 2 MiB max payload guard
 _HOST_HEADER_RE = re.compile(r"^[A-Za-z0-9._-]+(?::[0-9]{1,5})?$")
 
@@ -408,6 +412,8 @@ class ManagedHTTPService:
                             self._send_sse(status, payload, extra_headers)
                         else:
                             self._send_json(status, payload, extra_headers)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
                     except ValueError as exc:
                         err_text = str(exc)
                         err_code = (
@@ -415,16 +421,22 @@ class ManagedHTTPService:
                             if err_text.startswith("invalid_request_target")
                             else "bad_request"
                         )
-                        self._send_json(400, {"error": err_code, "detail": err_text})
+                        try:
+                            self._send_json(400, {"error": err_code, "detail": err_text})
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
                     except Exception as exc:
-                        self._send_json(
-                            500,
-                            {
-                                "error": "internal_server_error",
-                                "service": outer.service_name,
-                                "detail": str(exc),
-                            },
-                        )
+                        try:
+                            self._send_json(
+                                500,
+                                {
+                                    "error": "internal_server_error",
+                                    "service": outer.service_name,
+                                    "detail": str(exc),
+                                },
+                            )
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
 
                 def _send_sse(
                     self,

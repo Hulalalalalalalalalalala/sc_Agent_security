@@ -1,0 +1,109 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m9-r2-clean-s1-collab",
+  "e2e_latency_ms": 7609.72,
+  "sse_states": [
+    "TASK_STATE_SUBMITTED",
+    "TASK_STATE_WORKING",
+    "TASK_STATE_COMPLETED"
+  ],
+  "sse_artifacts": [
+    "alice-intent-plan"
+  ],
+  "yellow_pages_peers": {
+    "alice": "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+    "bob": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+    "carol": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+    "vault": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+  },
+  "intent_plan": {
+    "project_code": "PRJ-ATLAS",
+    "summary": "PRJ-ATLAS will involve tech review and vendor procurement, with a total budget of $8000.",
+    "branches": [
+      {
+        "logical_branch_id": "TechReviewBob",
+        "required_skill": "workspace.tech_review",
+        "allocated_budget_usd": 437.5,
+        "project_code": "PRJ-ATLAS",
+        "attenuated_permissions": {
+          "tools": [
+            "query_operation_status",
+            "reserve_cloud_budget"
+          ],
+          "methods": [
+            "initialize",
+            "tools/call",
+            "tools/list"
+          ],
+          "max_amount": 437.5,
+          "numeric_bounds": {},
+          "allowed_scopes": null,
+          "allowed_targets": [
+            "cloud-infra-escrow"
+          ],
+          "param_whitelist": {
+            "project_code": [
+              "PRJ-ATLAS"
+            ]
+          },
+          "max_calls": 4
+        }
+      },
+      {
+        "logical_branch_id": "BizProcurementCarol",
+        "required_skill": "workspace.biz_procurement",
+        "allocated_budget_usd": 262.5,
+        "project_code": "PRJ-ATLAS",
+        "attenuated_permissions": {
+          "tools": [
+            "procure_vendor_quote",
+            "query_operation_status"
+          ],
+          "methods": [
+            "initialize",
+            "tools/call",
+            "tools/list"
+          ],
+          "max_amount": 262.5,
+          "numeric_bounds": {},
+          "allowed_scopes": null,
+          "allowed_targets": [
+            "vendor-procurement-escrow"
+          ],
+          "param_whitelist": {
+            "project_code": [
+              "PRJ-ATLAS"
+            ]
+          },
+          "max_calls": 4
+        }
+      }
+    ],
+    "requires_vault_convergence": true,
+    "available_peer_skills": [
+      "workspace.biz_procurement",
+      "workspace.bob_private",
+      "workspace.deep_analysis",
+      "workspace.tech_review",
+      "workspace.vault_converge"
+    ],
+    "llm_trace": {
+      "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+      "model": "qwen2.5:3b",
+      "completion_id": "chatcmpl-640",
+      "system_fingerprint": "fp_ollama",
+      "prompt_tokens": 133,
+      "completion_tokens": 92,
+      "total_tokens": 225,
+      "latency_ms": 3502.16,
+      "raw_content": "{\n  \"project_code\": \"PRJ-ATLAS\",\n  \"selected_skills\": [\n    \"workspace.tech_review\",\n    \"workspace.biz_procurement\"\n  ],\n  \"tech_budget_usd\": 5000,\n  \"procurement_budget_usd\": 3000,\n  \"summary\": \"PRJ-ATLAS will involve tech review and vendor procurement, with a total budget of $8000.\"\n}"
+    }
+  },
+  "completed_vault_locks": 2,
+  "distributed_audit": {
+    "nodes_queried": 7,
+    "total_entries": 24,
+    "pull_latency_ms": 503.03,
+    "reconstructed_complete": true
+  }
+}
