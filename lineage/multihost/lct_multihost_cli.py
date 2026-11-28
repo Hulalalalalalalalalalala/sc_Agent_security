@@ -1321,9 +1321,13 @@ def _run_audit_in_gateway(args: argparse.Namespace) -> int:
             from lineage.k8s.workspace_e2e import run_distributed_audit_for_task
 
             entry_skill = (
-                "workspace.orchestrate"
-                if os.environ.get("TOPOLOGY", "").strip().lower() == "workspace"
-                else "travel.orchestrate"
+                "workspace.pi_orchestrate"
+                if str(args.task_id).startswith("pi-")
+                else (
+                    "workspace.orchestrate"
+                    if os.environ.get("TOPOLOGY", "").strip().lower() == "workspace"
+                    else "travel.orchestrate"
+                )
             )
             dist_res = run_distributed_audit_for_task(
                 gw, args.task_id, entry_skill=entry_skill
@@ -2174,6 +2178,129 @@ def _run_workspace_demo_from_host(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_pi_demo_from_host(args: argparse.Namespace) -> int:
+    """Orchestrate Milestone 11 Real-World Open-Source Pi Agent (`@mariozechner/pi-agent-core`) Case Studies."""
+    run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
+    out_clusters = subprocess.run(["kind", "get", "clusters"], capture_output=True, text=True)
+    local_clusters = set((out_clusters.stdout or "").splitlines())
+    if "lctmh-alpha" not in local_clusters:
+        raise RuntimeError(
+            "`pi-demo` must be run on the host running `lctmh-alpha` (`e2e-user-gateway` + `pi-assistant-alice`)."
+        )
+    out_dir: Optional[Path] = Path(args.output_dir).resolve() if args.output_dir else None
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure co-located `beta` / `pay` clusters share alpha's sovereign OAuth user credentials in local rehearsal
+    from lineage.multihost.config_gen import (
+        _ensure_in_memory_oauth_secret,
+        _read_existing_oauth_creds_from_cluster,
+    )
+
+    alpha_creds = _read_existing_oauth_creds_from_cluster("alpha")
+    if alpha_creds is not None:
+        raw_alpha_creds = json.dumps(alpha_creds)
+        for peer_role in ("beta", "pay"):
+            if f"lctmh-{peer_role}" in local_clusters:
+                _ensure_in_memory_oauth_secret(
+                    role=peer_role,
+                    sts_engine="lightweight",
+                    import_creds_json=raw_alpha_creds,
+                )
+
+    wanted_cs = {
+        s.strip()
+        for s in str(getattr(args, "case_studies", "1,2") or "1,2").split(",")
+        if s.strip()
+    }
+
+    summary: Dict[str, Any] = {
+        "run_id": run_id,
+        "milestone": "M11-real-world-pi-agent-case-studies",
+        "agent_framework": "@mariozechner/pi-agent-core",
+        "central_audit_collector_deployed": ("lctmh-audit" in local_clusters),
+        "case_studies": {},
+    }
+
+    # Verify `pi-assistant-alice` ServiceAccount CANNOT mint root tokens at `alpha-ca` (`403`)
+    sa_probe = subprocess.run(
+        [
+            "kubectl",
+            "--context",
+            "kind-lctmh-alpha",
+            "-n",
+            "lineage-alpha",
+            "exec",
+            "deploy/pi-assistant-alice",
+            "-c",
+            "lct-sidecar",
+            "--",
+            "/app/.venv/bin/python3",
+            "-c",
+            (
+                "import httpx; sa=open('/var/run/lct-sa/token').read().strip(); "
+                "r=httpx.post('http://alpha-ca.lineage-alpha.svc.cluster.local:8090/v1/ca/mint-root-token', "
+                "json={'trust_domain':'org-alpha.io'}, headers={'Authorization':f'Bearer {sa}'}, timeout=5.0); "
+                "assert r.status_code == 403, (r.status_code, r.text); print(r.status_code)"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    summary["pi_assistant_alice_sa_mint_root_http"] = int(sa_probe.stdout.strip())
+
+    def _save_cs(key: str, res_dict: Dict[str, Any]) -> None:
+        clean = _scrub(res_dict)
+        summary["case_studies"][key] = clean
+        if out_dir is not None:
+            (out_dir / f"pi_case_study_{key}.json").write_text(
+                json.dumps(clean, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+    if "1" in wanted_cs:
+        print(
+            "[pi-demo] Case Study 1: Real Pi (@mariozechner/pi-agent-core) Autonomous Financial Risk Triage & Live Indirect Prompt Injection Defense...",
+            flush=True,
+        )
+        _save_cs("1_fin_prompt_injection", _exec_e2e_driver_phase("pi_cs1", run_id))
+        print("[pi-demo] Case Study 1: PASS", flush=True)
+
+    if "2" in wanted_cs:
+        print(
+            "[pi-demo] Case Study 2: Cross-Language Heterogeneous Multi-Org Healthcare Federated Cohort Aggregation (Node.js Pi -> Python Bob/Carol/Vault)...",
+            flush=True,
+        )
+        _save_cs(
+            "2_heterogeneous_medical_federation",
+            _exec_e2e_driver_phase("pi_cs2", run_id),
+        )
+        print("[pi-demo] Case Study 2: PASS", flush=True)
+
+    summary["overall_status"] = "PASS"
+    clean_sum = _scrub(summary)
+    if out_dir is not None:
+        (out_dir / "pi_agent_case_study_summary.json").write_text(
+            json.dumps(clean_sum, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    print(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "overall_status": "PASS",
+                "agent_framework": "@mariozechner/pi-agent-core",
+                "central_audit_collector_deployed": summary["central_audit_collector_deployed"],
+                "pi_assistant_alice_sa_mint_root_http": summary["pi_assistant_alice_sa_mint_root_http"],
+                "case_studies": list(summary["case_studies"].keys()),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def format_m8_comparison_markdown(comp: Mapping[str, Any]) -> str:
     """Render a side-by-side empirical Markdown report from `run_m8_protocol_comparison` output."""
     dims = comp.get("dimensions") or {}
@@ -2664,6 +2791,19 @@ def build_cli_parser() -> argparse.ArgumentParser:
     )
     p_ws.add_argument("--remote-faults", action="store_true")
 
+    # pi-demo
+    p_pi = sub.add_parser(
+        "pi-demo",
+        help="Run Milestone 11 Real-World Open-Source Pi Agent (@mariozechner/pi-agent-core + qwen2.5:3b / cloud LLM) 2-Case-Study suite",
+    )
+    p_pi.add_argument("--run-id", default="")
+    p_pi.add_argument("--output-dir", default="")
+    p_pi.add_argument(
+        "--case-studies",
+        default="1,2",
+        help="Optional comma-separated case study filter (default: 1,2)",
+    )
+
     # oauth
     p_oauth = sub.add_parser(
         "oauth",
@@ -2756,6 +2896,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _run_compare_from_host(args)
     if args.subcmd == "workspace-demo":
         return _run_workspace_demo_from_host(args)
+    if args.subcmd == "pi-demo":
+        return _run_pi_demo_from_host(args)
 
     if not args.in_gateway and not _in_gateway_pod():
         fwd = [a for a in raw_argv if a != "--in-gateway"]

@@ -1,0 +1,19 @@
+{
+  "status": "PASS",
+  "task_id": "ws-m11-r2-py-sanity-s6-fin-pingpong",
+  "reverse_task_id": "ws-m11-r2-py-sanity-s6-fin-pingpong-rev-b2a",
+  "round1_a_to_b_unilateral_http": 403,
+  "round1_a_to_b_coauth_http": 200,
+  "round2_dual_oauth_b_to_a_http": 403,
+  "round2_b_to_a_unilateral_http": 403,
+  "round2_b_to_a_roadmap_refusal_http": 403,
+  "round2_b_to_a_reverse_coauth_principals": [
+    "user:bob@org-beta.io",
+    "user:alice@org-alpha.io"
+  ],
+  "round3_unilateral_commit_http": 403,
+  "round3_coauth_commit_http": 200,
+  "round3_idempotency_conflict_http": 409,
+  "round3_post_bob_revocation_http": 403,
+  "distributed_audit_complete": true
+}

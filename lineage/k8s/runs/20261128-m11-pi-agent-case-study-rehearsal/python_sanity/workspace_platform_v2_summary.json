@@ -1,0 +1,167 @@
+{
+  "run_id": "m11-py-sanity",
+  "platform": "v2-symmetric-workspace-assistants",
+  "central_audit_collector_deployed": false,
+  "scenarios": {
+    "1_intent_fanout_converge": {
+      "status": "PASS",
+      "task_id": "ws-m11-py-sanity-s1-collab",
+      "e2e_latency_ms": 6962.52,
+      "sse_states": [
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED"
+      ],
+      "sse_artifacts": [
+        "alice-intent-plan"
+      ],
+      "yellow_pages_peers": {
+        "alice": "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+        "bob": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+        "carol": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+        "vault": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+      },
+      "intent_plan": {
+        "project_code": "PRJ-ATLAS",
+        "summary": "Joint Project PRJ-ATLAS: Tech review with Alice, Procurement with Carol, and Bob for commercial vendor, escrow lock with all peers.",
+        "branches": [
+          {
+            "logical_branch_id": "TechReviewBob",
+            "required_skill": "workspace.tech_review",
+            "allocated_budget_usd": 500.0,
+            "project_code": "PRJ-ATLAS",
+            "attenuated_permissions": {
+              "tools": [
+                "query_operation_status",
+                "reserve_cloud_budget"
+              ],
+              "methods": [
+                "initialize",
+                "tools/call",
+                "tools/list"
+              ],
+              "max_amount": 500.0,
+              "numeric_bounds": {},
+              "allowed_scopes": null,
+              "allowed_targets": [
+                "cloud-infra-escrow"
+              ],
+              "param_whitelist": {
+                "project_code": [
+                  "PRJ-ATLAS"
+                ]
+              },
+              "max_calls": 4
+            }
+          },
+          {
+            "logical_branch_id": "BizProcurementCarol",
+            "required_skill": "workspace.biz_procurement",
+            "allocated_budget_usd": 200.0,
+            "project_code": "PRJ-ATLAS",
+            "attenuated_permissions": {
+              "tools": [
+                "procure_vendor_quote",
+                "query_operation_status"
+              ],
+              "methods": [
+                "initialize",
+                "tools/call",
+                "tools/list"
+              ],
+              "max_amount": 200.0,
+              "numeric_bounds": {},
+              "allowed_scopes": null,
+              "allowed_targets": [
+                "vendor-procurement-escrow"
+              ],
+              "param_whitelist": {
+                "project_code": [
+                  "PRJ-ATLAS"
+                ]
+              },
+              "max_calls": 4
+            }
+          }
+        ],
+        "requires_vault_convergence": true,
+        "available_peer_skills": [
+          "workspace.alice_private",
+          "workspace.biz_procurement",
+          "workspace.bob_private",
+          "workspace.carol_private",
+          "workspace.deep_analysis",
+          "workspace.pi_orchestrate",
+          "workspace.tech_review",
+          "workspace.vault_converge"
+        ],
+        "llm_trace": {
+          "endpoint": "http://host.docker.internal:11434/v1/chat/completions",
+          "model": "qwen2.5:3b",
+          "completion_id": "chatcmpl-304",
+          "system_fingerprint": "fp_ollama",
+          "prompt_tokens": 149,
+          "completion_tokens": 106,
+          "total_tokens": 255,
+          "latency_ms": 1326.53,
+          "raw_content": "{\n  \"project_code\": \"PRJ-ATLAS\",\n  \"selected_skills\": [\n    \"workspace.tech_review\",\n    \"workspace.biz_procurement\",\n    \"workspace.carol_private\"\n  ],\n  \"tech_budget_usd\": 5000,\n  \"procurement_budget_usd\": 2000,\n  \"summary\": \"Joint Project PRJ-ATLAS: Tech review with Alice, Procurement with Carol, and Bob for commercial vendor, escrow lock with all peers.\"\n}"
+        }
+      },
+      "completed_vault_locks": 2,
+      "distributed_audit": {
+        "nodes_queried": 7,
+        "total_entries": 24,
+        "pull_latency_ms": 381.67,
+        "reconstructed_complete": true
+      }
+    },
+    "6_bidirectional_fin_pingpong": {
+      "status": "PASS",
+      "task_id": "ws-m11-py-sanity-s6-fin-pingpong",
+      "reverse_task_id": "ws-m11-py-sanity-s6-fin-pingpong-rev-b2a",
+      "round1_a_to_b_unilateral_http": 403,
+      "round1_a_to_b_coauth_http": 200,
+      "round2_dual_oauth_b_to_a_http": 403,
+      "round2_b_to_a_unilateral_http": 403,
+      "round2_b_to_a_roadmap_refusal_http": 403,
+      "round2_b_to_a_reverse_coauth_principals": [
+        "user:bob@org-beta.io",
+        "user:alice@org-alpha.io"
+      ],
+      "round3_unilateral_commit_http": 403,
+      "round3_coauth_commit_http": 200,
+      "round3_idempotency_conflict_http": 409,
+      "round3_post_bob_revocation_http": 403,
+      "distributed_audit_complete": true
+    },
+    "9_federated_medical_cohort": {
+      "status": "PASS",
+      "task_id": "ws-m11-py-sanity-s9-med-cohort",
+      "raw_export_hospital_b_http": 403,
+      "raw_export_inst_c_http": 403,
+      "raw_export_consent_refusal_http": 403,
+      "aggregated_cohort": {
+        "aggregation_id": "COH-8203A104",
+        "study_id": "STUDY-MED-2026-07",
+        "institutions_aggregated": 2,
+        "institutions": [
+          "institution-bob",
+          "institution-carol"
+        ],
+        "verified_institution_spiffe_ids": [
+          "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+          "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol"
+        ],
+        "cohort_digests_verified": true,
+        "total_sample_count": 800,
+        "pooled_event_rate": 0.07115,
+        "raw_pii_present": false,
+        "task_id": "ws-m11-py-sanity-s9-med-cohort",
+        "sub": "user:alice@org-alpha.io"
+      },
+      "cross_task_commercial_replay_http": 403,
+      "distributed_audit_complete": true
+    }
+  },
+  "overall_status": "PASS"
+}

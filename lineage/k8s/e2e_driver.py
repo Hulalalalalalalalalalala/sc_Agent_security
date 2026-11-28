@@ -2743,6 +2743,19 @@ def main() -> None:
             else:
                 print(f"Unknown workspace phase: {phase!r}", file=sys.stderr)
                 sys.exit(2)
+        elif phase.startswith("pi_"):
+            from lineage.k8s.pi_case_study_e2e import (
+                run_pi_case_study_1_fin_prompt_injection,
+                run_pi_case_study_2_heterogeneous_medical_federation,
+            )
+
+            if phase == "pi_cs1":
+                out = run_pi_case_study_1_fin_prompt_injection(gw, args.run_id)
+            elif phase == "pi_cs2":
+                out = run_pi_case_study_2_heterogeneous_medical_federation(gw, args.run_id)
+            else:
+                print(f"Unknown pi_agent phase: {phase!r}", file=sys.stderr)
+                sys.exit(2)
         elif phase == "export_redacted_audit_entries":
             entries = [e.to_dict() for e in gw.audit_client.fetch_entries()]
             out = {"count": len(entries), "entries": _scrub_for_disk(entries)}

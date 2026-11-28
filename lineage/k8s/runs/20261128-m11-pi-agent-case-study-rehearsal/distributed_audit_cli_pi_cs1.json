@@ -1,0 +1,39 @@
+{
+  "mode": "decentralized_on_demand_bfs",
+  "task_id": "pi-m11-r1-cs1-fin-inj",
+  "nodes_queried": [
+    "ca:org-alpha.io",
+    "ca:org-beta.io",
+    "ca:org-payment.io",
+    "spiffe://org-alpha.io/ns/lineage-alpha/sa/pi-assistant-alice",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+  ],
+  "nodes_queried_count": 6,
+  "unreachable_nodes": {},
+  "total_entries": 17,
+  "pull_latency_ms": 281.4,
+  "stream_integrity_ok": true,
+  "reconstructed_complete": true,
+  "resilience_classifications": [
+    "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+  ],
+  "reconstruction": {
+    "task_id": "pi-m11-r1-cs1-fin-inj",
+    "sub": "user:alice@org-alpha.io",
+    "root_block_hash": "Dp-CPLcxMEoBWONQettQESLDDOBerOvmKpJtsRJTIKo",
+    "reconstructed_complete": true,
+    "lineage_paths_observed": [
+      "/pi-m11-r1-cs1-fin-inj/OwnerConsent",
+      "/pi-m11-r1-cs1-fin-inj/PiAssistantAlice",
+      "/pi-m11-r1-cs1-fin-inj/PiAssistantAlice/PiConsent_bob"
+    ],
+    "verified_hops": 4,
+    "tool_invocations_verified": 2,
+    "resilience_classifications": [
+      "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+    ],
+    "anomalies": []
+  },
+  "anomalies": []
+}

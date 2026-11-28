@@ -250,6 +250,10 @@ bash lineage/scripts/multihost.sh audit <task_id> --distributed
 
 # 4. 运行 4 / 12 / 24 节点规模化延迟、级联撤销与去中心化审计基准测试
 bash lineage/scripts/multihost.sh scale-bench --tiers 4,12,24 --output-dir lineage/scale/results
+
+# 5. （可选，Milestone 11）启用真实开源 Node.js Pi 智能体（@mariozechner/pi-agent-core + 本地 qwen2.5:3b / 云端 LLM_BASE_URL）并运行两大异构实证案例
+bash lineage/scripts/multihost.sh deploy --roles alpha,beta,pay --topology workspace --registry-mode centralized --with-pi-agent --wait-all-ready
+bash lineage/scripts/multihost.sh pi-demo --output-dir ./pi-results
 ```
 
 ### 5.5 安全清理（`teardown.sh`）

@@ -1,0 +1,28 @@
+--- kind-lctmh-alpha (lineage-alpha) ---
+NAME                                 READY   STATUS    RESTARTS   AGE   IP            NODE                        NOMINATED NODE   READINESS GATES
+alpha-ca-767c6c5b8f-wswhv            1/1     Running   0          59s   10.241.0.6    lctmh-alpha-control-plane   <none>           <none>
+alpha-directory-dc87cccb8-fk7f2      1/1     Running   0          59s   10.241.0.8    lctmh-alpha-control-plane   <none>           <none>
+alpha-revocation-759bff67c4-zjpvb    1/1     Running   0          59s   10.241.0.7    lctmh-alpha-control-plane   <none>           <none>
+alpha-sts-7f8585d658-lr2k5           1/1     Running   0          59s   10.241.0.5    lctmh-alpha-control-plane   <none>           <none>
+assistant-alice-85fdc57c5f-h2kmk     2/2     Running   0          59s   10.241.0.9    lctmh-alpha-control-plane   <none>           <none>
+e2e-user-gateway-6766d9bd8f-k945v    1/1     Running   0          58s   10.241.0.10   lctmh-alpha-control-plane   <none>           <none>
+pi-assistant-alice-6557c9784-dbdjk   2/2     Running   0          58s   10.241.0.11   lctmh-alpha-control-plane   <none>           <none>
+
+--- kind-lctmh-beta (lineage-beta) ---
+NAME                                     READY   STATUS    RESTARTS   AGE   IP            NODE                       NOMINATED NODE   READINESS GATES
+assistant-bob-77cd957879-j6zpf           2/2     Running   0          57s   10.242.0.8    lctmh-beta-control-plane   <none>           <none>
+assistant-bob-standby-7c87cb947b-jj8n9   2/2     Running   0          56s   10.242.0.9    lctmh-beta-control-plane   <none>           <none>
+assistant-dave-9b49cbb98-8lg29           2/2     Running   0          56s   10.242.0.10   lctmh-beta-control-plane   <none>           <none>
+beta-ca-5d59449965-wvtwt                 1/1     Running   0          57s   10.242.0.6    lctmh-beta-control-plane   <none>           <none>
+beta-revocation-8cc77d8f4-lvdtg          1/1     Running   0          57s   10.242.0.7    lctmh-beta-control-plane   <none>           <none>
+beta-sts-85498bb855-mnvdl                1/1     Running   0          57s   10.242.0.5    lctmh-beta-control-plane   <none>           <none>
+beta-user-gateway-f96b9988b-9gh5f        1/1     Running   0          56s   10.242.0.11   lctmh-beta-control-plane   <none>           <none>
+
+--- kind-lctmh-pay (lineage-pay) ---
+NAME                                       READY   STATUS    RESTARTS   AGE   IP            NODE                      NOMINATED NODE   READINESS GATES
+assistant-carol-74d55b74df-42dnv           2/2     Running   0          54s   10.243.0.8    lctmh-pay-control-plane   <none>           <none>
+assistant-carol-standby-5bb6f66c49-b6fhh   2/2     Running   0          54s   10.243.0.9    lctmh-pay-control-plane   <none>           <none>
+assistant-vault-58ff685694-5m785           2/2     Running   0          53s   10.243.0.10   lctmh-pay-control-plane   <none>           <none>
+payment-ca-84c869b45b-gw9xj                1/1     Running   0          54s   10.243.0.5    lctmh-pay-control-plane   <none>           <none>
+payment-revocation-748cfdb9d4-wj9ps        1/1     Running   0          54s   10.243.0.6    lctmh-pay-control-plane   <none>           <none>
+payment-sts-56b497894f-4xzgt               1/1     Running   0          54s   10.243.0.7    lctmh-pay-control-plane   <none>           <none>

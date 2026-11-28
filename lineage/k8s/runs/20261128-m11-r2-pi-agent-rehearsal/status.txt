@@ -1,0 +1,398 @@
+{
+  "addressing_mode": "identity_signed_locators",
+  "gateway_spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/e2e-user-gateway",
+  "svid_generation": 0,
+  "federation_ready": true,
+  "federation_sync": {
+    "mode": "identity_descriptors",
+    "awaiting_peer_trust_pins": false,
+    "missing_domains": [],
+    "verified_domains": {
+      "org-beta.io": "sha256:0e4312267ca34f5da41e2d8029aa6a688721194c0b8e8e397bb4ad72d6bab5d1:5ff5464b83b2528c88285c404a1cb34adde97d4de20062d2e63436ca0d4a0ac8",
+      "org-payment.io": "sha256:ad48f77b6036c83833ea6bdd416928f0fb7be961929b545916b2f86c742fb6a4:f4c0ebeccf090145f341316e928d74275d91e1e147941dfb106a31a2ab88b25f"
+    },
+    "errors": {},
+    "rejected_bundle_counts": {},
+    "rejected_descriptor_counts": {},
+    "ignored_unpinned_domains": [],
+    "trust_store_version": 3
+  },
+  "domain_descriptor_resolution": {
+    "org-alpha.io": {
+      "descriptor_version": 1795844202779,
+      "trust_anchor": "sha256:9c1d43cf7ddbced7c3f40b50a485ce421c70e956a776a84a6feaf802ee8643ce:a19cf4c9da3fa677c56903a4e27c2def0ae74a99b850d7191257e7e892b5c6fd",
+      "ttl_remaining_seconds": 3551.5,
+      "services": {
+        "ca_bundle": [
+          {
+            "transport": "http-ro",
+            "host": "192.168.1.6",
+            "port": 30100,
+            "priority": 10
+          }
+        ],
+        "directory_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "192.168.1.6",
+            "port": 30101,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-alpha.io/ns/sys/sa/directory"
+          }
+        ],
+        "oauth_sts": [
+          {
+            "transport": "http-ro",
+            "host": "192.168.1.6",
+            "port": 30105,
+            "priority": 10
+          }
+        ],
+        "revocation_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "192.168.1.6",
+            "port": 30102,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-alpha.io/ns/sys/sa/revocation"
+          }
+        ],
+        "yellow_pages": [
+          {
+            "transport": "mtls-tcp",
+            "host": "192.168.1.6",
+            "port": 30101,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-alpha.io/ns/sys/sa/directory"
+          }
+        ]
+      }
+    },
+    "org-beta.io": {
+      "descriptor_version": 1795844203369,
+      "trust_anchor": "sha256:0e4312267ca34f5da41e2d8029aa6a688721194c0b8e8e397bb4ad72d6bab5d1:5ff5464b83b2528c88285c404a1cb34adde97d4de20062d2e63436ca0d4a0ac8",
+      "ttl_remaining_seconds": 3552.1,
+      "services": {
+        "ca_bundle": [
+          {
+            "transport": "http-ro",
+            "host": "192.168.1.6",
+            "port": 31100,
+            "priority": 10
+          }
+        ],
+        "oauth_sts": [
+          {
+            "transport": "http-ro",
+            "host": "192.168.1.6",
+            "port": 31107,
+            "priority": 10
+          }
+        ],
+        "revocation_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "192.168.1.6",
+            "port": 31102,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-beta.io/ns/sys/sa/revocation"
+          }
+        ],
+        "user_gateway": [
+          {
+            "transport": "mtls-tcp",
+            "host": "192.168.1.6",
+            "port": 31106,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/beta-user-gateway"
+          }
+        ]
+      }
+    },
+    "org-payment.io": {
+      "descriptor_version": 1795844205560,
+      "trust_anchor": "sha256:ad48f77b6036c83833ea6bdd416928f0fb7be961929b545916b2f86c742fb6a4:f4c0ebeccf090145f341316e928d74275d91e1e147941dfb106a31a2ab88b25f",
+      "ttl_remaining_seconds": 3554.3,
+      "services": {
+        "ca_bundle": [
+          {
+            "transport": "http-ro",
+            "host": "192.168.1.6",
+            "port": 32100,
+            "priority": 10
+          }
+        ],
+        "oauth_sts": [
+          {
+            "transport": "http-ro",
+            "host": "192.168.1.6",
+            "port": 32106,
+            "priority": 10
+          }
+        ],
+        "revocation_federation": [
+          {
+            "transport": "mtls-tcp",
+            "host": "192.168.1.6",
+            "port": 32102,
+            "priority": 10,
+            "spiffe_id": "spiffe://org-payment.io/ns/sys/sa/revocation"
+          }
+        ]
+      }
+    }
+  },
+  "control_plane": {
+    "alpha-ca-local": {
+      "url": "http://alpha-ca.lineage-alpha.svc.cluster.local:8090/healthz",
+      "http_status": 200
+    },
+    "alpha-directory-local": {
+      "url": "http://alpha-directory.lineage-alpha.svc.cluster.local:8091/healthz",
+      "http_status": 200
+    },
+    "alpha-revocation-local": {
+      "url": "http://alpha-revocation.lineage-alpha.svc.cluster.local:8092/healthz",
+      "http_status": 200
+    },
+    "org-beta.io:ca_bundle": {
+      "locator": "192.168.1.6:31100",
+      "descriptor_version": 1795844203369,
+      "http_status": 200
+    },
+    "org-beta.io:revocation_federation": {
+      "identity": "spiffe://org-beta.io/ns/sys/sa/revocation",
+      "locator": "192.168.1.6:31102",
+      "descriptor_version": 1795844203369,
+      "http_status": 200
+    },
+    "org-payment.io:ca_bundle": {
+      "locator": "192.168.1.6:32100",
+      "descriptor_version": 1795844205560,
+      "http_status": 200
+    },
+    "org-payment.io:revocation_federation": {
+      "identity": "spiffe://org-payment.io/ns/sys/sa/revocation",
+      "locator": "192.168.1.6:32102",
+      "descriptor_version": 1795844205560,
+      "http_status": 200
+    },
+    "audit-collector": {
+      "error": "No verified audit-collector locator or URL is currently available"
+    }
+  },
+  "identity_to_locator_resolution": [
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave",
+      "trust_domain": "org-beta.io",
+      "name": "Dave Deep-Analysis Assistant",
+      "skills": [
+        "workspace.deep_analysis"
+      ],
+      "priority": 10,
+      "card_version": 1795844236612,
+      "ttl_remaining_seconds": 577.8,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "192.168.1.6",
+          "port": 31105,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-dave"
+        }
+      ],
+      "primary_endpoint": "https://192.168.1.6:31105",
+      "resolved_machine_ip": "192.168.1.6",
+      "resolved_port": 31105,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+      "trust_domain": "org-beta.io",
+      "name": "Bob Workspace Assistant",
+      "skills": [
+        "workspace.bob_private",
+        "workspace.tech_review"
+      ],
+      "priority": 10,
+      "card_version": 1795844236596,
+      "ttl_remaining_seconds": 577.7,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "192.168.1.6",
+          "port": 31103,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob"
+        }
+      ],
+      "primary_endpoint": "https://192.168.1.6:31103",
+      "resolved_machine_ip": "192.168.1.6",
+      "resolved_port": 31103,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+      "trust_domain": "org-payment.io",
+      "name": "Carol Commercial Assistant",
+      "skills": [
+        "workspace.biz_procurement",
+        "workspace.carol_private"
+      ],
+      "priority": 10,
+      "card_version": 1795844235656,
+      "ttl_remaining_seconds": 581.7,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "192.168.1.6",
+          "port": 32103,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol"
+        }
+      ],
+      "primary_endpoint": "https://192.168.1.6:32103",
+      "resolved_machine_ip": "192.168.1.6",
+      "resolved_port": 32103,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault",
+      "trust_domain": "org-payment.io",
+      "name": "Workspace Vault & Converger",
+      "skills": [
+        "mcp.workspace-vault",
+        "workspace.vault_converge"
+      ],
+      "priority": 10,
+      "card_version": 1795844235544,
+      "ttl_remaining_seconds": 581.7,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "192.168.1.6",
+          "port": 32105,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+        }
+      ],
+      "primary_endpoint": "https://192.168.1.6:32105",
+      "resolved_machine_ip": "192.168.1.6",
+      "resolved_port": 32105,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/pi-assistant-alice",
+      "trust_domain": "org-alpha.io",
+      "name": "Alice Pi Workspace Assistant (@mariozechner/pi-agent-core)",
+      "skills": [
+        "workspace.pi_orchestrate"
+      ],
+      "priority": 10,
+      "card_version": 1795844202802,
+      "ttl_remaining_seconds": 575.8,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "192.168.1.6",
+          "port": 30106,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/pi-assistant-alice"
+        }
+      ],
+      "primary_endpoint": "https://192.168.1.6:30106",
+      "resolved_machine_ip": "192.168.1.6",
+      "resolved_port": 30106,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice",
+      "trust_domain": "org-alpha.io",
+      "name": "Alice Workspace Assistant",
+      "skills": [
+        "workspace.alice_private",
+        "workspace.orchestrate"
+      ],
+      "priority": 10,
+      "card_version": 1795844202774,
+      "ttl_remaining_seconds": 575.7,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "192.168.1.6",
+          "port": 30103,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-alpha.io/ns/lineage-alpha/sa/assistant-alice"
+        }
+      ],
+      "primary_endpoint": "https://192.168.1.6:30103",
+      "resolved_machine_ip": "192.168.1.6",
+      "resolved_port": 30103,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob-standby",
+      "trust_domain": "org-beta.io",
+      "name": "Bob Standby Assistant",
+      "skills": [
+        "workspace.tech_review"
+      ],
+      "priority": 20,
+      "card_version": 1795844236600,
+      "ttl_remaining_seconds": 577.8,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "192.168.1.6",
+          "port": 31104,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob-standby"
+        }
+      ],
+      "primary_endpoint": "https://192.168.1.6:31104",
+      "resolved_machine_ip": "192.168.1.6",
+      "resolved_port": 31104,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    },
+    {
+      "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol-standby",
+      "trust_domain": "org-payment.io",
+      "name": "Carol Standby Assistant",
+      "skills": [
+        "workspace.biz_procurement"
+      ],
+      "priority": 20,
+      "card_version": 1795844235716,
+      "ttl_remaining_seconds": 581.7,
+      "signed_locators": [
+        {
+          "transport": "mtls-tcp",
+          "host": "192.168.1.6",
+          "port": 32104,
+          "priority": 10,
+          "spiffe_id": "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol-standby"
+        }
+      ],
+      "primary_endpoint": "https://192.168.1.6:32104",
+      "resolved_machine_ip": "192.168.1.6",
+      "resolved_port": 32104,
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "healthz_status": 200
+    }
+  ]
+}

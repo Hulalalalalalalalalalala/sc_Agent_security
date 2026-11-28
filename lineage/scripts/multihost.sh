@@ -57,6 +57,7 @@ Subcommands:
   e2e               Run scenarios 1, 2A, 2B, 3A, 3B, 4, 5, 6 (auto-fault local or operator prompt)
   compare           Run 6-dimension empirical comparison (oauth_centralized vs oauth_federated vs lct)
   workspace-demo    Run Platform v2 symmetric peer Workspace Assistant suite (all 5 scenarios + DistributedAuditor)
+  pi-demo           Run Milestone 11 Real-World Open-Source Pi Agent (qwen2.5:3b / cloud LLM) 2-Case-Study suite
   scale-bench       Run 4/12/24-peer distributed scaling & decentralized audit benchmark
   oauth             Export/import OAuth 2.0 client credentials across machines (`export-creds`, `import-creds`)
   locator-agent     Manage host-side self-locating daemon directly (`--detect-only`, `--set-role-ip`, `--stop`)
@@ -89,7 +90,7 @@ case "${SUB}" in
     PY_BIN="$(resolve_python)"
     exec "${PY_BIN}" -m lineage.scale.distributed_benchmark "$@"
     ;;
-  status|locator|seeds|trust|send|cancel|audit|e2e|compare|workspace-demo|oauth|update-peer-ips)
+  status|locator|seeds|trust|send|cancel|audit|e2e|compare|workspace-demo|pi-demo|oauth|update-peer-ips)
     PY_BIN="$(resolve_python)"
     exec "${PY_BIN}" "${MH_DIR}/lct_multihost_cli.py" "${SUB}" "$@"
     ;;

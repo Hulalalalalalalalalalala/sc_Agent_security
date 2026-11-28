@@ -21,6 +21,10 @@ export interface PermissionLatticeJSON {
 }
 
 export declare function loadLoopbackSecret(secretFile?: string): string;
+export declare function waitForLoopbackSecret(
+  secretFile?: string,
+  maxWaitMs?: number
+): Promise<string>;
 export declare function verifyLoopbackHeader(
   provided: string | undefined,
   expected: string
@@ -41,12 +45,63 @@ export declare function buildPermissionLattice(opts?: {
 
 export declare class LCTSidecarClient {
   constructor(loopbackSecret: string, sidecarOutboundUrl?: string);
+  discoverPeers(opts?: {
+    skill?: string | null;
+    trustDomain?: string | null;
+    onlyHealthy?: boolean;
+  }): Promise<{ status: number; body: Record<string, unknown> }>;
+  requestPeerConsent(opts: {
+    requestId: string;
+    requiredSkill?: string | null;
+    delegateSpiffeId?: string | null;
+    trustDomain?: string | null;
+    tools: string[];
+    ownerOidcToken: string;
+    numericBounds?: Record<string, number> | null;
+    allowedTargets?: string[] | null;
+    paramWhitelist?: Record<string, string[]> | null;
+    maxCalls?: number;
+    handshakeHopSegment?: string;
+    consentHopSegment?: string | null;
+  }): Promise<{ status: number; body: Record<string, unknown> }>;
   callMCPTool(
     requestId: string,
-    targetUrl: string,
+    targetUrl: string | null,
     toolName: string,
-    toolArgs?: Record<string, unknown>
+    toolArgs?: Record<string, unknown>,
+    opts?: {
+      requiredSkill?: string | null;
+      targetSpiffeId?: string | null;
+      targetTrustDomain?: string | null;
+      idempotencyKey?: string | null;
+      redactDigestJws?: boolean;
+      timeoutSec?: number;
+    }
   ): Promise<{ status: number; body: Record<string, unknown> }>;
+  callMCPToolCoAuth(opts: {
+    requestId: string;
+    consentHandle: string;
+    toolName: string;
+    toolArgs?: Record<string, unknown>;
+    requiredSkill?: string | null;
+    targetSpiffeId?: string | null;
+    targetTrustDomain?: string | null;
+    idempotencyKey?: string | null;
+    redactDigestJws?: boolean;
+    timeoutSec?: number;
+  }): Promise<{ status: number; body: Record<string, unknown> }>;
+  callPeerCoAuth(opts: {
+    requestId: string;
+    consentHandle: string;
+    payload?: Record<string, unknown>;
+    permissions?: PermissionLatticeJSON | null;
+    requiredSkill?: string | null;
+    delegateSpiffeId?: string | null;
+    trustDomain?: string | null;
+    hopSegment?: string;
+    taskPath?: string;
+    idempotencyKey?: string | null;
+  }): Promise<{ status: number; body: Record<string, unknown> }>;
   delegateAgent(opts: {
     requestId: string;
     payload?: Record<string, unknown>;

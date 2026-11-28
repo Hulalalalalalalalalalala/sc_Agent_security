@@ -16,11 +16,15 @@ src/
 *.egg-info/
 .pytest_cache/
 
-# Polyglot SDK build artifacts & dependency directories
+# Polyglot SDK & Pi Agent build artifacts / dependency directories
 **/node_modules/
+lineage/pi_agent/node_modules/
 **/target/
 lineage/sdk/go/bin/
 *.class
+*.llm_key
+.env
+.env.*
 
 # Ephemeral / private cryptographic material & host-local lab fixtures
 # (preserves public verification certs `*-public.pem` in lab/ without modifying lab/)

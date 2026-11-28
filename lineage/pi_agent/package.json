@@ -1,0 +1,16 @@
+{
+  "name": "@lineage-lct/pi-workspace-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Real open-source Pi agent (@mariozechner/pi-agent-core + @mariozechner/pi-ai) governed by LineageSidecar",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test_pi_agent.mjs"
+  },
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "0.73.1",
+    "@mariozechner/pi-ai": "0.73.1",
+    "@sinclair/typebox": "0.34.52"
+  }
+}

@@ -57,6 +57,9 @@ LLM_URL="http://host.docker.internal:11434/v1"
 LLM_MODEL="qwen2.5:3b"
 SVID_TTL="1800"
 IMAGE_TAG="${LCT_IMAGE_TAG:-lineage-lct:m8}"
+PI_IMAGE_TAG="${LCT_PI_IMAGE_TAG:-lineage-pi-agent:m11}"
+PI_LLM_MODEL="${LCT_PI_LLM_MODEL:-qwen2.5:3b}"
+WITH_PI_AGENT="false"
 KEYCLOAK_IMAGE="${LCT_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.5.2}"
 STS_ENGINE="auto"
 DELEGATION_MODE="dual"
@@ -80,6 +83,7 @@ Usage:
     [--sts-engine auto|keycloak|lightweight|none] [--with-keycloak] \
     [--delegation-mode dual|lct|oauth_centralized|oauth_federated] \
     [--topology travel|workspace] [--registry-mode federated|centralized] \
+    [--with-pi-agent] [--pi-agent-image lineage-pi-agent:m11] [--pi-llm-model qwen2.5:3b] \
     [--audit-mode centralized|decentralized] \
     [--oauth-creds-file <file>] \
     [--base-port <30000..32700>] [--port-override <slot=port>]... \
@@ -102,6 +106,9 @@ while [[ $# -gt 0 ]]; do
     --delegation-mode) DELEGATION_MODE="${2:-}"; shift 2 ;;
     --topology) TOPOLOGY="${2:-}"; shift 2 ;;
     --registry-mode) REGISTRY_MODE="${2:-}"; shift 2 ;;
+    --with-pi-agent) WITH_PI_AGENT="true"; shift ;;
+    --pi-agent-image) PI_IMAGE_TAG="${2:-}"; shift 2 ;;
+    --pi-llm-model) PI_LLM_MODEL="${2:-}"; shift 2 ;;
     --audit-mode) AUDIT_MODE="${2:-}"; shift 2 ;;
     --oauth-creds-file) OAUTH_CREDS_FILE="${2:-}"; shift 2 ;;
     --base-port) BASE_PORT="${2:-}"; shift 2 ;;
@@ -159,7 +166,11 @@ if [[ "${SKIP_PREFLIGHT}" != "true" ]]; then
 fi
 
 # 1. Allocate conflict-free local NodePorts per role
-ALLOC_ARGS=(allocate-ports --roles "${ROLES_SPEC}" --topology "${TOPOLOGY}" --check-host-free)
+PI_GEN_FLAGS=()
+if [[ "${WITH_PI_AGENT}" == "true" ]]; then
+  PI_GEN_FLAGS=(--with-pi-agent)
+fi
+ALLOC_ARGS=(allocate-ports --roles "${ROLES_SPEC}" --topology "${TOPOLOGY}" --check-host-free ${PI_GEN_FLAGS[@]+"${PI_GEN_FLAGS[@]}"})
 if [[ -n "${BASE_PORT}" ]]; then
   ALLOC_ARGS+=(--base-port "${BASE_PORT}")
 fi
@@ -179,6 +190,20 @@ fi
 echo "[deploy] Building image '${IMAGE_TAG}' (BASE_IMAGE=${DOCKER_BASE_IMG})..."
 docker build --build-arg "BASE_IMAGE=${DOCKER_BASE_IMG}" \
   -f "${LINEAGE_DIR}/k8s/Dockerfile" -t "${IMAGE_TAG}" "${REPO_ROOT}" >/dev/null
+
+if [[ "${WITH_PI_AGENT}" == "true" ]] && echo " ${ROLES_LIST} " | grep -q " alpha "; then
+  echo "[deploy] Building real open-source Pi agent image '${PI_IMAGE_TAG}' (@mariozechner/pi-agent-core)..."
+  if ! docker build -f "${LINEAGE_DIR}/pi_agent/Dockerfile" -t "${PI_IMAGE_TAG}" "${REPO_ROOT}" >/dev/null 2>&1; then
+    PI_DOCKER_PROXY_ARGS=()
+    if [[ -n "${HTTPS_PROXY:-}" ]]; then
+      PI_BUILD_PROXY="${HTTPS_PROXY//127.0.0.1/host.docker.internal}"
+      PI_BUILD_PROXY="${PI_BUILD_PROXY//localhost/host.docker.internal}"
+      PI_DOCKER_PROXY_ARGS=(--build-arg "HTTP_PROXY=${PI_BUILD_PROXY}" --build-arg "HTTPS_PROXY=${PI_BUILD_PROXY}")
+    fi
+    docker build ${PI_DOCKER_PROXY_ARGS[@]+"${PI_DOCKER_PROXY_ARGS[@]}"} \
+      -f "${LINEAGE_DIR}/pi_agent/Dockerfile" -t "${PI_IMAGE_TAG}" "${REPO_ROOT}" >/dev/null
+  fi
+fi
 
 # 3. Resolve Kind node image (support offline `kindest/node:lct-local` or registry mirror override)
 KIND_IMG_ARGS=()
@@ -249,12 +274,16 @@ for r in ${ROLES_LIST}; do
     echo "[deploy] Kind cluster '${cname}' already exists; reusing."
   else
     echo "[deploy] Creating Kind cluster '${cname}' with local extraPortMappings (${role_ports_j})..."
-    "${PY_BIN}" -m lineage.multihost.config_gen kind-config --role "${r}" --topology "${TOPOLOGY}" --ports-json "${role_ports_j}" | \
+    "${PY_BIN}" -m lineage.multihost.config_gen kind-config --role "${r}" --topology "${TOPOLOGY}" ${PI_GEN_FLAGS[@]+"${PI_GEN_FLAGS[@]}"} --ports-json "${role_ports_j}" | \
       kind create cluster --name "${cname}" ${KIND_IMG_ARGS[@]+"${KIND_IMG_ARGS[@]}"} --config -
   fi
   restore_kube_context "${ORIG_KUBE_CTX}"
   echo "[deploy] Loading image '${IMAGE_TAG}' into '${cname}'..."
   load_image_into_kind_cluster "${IMAGE_TAG}" "${cname}"
+  if [[ "${WITH_PI_AGENT}" == "true" && "${r}" == "alpha" ]]; then
+    echo "[deploy] Loading Pi agent image '${PI_IMAGE_TAG}' into '${cname}'..."
+    load_image_into_kind_cluster "${PI_IMAGE_TAG}" "${cname}"
+  fi
   if [[ "${r_sts_eng}" == "keycloak" ]]; then
     if ! docker image inspect "${KEYCLOAK_IMAGE}" >/dev/null 2>&1; then
       docker pull "${KEYCLOAK_IMAGE}"
@@ -325,6 +354,9 @@ for r in ${ROLES_LIST}; do
     --delegation-mode "${DELEGATION_MODE}" \
     --topology "${TOPOLOGY}" \
     --registry-mode "${REGISTRY_MODE}" \
+    ${PI_GEN_FLAGS[@]+"${PI_GEN_FLAGS[@]}"} \
+    --pi-agent-image "${PI_IMAGE_TAG}" \
+    --pi-llm-model "${PI_LLM_MODEL}" \
     ${audit_flag[@]+"${audit_flag[@]}"} \
     --ports-json "${role_ports_j}" \
     ${seed_flags[@]+"${seed_flags[@]}"} \
@@ -359,20 +391,43 @@ for r in ${ROLES_LIST}; do
     audit) ca_dep="audit-ca"; sts_dep="" ;;
   esac
   echo "[deploy] Waiting for ${ca_dep} (${ctx}) to become Ready..."
-  kubectl --context "${ctx}" -n "${ns}" rollout status "deploy/${ca_dep}" --timeout=90s >/dev/null
+  kubectl --context "${ctx}" -n "${ns}" rollout status "deploy/${ca_dep}" --timeout=120s >/dev/null
   if [[ -n "${sts_dep}" && "${r_sts_eng}" != "none" ]]; then
     echo "[deploy] Waiting for ${sts_dep} (${r_sts_eng}, ${ctx}) to become Ready..."
-    kubectl --context "${ctx}" -n "${ns}" rollout status "deploy/${sts_dep}" --timeout=150s >/dev/null
+    kubectl --context "${ctx}" -n "${ns}" rollout status "deploy/${sts_dep}" --timeout=360s >/dev/null
   fi
 done
 
-# 9. Optionally pin trust anchors among roles co-deployed in the same invocation
+# 9. Optionally pin trust anchors & local bootstrap seeds among roles co-deployed in the same invocation
 if [[ "${AUTO_PIN_LOCAL}" == "true" && ${#ANCHOR_LINES[@]} -gt 1 ]]; then
   for anc_entry in "${ANCHOR_LINES[@]}"; do
     td="${anc_entry%% *}"
     anc_val="${anc_entry#* }"
     "${PY_BIN}" "${SCRIPT_DIR}/lct_multihost_cli.py" trust add "${td}" "${anc_val}" --roles "${ROLES_SPEC}" >/dev/null
   done
+  declare -a LOCAL_AUTO_SEEDS=()
+  for r in ${ROLES_LIST}; do
+    loc_ep="$("${PY_BIN}" - "${r}" <<'PYEOF'
+import json, subprocess, sys
+role = sys.argv[1]
+ctx = f"kind-lctmh-{role}"
+ns = f"lineage-{role}"
+p = subprocess.run(["kubectl", "--context", ctx, "-n", ns, "get", "cm", "lct-node-locator", "-o", "json"], capture_output=True, text=True)
+if p.returncode == 0 and p.stdout.strip():
+    d = json.loads(json.loads(p.stdout).get("data", {}).get("locator.json", "{}") or "{}")
+    ca_port = (d.get("ports") or {}).get("ca_federation")
+    locs = d.get("locators") or []
+    if ca_port and locs:
+        print(f"{locs[0]['host']}:{ca_port}")
+PYEOF
+)"
+    if [[ -n "${loc_ep}" ]]; then
+      LOCAL_AUTO_SEEDS+=("${loc_ep}")
+    fi
+  done
+  if [[ ${#LOCAL_AUTO_SEEDS[@]} -gt 0 ]]; then
+    "${PY_BIN}" "${SCRIPT_DIR}/lct_multihost_cli.py" seeds add "${LOCAL_AUTO_SEEDS[@]}" --roles "${ROLES_SPEC}" >/dev/null
+  fi
 fi
 
 if [[ -n "${ANCHORS_OUTPUT}" ]]; then
@@ -393,7 +448,7 @@ if [[ "${WAIT_ALL_READY}" == "true" ]]; then
   for r in ${ROLES_LIST}; do
     ctx="kind-lctmh-${r}"
     ns="lineage-${r}"
-    kubectl --context "${ctx}" -n "${ns}" wait --for=condition=Available deployment --all --timeout=120s >/dev/null
+    kubectl --context "${ctx}" -n "${ns}" wait --for=condition=Available deployment --all --timeout=240s >/dev/null
   done
 fi
 

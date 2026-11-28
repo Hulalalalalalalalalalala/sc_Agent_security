@@ -953,6 +953,12 @@ class WorkloadMTLSBundle:
         check_hostname: bool = True,
     ) -> ssl.SSLContext:
         """Return a per-domain-pinned client `SSLContext` for `target_url` / `expected_spiffe_id`."""
+        if target_url is not None:
+            parsed_target = urlsplit(str(target_url).strip())
+            if parsed_target.scheme.lower() != "https":
+                raise MTLSError(
+                    f"Plaintext or non-HTTPS scheme {parsed_target.scheme!r} is forbidden under mTLS for target {target_url!r}"
+                )
         eff_td = expected_trust_domain
         if eff_td is None and expected_spiffe_id:
             eff_td = SpiffeId.parse(expected_spiffe_id).trust_domain

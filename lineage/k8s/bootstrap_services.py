@@ -633,12 +633,20 @@ def _wait_for_http_ok(url: str, max_wait_sec: float = 45.0) -> None:
 
 
 def _write_shared_loopback_secret(secret_path: str = LOOPBACK_SECRET_FILE) -> str:
-    os.makedirs(os.path.dirname(secret_path), exist_ok=True)
+    dir_path = os.path.dirname(secret_path)
+    os.makedirs(dir_path, exist_ok=True)
+    dir_gid = os.stat(dir_path).st_gid
     secret_val = secrets.token_urlsafe(32)
     tmp_path = f"{secret_path}.tmp"
-    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(secret_val)
+    try:
+        if dir_gid != os.getgid():
+            os.chown(tmp_path, -1, dir_gid)
+        os.chmod(tmp_path, 0o640)
+    except OSError:
+        pass
     os.replace(tmp_path, secret_path)
     return secret_val
 

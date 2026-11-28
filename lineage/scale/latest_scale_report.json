@@ -1,6 +1,6 @@
 {
   "benchmark": "platform_v2_distributed_peer_scale_and_decentralized_audit",
-  "generated_at": 1795628307.9150689,
+  "generated_at": 1795844688.986258,
   "tiers": [
     {
       "peer_nodes": 4,
@@ -11,30 +11,30 @@
         "oauth_centralized": {
           "iterations": 2,
           "logical_hops_per_workflow": 5,
-          "e2e_p50_ms": 84.17,
-          "e2e_p95_ms": 84.58,
-          "e2e_p99_ms": 84.62,
-          "per_hop_p50_ms": 16.83,
+          "e2e_p50_ms": 93.48,
+          "e2e_p95_ms": 97.05,
+          "e2e_p99_ms": 97.36,
+          "per_hop_p50_ms": 18.7,
           "online_sts_rpcs_per_workflow": 5,
-          "avg_sts_rtt_ms": 17.55
+          "avg_sts_rtt_ms": 18.25
         },
         "oauth_federated": {
           "iterations": 2,
           "logical_hops_per_workflow": 5,
-          "e2e_p50_ms": 95.06,
-          "e2e_p95_ms": 107.04,
-          "e2e_p99_ms": 108.11,
-          "per_hop_p50_ms": 19.01,
+          "e2e_p50_ms": 112.46,
+          "e2e_p95_ms": 119.36,
+          "e2e_p99_ms": 119.98,
+          "per_hop_p50_ms": 22.49,
           "online_sts_rpcs_per_workflow": 5,
-          "avg_sts_rtt_ms": 26.24
+          "avg_sts_rtt_ms": 30.96
         },
         "lct": {
           "iterations": 2,
           "logical_hops_per_workflow": 5,
-          "e2e_p50_ms": 97.49,
-          "e2e_p95_ms": 101.23,
-          "e2e_p99_ms": 101.57,
-          "per_hop_p50_ms": 19.5,
+          "e2e_p50_ms": 133.79,
+          "e2e_p95_ms": 138.18,
+          "e2e_p99_ms": 138.57,
+          "per_hop_p50_ms": 26.76,
           "online_sts_rpcs_per_workflow": 0,
           "avg_sts_rtt_ms": 0.0
         }
@@ -42,15 +42,15 @@
       "cascading_revocation": {
         "converged_peers": 4,
         "total_peers": 4,
-        "convergence_ms": 82.19
+        "convergence_ms": 91.8
       },
       "decentralized_audit": {
-        "task_id": "task-scale-n4-lct-1-7440c1",
+        "task_id": "task-scale-n4-lct-1-2e4315",
         "nodes_queried": 7,
         "total_mesh_nodes": 8,
         "non_participating_peers_skipped": 1,
         "total_signed_entries": 14,
-        "pull_and_reconstruct_ms": 31.56,
+        "pull_and_reconstruct_ms": 42.72,
         "reconstructed_complete": true,
         "reconstruction_accuracy_pct": 100.0,
         "anomalies_count": 0
@@ -65,30 +65,30 @@
         "oauth_centralized": {
           "iterations": 2,
           "logical_hops_per_workflow": 15,
-          "e2e_p50_ms": 170.35,
-          "e2e_p95_ms": 176.13,
-          "e2e_p99_ms": 176.65,
-          "per_hop_p50_ms": 11.36,
+          "e2e_p50_ms": 182.96,
+          "e2e_p95_ms": 183.96,
+          "e2e_p99_ms": 184.05,
+          "per_hop_p50_ms": 12.2,
           "online_sts_rpcs_per_workflow": 18,
-          "avg_sts_rtt_ms": 111.52
+          "avg_sts_rtt_ms": 116.97
         },
         "oauth_federated": {
           "iterations": 2,
           "logical_hops_per_workflow": 15,
-          "e2e_p50_ms": 180.53,
-          "e2e_p95_ms": 195.02,
-          "e2e_p99_ms": 196.31,
-          "per_hop_p50_ms": 12.04,
+          "e2e_p50_ms": 190.23,
+          "e2e_p95_ms": 195.47,
+          "e2e_p99_ms": 195.94,
+          "per_hop_p50_ms": 12.68,
           "online_sts_rpcs_per_workflow": 18,
-          "avg_sts_rtt_ms": 126.77
+          "avg_sts_rtt_ms": 136.78
         },
         "lct": {
           "iterations": 2,
           "logical_hops_per_workflow": 15,
-          "e2e_p50_ms": 208.32,
-          "e2e_p95_ms": 213.77,
-          "e2e_p99_ms": 214.26,
-          "per_hop_p50_ms": 13.89,
+          "e2e_p50_ms": 206.14,
+          "e2e_p95_ms": 206.97,
+          "e2e_p99_ms": 207.05,
+          "per_hop_p50_ms": 13.74,
           "online_sts_rpcs_per_workflow": 0,
           "avg_sts_rtt_ms": 0.0
         }
@@ -96,15 +96,15 @@
       "cascading_revocation": {
         "converged_peers": 24,
         "total_peers": 24,
-        "convergence_ms": 410.86
+        "convergence_ms": 500.0
       },
       "decentralized_audit": {
-        "task_id": "task-scale-n24-lct-1-472081",
+        "task_id": "task-scale-n24-lct-1-b1f544",
         "nodes_queried": 14,
         "total_mesh_nodes": 28,
         "non_participating_peers_skipped": 14,
         "total_signed_entries": 43,
-        "pull_and_reconstruct_ms": 85.71,
+        "pull_and_reconstruct_ms": 101.04,
         "reconstructed_complete": true,
         "reconstruction_accuracy_pct": 100.0,
         "anomalies_count": 0

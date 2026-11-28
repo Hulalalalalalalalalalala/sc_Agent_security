@@ -115,6 +115,15 @@ bash lineage/scripts/multihost.sh audit <task_id> --distributed
 
 # 4. Run the 4 / 12 / 24-peer distributed scaling & decentralized audit benchmark
 bash lineage/scripts/multihost.sh scale-bench --tiers 4,12,24 --output-dir lineage/scale/results
+
+# 5. Optional Real-World Open-Source Pi Agent (@mariozechner/pi-agent-core + qwen2.5:3b / cloud LLM) Case Studies (Milestone 11)
+bash lineage/scripts/multihost.sh deploy \
+  --roles alpha,beta,pay \
+  --topology workspace \
+  --registry-mode centralized \
+  --with-pi-agent \
+  --wait-all-ready
+bash lineage/scripts/multihost.sh pi-demo --output-dir ./pi-case-study-results
 ```
 
 ---

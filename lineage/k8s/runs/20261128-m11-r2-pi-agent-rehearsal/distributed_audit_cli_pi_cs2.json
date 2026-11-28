@@ -1,0 +1,43 @@
+{
+  "mode": "decentralized_on_demand_bfs",
+  "task_id": "pi-m11-r2-cs2-med-fed",
+  "nodes_queried": [
+    "ca:org-alpha.io",
+    "ca:org-beta.io",
+    "ca:org-payment.io",
+    "spiffe://org-alpha.io/ns/lineage-alpha/sa/pi-assistant-alice",
+    "spiffe://org-beta.io/ns/lineage-beta/sa/assistant-bob",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-carol",
+    "spiffe://org-payment.io/ns/lineage-pay/sa/assistant-vault"
+  ],
+  "nodes_queried_count": 7,
+  "unreachable_nodes": {},
+  "total_entries": 21,
+  "pull_latency_ms": 643.86,
+  "stream_integrity_ok": true,
+  "reconstructed_complete": true,
+  "resilience_classifications": [
+    "VERIFIED_DUAL_PRINCIPAL_COAUTH",
+    "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+  ],
+  "reconstruction": {
+    "task_id": "pi-m11-r2-cs2-med-fed",
+    "sub": "user:alice@org-alpha.io",
+    "root_block_hash": "Pz0RgguhaRWbwESpG8pQ55Zkoka0c_TmCKmjgx4p_lw",
+    "reconstructed_complete": true,
+    "lineage_paths_observed": [
+      "/pi-m11-r2-cs2-med-fed/OwnerConsent",
+      "/pi-m11-r2-cs2-med-fed/PiMedCoordinator",
+      "/pi-m11-r2-cs2-med-fed/PiMedCoordinator/PiConsent_bob",
+      "/pi-m11-r2-cs2-med-fed/PiMedCoordinator/PiConsent_carol"
+    ],
+    "verified_hops": 6,
+    "tool_invocations_verified": 3,
+    "resilience_classifications": [
+      "VERIFIED_DUAL_PRINCIPAL_COAUTH",
+      "VERIFIED_DUAL_PRINCIPAL_COAUTH"
+    ],
+    "anomalies": []
+  },
+  "anomalies": []
+}

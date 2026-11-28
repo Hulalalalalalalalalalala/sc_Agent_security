@@ -51,6 +51,11 @@ SENSITIVE_KEYS = frozenset(
         "authorization",
         "raw_token",
         "compact_lineage_token",
+        "api_key",
+        "llm_api_key",
+        "openai_api_key",
+        "anthropic_api_key",
+        "bearer_token",
     }
 )
 
@@ -546,15 +551,34 @@ def verify_canonical_object(
 
 
 _EMBEDDED_LCT_TOKEN_RE = re.compile(r"\b(?:lct1|lctm1|lctmp1|lctco1)\.[A-Za-z0-9_-]+")
+_EMBEDDED_API_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"sk-proj-[A-Za-z0-9_-]{12,}"
+    r"|sk-ant-[A-Za-z0-9_-]{12,}"
+    r"|sk-[A-Za-z0-9_-]{20,}"
+    r"|gsk_[A-Za-z0-9_-]{20,}"
+    r"|xai-[A-Za-z0-9_-]{20,}"
+    r"|hf_[A-Za-z0-9_-]{20,}"
+    r"|AIza[0-9A-Za-z_-]{30,}"
+    r")\b"
+)
+_EMBEDDED_JWS_RE = re.compile(
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
+)
 
 
 def redact_sensitive(value: Any) -> Any:
-    """Recursively redact sensitive keys or raw compact JWT/JWS tokens before logging."""
+    """Recursively redact sensitive keys, provider API keys, or raw compact JWT/JWS tokens before logging."""
     if isinstance(value, Mapping):
         cleaned: Dict[str, Any] = {}
         for k, v in value.items():
             key_lower = str(k).lower()
-            if key_lower in SENSITIVE_KEYS or key_lower.endswith("_secret") or key_lower.endswith("_private_key"):
+            if (
+                key_lower in SENSITIVE_KEYS
+                or key_lower.endswith("_secret")
+                or key_lower.endswith("_private_key")
+                or key_lower.endswith("_api_key")
+            ):
                 cleaned[str(k)] = "[REDACTED]"
             else:
                 cleaned[str(k)] = redact_sensitive(v)
@@ -570,7 +594,13 @@ def redact_sensitive(value: Any) -> Any:
                 lambda m: f"[REDACTED_LCT_TOKEN_SHA256:{sha256_hex(m.group(0).encode('utf-8'))[:12]}]",
                 value,
             )
-        # Redact raw 3-part JWS/JWT strings if accidentally placed in log metadata
+        value = _EMBEDDED_API_KEY_RE.sub("[REDACTED_API_KEY]", value)
+        # Redact raw 3-part JWS/JWT strings (whole-string or embedded inside log/error text)
         if value.startswith("eyJ") and value.count(".") == 2 and len(value) > 40:
             return f"[REDACTED_JWS_SHA256:{sha256_hex(value.encode('utf-8'))[:12]}]"
+        if "eyJ" in value:
+            value = _EMBEDDED_JWS_RE.sub(
+                lambda m: f"[REDACTED_JWS_SHA256:{sha256_hex(m.group(0).encode('utf-8'))[:12]}]",
+                value,
+            )
     return value

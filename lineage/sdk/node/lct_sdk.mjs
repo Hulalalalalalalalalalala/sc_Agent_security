@@ -23,6 +23,34 @@ export function loadLoopbackSecret(secretFile = "") {
   return secret;
 }
 
+export async function waitForLoopbackSecret(secretFile = "", maxWaitMs = 45000) {
+  const inline = (process.env.LCT_LOOPBACK_SECRET || "").trim();
+  if (inline) {
+    return loadLoopbackSecret(secretFile);
+  }
+  const targetPath =
+    secretFile || process.env.LCT_LOOPBACK_SECRET_FILE || DEFAULT_SECRET_FILE;
+  const deadline = Date.now() + maxWaitMs;
+  let lastErr = null;
+  while (Date.now() < deadline) {
+    try {
+      if (fs.existsSync(targetPath)) {
+        const secret = fs.readFileSync(targetPath, "utf8").trim();
+        if (secret.length >= 16) {
+          return secret;
+        }
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw (
+    lastErr ||
+    new Error(`Timed out waiting for shared loopback secret at ${targetPath}`)
+  );
+}
+
 export function verifyLoopbackHeader(provided, expected) {
   if (
     typeof provided !== "string" ||
@@ -122,12 +150,68 @@ export class LCTSidecarClient {
     });
   }
 
-  callMCPTool(requestId, targetUrl, toolName, toolArgs = {}) {
-    return this.postProxy({
+  discoverPeers({ skill = null, trustDomain = null, onlyHealthy = true } = {}) {
+    const body = {
+      action: "discover",
+      only_healthy: Boolean(onlyHealthy),
+    };
+    if (skill) body.skill = String(skill);
+    if (trustDomain) body.trust_domain = String(trustDomain);
+    return this.postProxy(body);
+  }
+
+  requestPeerConsent({
+    requestId,
+    requiredSkill = null,
+    delegateSpiffeId = null,
+    trustDomain = null,
+    tools = [],
+    ownerOidcToken,
+    numericBounds = null,
+    allowedTargets = null,
+    paramWhitelist = null,
+    maxCalls = 6,
+    handshakeHopSegment = "ConsentHandshake",
+    consentHopSegment = null,
+  }) {
+    const body = {
+      action: "request_peer_consent",
+      request_id: requestId,
+      tools,
+      owner_oidc_token: ownerOidcToken,
+      max_calls: maxCalls,
+      handshake_hop_segment: handshakeHopSegment,
+      timeout: 20.0,
+    };
+    if (requiredSkill) body.required_skill = requiredSkill;
+    if (delegateSpiffeId) body.delegate_spiffe_id = delegateSpiffeId;
+    if (trustDomain) body.trust_domain = trustDomain;
+    if (numericBounds) body.numeric_bounds = numericBounds;
+    if (allowedTargets) body.allowed_targets = allowedTargets;
+    if (paramWhitelist) body.param_whitelist = paramWhitelist;
+    if (consentHopSegment) body.consent_hop_segment = consentHopSegment;
+    return this.postProxy(body);
+  }
+
+  callMCPTool(
+    requestId,
+    targetUrl,
+    toolName,
+    toolArgs = {},
+    {
+      requiredSkill = null,
+      targetSpiffeId = null,
+      targetTrustDomain = null,
+      idempotencyKey = null,
+      redactDigestJws = false,
+      timeoutSec = 25.0,
+    } = {}
+  ) {
+    const body = {
       action: "call_tool",
       request_id: requestId,
-      target_url: targetUrl,
-      timeout: 25.0,
+      timeout: timeoutSec,
+      redact_digest_jws: Boolean(redactDigestJws),
       payload: {
         jsonrpc: "2.0",
         id: 1,
@@ -137,7 +221,78 @@ export class LCTSidecarClient {
           arguments: toolArgs,
         },
       },
-    });
+    };
+    if (targetUrl) body.target_url = targetUrl;
+    if (requiredSkill) body.required_skill = requiredSkill;
+    if (targetSpiffeId) body.target_spiffe_id = targetSpiffeId;
+    if (targetTrustDomain) body.target_trust_domain = targetTrustDomain;
+    if (idempotencyKey) body.idempotency_key = idempotencyKey;
+    return this.postProxy(body);
+  }
+
+  callMCPToolCoAuth({
+    requestId,
+    consentHandle,
+    toolName,
+    toolArgs = {},
+    requiredSkill = null,
+    targetSpiffeId = null,
+    targetTrustDomain = null,
+    idempotencyKey = null,
+    redactDigestJws = true,
+    timeoutSec = 25.0,
+  }) {
+    const body = {
+      action: "call_mcp_coauth",
+      request_id: requestId,
+      consent_handle: consentHandle,
+      timeout: timeoutSec,
+      redact_digest_jws: Boolean(redactDigestJws),
+      payload: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: toolName,
+          arguments: toolArgs,
+        },
+      },
+    };
+    if (requiredSkill) body.required_skill = requiredSkill;
+    if (targetSpiffeId) body.target_spiffe_id = targetSpiffeId;
+    if (targetTrustDomain) body.target_trust_domain = targetTrustDomain;
+    if (idempotencyKey) body.idempotency_key = idempotencyKey;
+    return this.postProxy(body);
+  }
+
+  callPeerCoAuth({
+    requestId,
+    consentHandle,
+    payload = {},
+    permissions = null,
+    requiredSkill = null,
+    delegateSpiffeId = null,
+    trustDomain = null,
+    hopSegment = "NodeCoAuthHop",
+    taskPath = "/a2a/task",
+    idempotencyKey = null,
+  }) {
+    const body = {
+      action: "call_peer_coauth",
+      request_id: requestId,
+      consent_handle: consentHandle,
+      payload,
+      task_path: taskPath,
+      use_prune_and_graft: false,
+      timeout: 30.0,
+    };
+    if (permissions) body.permissions = permissions;
+    if (requiredSkill) body.required_skill = requiredSkill;
+    if (delegateSpiffeId) body.delegate_spiffe_id = delegateSpiffeId;
+    if (trustDomain) body.trust_domain = trustDomain;
+    if (hopSegment) body.hop_segment = hopSegment;
+    if (idempotencyKey) body.idempotency_key = idempotencyKey;
+    return this.postProxy(body);
   }
 
   delegateAgent({
@@ -194,9 +349,23 @@ export function createLoopbackAgentServer({ port = 9001, secret, handler }) {
       sendJson(res, 404, { error: "route_not_found" });
       return;
     }
+    const MAX_BODY_BYTES = 2 * 1024 * 1024;
     const chunks = [];
-    req.on("data", (c) => chunks.push(c));
+    let totalBytes = 0;
+    let bodyTooLarge = false;
+    req.on("data", (c) => {
+      if (bodyTooLarge) return;
+      totalBytes += c.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        bodyTooLarge = true;
+        sendJson(res, 413, { error: "payload_too_large", max_bytes: MAX_BODY_BYTES });
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", async () => {
+      if (bodyTooLarge) return;
       try {
         const rawTxt = Buffer.concat(chunks).toString("utf8") || "{}";
         const body = JSON.parse(rawTxt);

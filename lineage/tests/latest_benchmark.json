@@ -1,92 +1,92 @@
 {
   "offline_attenuation_es256": {
-    "p50_us": 60.54,
-    "p95_us": 71.13,
-    "p99_us": 95.42,
-    "mean_us": 62.29,
-    "ops_per_sec": 16053.3
+    "p50_us": 72.46,
+    "p95_us": 84.0,
+    "p99_us": 247.0,
+    "mean_us": 76.93,
+    "ops_per_sec": 12999.4
   },
   "wire_token_sizes_bytes": {
     "depth_0": 2927,
-    "depth_1": 8849,
-    "depth_2": 14773,
-    "depth_3": 20756,
-    "depth_5": 32657,
-    "depth_8": 50623,
-    "multiparent_3_branches_depth_2": 49563
+    "depth_1": 8859,
+    "depth_2": 14780,
+    "depth_3": 20763,
+    "depth_5": 32673,
+    "depth_8": 50641,
+    "multiparent_3_branches_depth_2": 49610
   },
   "verifier_modes_and_depths": {
     "LOCAL_FULL_CHAIN_depth_1": {
-      "p50_us": 461.25,
-      "p95_us": 573.71,
-      "p99_us": 672.92,
-      "mean_us": 473.92,
-      "ops_per_sec": 2110.1
+      "p50_us": 464.96,
+      "p95_us": 526.29,
+      "p99_us": 588.33,
+      "mean_us": 470.32,
+      "ops_per_sec": 2126.2
     },
     "LOCAL_FULL_CHAIN_depth_3": {
-      "p50_us": 903.12,
-      "p95_us": 1022.29,
-      "p99_us": 1085.12,
-      "mean_us": 918.02,
-      "ops_per_sec": 1089.3
+      "p50_us": 883.75,
+      "p95_us": 936.88,
+      "p99_us": 969.21,
+      "mean_us": 889.08,
+      "ops_per_sec": 1124.8
     },
     "LEAF_ONLY_depth_3": {
-      "p50_us": 312.67,
-      "p95_us": 349.63,
-      "p99_us": 422.58,
-      "mean_us": 319.18,
-      "ops_per_sec": 3133.0
+      "p50_us": 303.54,
+      "p95_us": 332.5,
+      "p99_us": 363.46,
+      "mean_us": 307.95,
+      "ops_per_sec": 3247.3
     },
     "LOCAL_FULL_CHAIN_depth_5": {
-      "p50_us": 1342.08,
-      "p95_us": 1477.17,
-      "p99_us": 1595.75,
-      "mean_us": 1365.78,
-      "ops_per_sec": 732.2
+      "p50_us": 1304.29,
+      "p95_us": 1365.5,
+      "p99_us": 1393.0,
+      "mean_us": 1312.33,
+      "ops_per_sec": 762.0
     },
     "LOCAL_FULL_CHAIN_depth_8": {
-      "p50_us": 2000.83,
-      "p95_us": 2191.21,
-      "p99_us": 2237.08,
-      "mean_us": 2030.97,
-      "ops_per_sec": 492.4
+      "p50_us": 1966.5,
+      "p95_us": 2090.96,
+      "p99_us": 2211.21,
+      "mean_us": 1979.63,
+      "ops_per_sec": 505.1
     },
     "ADAPTIVE_LOW_RISK_depth_3": {
-      "p50_us": 904.58,
-      "p95_us": 1040.13,
-      "p99_us": 1110.63,
-      "mean_us": 923.89,
-      "ops_per_sec": 1082.4
+      "p50_us": 884.38,
+      "p95_us": 933.79,
+      "p99_us": 973.63,
+      "mean_us": 888.82,
+      "ops_per_sec": 1125.1
     },
     "ADAPTIVE_HIGH_RISK_HTTP_ANCHOR_depth_3": {
-      "p50_us": 4049.71,
-      "p95_us": 6190.25,
-      "p99_us": 6657.21,
-      "mean_us": 4197.64,
-      "ops_per_sec": 238.2
+      "p50_us": 3804.21,
+      "p95_us": 5670.38,
+      "p99_us": 6206.17,
+      "mean_us": 3956.52,
+      "ops_per_sec": 252.7
     },
     "MULTIPARENT_3_BRANCH_DAG_depth_2": {
-      "p50_us": 2194.33,
-      "p95_us": 2331.08,
-      "p99_us": 2489.92,
-      "mean_us": 2229.14,
-      "ops_per_sec": 448.6
+      "p50_us": 2133.71,
+      "p95_us": 2245.71,
+      "p99_us": 2361.29,
+      "mean_us": 2157.1,
+      "ops_per_sec": 463.6
     }
   },
   "prefix_trie_10k_revocations": {
     "cascading_hit": {
-      "p50_us": 1.29,
-      "p95_us": 1.58,
-      "p99_us": 1.92,
-      "mean_us": 1.32,
-      "ops_per_sec": 755576.1
+      "p50_us": 1.25,
+      "p95_us": 1.54,
+      "p99_us": 2.0,
+      "mean_us": 1.27,
+      "ops_per_sec": 787967.1
     },
     "unrevoked_miss": {
       "p50_us": 0.83,
       "p95_us": 0.88,
-      "p99_us": 0.96,
-      "mean_us": 0.84,
-      "ops_per_sec": 1194914.0
+      "p99_us": 1.08,
+      "mean_us": 0.85,
+      "ops_per_sec": 1174992.4
     }
   }
 }

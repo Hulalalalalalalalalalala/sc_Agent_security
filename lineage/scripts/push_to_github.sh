@@ -140,8 +140,8 @@ while IFS= read -r rel_path; do
     fi
     TOTAL_BYTES=$((TOTAL_BYTES + fsize))
 
-    if grep -Eq -- '-----BEGIN (EC |RSA |OPENSSH )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' "${full_path}" 2>/dev/null; then
-      echo "[FATAL] Private key or GitHub token detected in staged file: ${rel_path}" >&2
+    if grep -Eq -- '-----BEGIN (EC |RSA |OPENSSH )?PRIVATE KEY-----|(^|[^A-Za-z0-9_-])(ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,})' "${full_path}" 2>/dev/null; then
+      echo "[FATAL] Private key, GitHub token, or LLM provider API key detected in staged file: ${rel_path}" >&2
       exit 1
     fi
 

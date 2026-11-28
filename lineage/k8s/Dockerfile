@@ -37,6 +37,7 @@ COPY lineage/k8s/__init__.py /opt/lct/lineage/k8s/__init__.py
 COPY lineage/k8s/bootstrap_services.py /opt/lct/lineage/k8s/bootstrap_services.py
 COPY lineage/k8s/e2e_driver.py /opt/lct/lineage/k8s/e2e_driver.py
 COPY lineage/k8s/workspace_e2e.py /opt/lct/lineage/k8s/workspace_e2e.py
+COPY lineage/k8s/pi_case_study_e2e.py /opt/lct/lineage/k8s/pi_case_study_e2e.py
 COPY lineage/multihost /opt/lct/lineage/multihost
 
 ENTRYPOINT ["/app/.venv/bin/python3", "-m", "lineage.k8s.bootstrap_services"]

@@ -48,7 +48,7 @@ from lineage.common.http_utils import (
     SSEResponse,
     validate_origin_form_target,
 )
-from lineage.common.mtls import WorkloadMTLSBundle
+from lineage.common.mtls import MTLSError, WorkloadMTLSBundle
 from lineage.identity.spiffe import IdentityError, SpiffeId, WorkloadIdentity
 from lineage.identity.trust_bundle import TrustBundleResolver
 from lineage.protocol.dpop import JTIReplayCache, create_dpop_proof
@@ -367,7 +367,11 @@ class LineageSidecar:
         self._direct_results = _BoundedTaskListStore()
         self._task_checkpoints = _BoundedTaskListStore()
         self._state_lock = threading.Lock()
+        self._wallet_max_entries = 2048
+        self._wallet_ttl_seconds = 600.0
         self._issued_consent_tokens: "OrderedDict[Tuple[str, str], str]" = OrderedDict()
+        self._peer_consent_wallet: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._cohort_digest_wallet: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
         self._cached_replay_tokens: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
         self._inbound_http = ManagedHTTPService(
@@ -522,6 +526,166 @@ class LineageSidecar:
         clean_tool = str(cand_priv).strip() if cand_priv else None
         return clean_tool, (cand_args if clean_tool else None), False
 
+    def _wallet_put(
+        self,
+        wallet: "OrderedDict[str, Dict[str, Any]]",
+        key: str,
+        entry: Dict[str, Any],
+        now_ts: Optional[float] = None,
+    ) -> None:
+        """Insert or update an opaque wallet entry with true LRU ordering and TTL eviction."""
+        now = float(time.time() if now_ts is None else now_ts)
+        stored = {**dict(entry), "created_at": now}
+        with self._state_lock:
+            expired_keys = [
+                k
+                for k, v in wallet.items()
+                if now - float(v.get("created_at", 0.0)) > self._wallet_ttl_seconds
+            ]
+            for ek in expired_keys:
+                wallet.pop(ek, None)
+            if key in wallet:
+                wallet.pop(key, None)
+            while len(wallet) >= self._wallet_max_entries:
+                wallet.popitem(last=False)
+            wallet[key] = stored
+            wallet.move_to_end(key)
+
+    def _wallet_get(
+        self,
+        wallet: "OrderedDict[str, Dict[str, Any]]",
+        key: str,
+        now_ts: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieve an opaque wallet entry enforcing TTL expiry and LRU promotion (`move_to_end`)."""
+        now = float(time.time() if now_ts is None else now_ts)
+        with self._state_lock:
+            while wallet:
+                oldest_k, oldest_v = next(iter(wallet.items()))
+                if now - float(oldest_v.get("created_at", 0.0)) > self._wallet_ttl_seconds:
+                    wallet.popitem(last=False)
+                else:
+                    break
+            item = wallet.get(key)
+            if item is None:
+                return None
+            if now - float(item.get("created_at", 0.0)) > self._wallet_ttl_seconds:
+                wallet.pop(key, None)
+                return None
+            wallet.move_to_end(key)
+            return dict(item)
+
+    @staticmethod
+    def _extract_oidc_home_trust_domain(owner_oidc_jwt: str) -> str:
+        """Extract principal home `@<trust_domain>` from OIDC JWT claims (`[HIGH-M11-01]`)."""
+        _, unv_claims, _, _ = jws_parse_unverified(owner_oidc_jwt)
+        if not isinstance(unv_claims, Mapping):
+            raise CryptoError("OIDC payload must be a JSON object")
+        for claim_key in ("lct_sub", "sub", "email", "preferred_username"):
+            raw_val = str(unv_claims.get(claim_key) or "").strip()
+            if "@" in raw_val:
+                dom = raw_val.rsplit("@", 1)[1].strip().lower()
+                if dom:
+                    return dom
+        iss = str(unv_claims.get("iss") or "").strip().lower()
+        if "/realms/lct-alpha" in iss or "alpha-sts" in iss or ".org-alpha.io" in iss or iss.endswith("/org-alpha.io"):
+            return "org-alpha.io"
+        if "/realms/lct-beta" in iss or "beta-sts" in iss or ".org-beta.io" in iss or iss.endswith("/org-beta.io"):
+            return "org-beta.io"
+        if "/realms/lct-pay" in iss or "payment-sts" in iss or ".org-payment.io" in iss or iss.endswith("/org-payment.io"):
+            return "org-payment.io"
+        return ""
+
+    def _handle_local_ca_consent_mint(
+        self,
+        *,
+        task_id: str,
+        requester_sub: str,
+        body: Mapping[str, Any],
+    ) -> Tuple[int, Any, Dict[str, str]]:
+        """Mint an owner co-authorization consent LCT via local domain CA without exposing raw tokens to app."""
+        if not self._local_ca_url or not self._sa_token_path or not self.resource_owner_sub:
+            return 503, {"error": "local_ca_consent_not_configured"}, {}
+        req_tools = [str(t).strip() for t in (body.get("tools") or ()) if str(t).strip()]
+        del_sid = str(body.get("delegate_spiffe_id") or "").strip()
+        del_jkt = str(body.get("delegate_jkt") or "").strip()
+        if not req_tools or not del_sid or not del_jkt:
+            return 400, {"error": "missing_consent_parameters"}, {}
+        if not self._allowed_co_auth_tools or not set(req_tools).issubset(self._allowed_co_auth_tools):
+            return (
+                403,
+                {
+                    "error": "COAUTH_TOOL_NOT_PERMITTED",
+                    "detail": (
+                        f"Requested consent tools {req_tools!r} exceed allowed "
+                        f"{sorted(self._allowed_co_auth_tools)!r}"
+                    ),
+                },
+                {},
+            )
+        user_oidc = str(body.get("user_oidc_token") or body.get("owner_oidc_token") or "").strip()
+        if not user_oidc:
+            return (
+                401,
+                {
+                    "error": "OWNER_CONSENT_PROOF_REQUIRED",
+                    "detail": "Cryptographic owner user_oidc_token is mandatory to mint consent",
+                },
+                {},
+            )
+        try:
+            with open(self._sa_token_path, "r", encoding="utf-8") as fh:
+                sa_jwt = fh.read().strip()
+            ca_hdrs: Dict[str, str] = {"Authorization": f"Bearer {sa_jwt}"}
+            raw_nb = body.get("numeric_bounds")
+            raw_at = body.get("allowed_targets")
+            raw_pw = body.get("param_whitelist")
+            perms = PermissionLattice.create(
+                tools=req_tools,
+                numeric_bounds=(dict(raw_nb) if isinstance(raw_nb, Mapping) else None),
+                allowed_targets=(
+                    list(raw_at) if isinstance(raw_at, (list, tuple, set, frozenset)) else None
+                ),
+                param_whitelist=(dict(raw_pw) if isinstance(raw_pw, Mapping) else None),
+                max_calls=max(1, min(int(body.get("max_calls", 4)), 8)),
+            )
+            hop_seg_c = str(body.get("hop_segment") or "OwnerConsent").strip() or "OwnerConsent"
+            ca_req_json: Dict[str, Any] = {
+                "trust_domain": self.identity.trust_domain,
+                "sub": self.resource_owner_sub,
+                "task_id": str(task_id),
+                "sender_jkt": self.identity.jkt,
+                "first_hop_spiffe_id": del_sid,
+                "first_hop_jkt": del_jkt,
+                "hop_segment": hop_seg_c,
+                "permissions": perms.to_dict(),
+                "ttl_seconds": min(float(body.get("ttl_seconds", 120.0)), 300.0),
+                "co_auth_consent": True,
+                "requester_sub": str(requester_sub),
+                "user_oidc_token": user_oidc,
+            }
+            r_ca = httpx.post(
+                f"{self._local_ca_url}/v1/ca/mint-consent-token",
+                json=ca_req_json,
+                headers=ca_hdrs,
+                timeout=10.0,
+                trust_env=False,
+            )
+            ca_out = r_ca.json()
+            if r_ca.status_code == 200 and ca_out.get("compact_token") and ca_out.get("lineage_path"):
+                with self._state_lock:
+                    if len(self._issued_consent_tokens) >= 2048:
+                        self._issued_consent_tokens.popitem(last=False)
+                    self._issued_consent_tokens[
+                        (str(task_id), str(ca_out["lineage_path"]))
+                    ] = str(ca_out["compact_token"])
+                    self._issued_consent_tokens.move_to_end(
+                        (str(task_id), str(ca_out["lineage_path"]))
+                    )
+            return r_ca.status_code, ca_out, {}
+        except Exception as exc:
+            return 502, {"error": "local_ca_consent_failed", "detail": str(exc)}, {}
+
     def _outbound_verify_kwarg(
         self,
         target_url: Optional[str] = None,
@@ -529,12 +693,22 @@ class LineageSidecar:
         expected_spiffe_id: Optional[str] = None,
     ) -> Any:
         if self._mtls_bundle is not None:
+            if target_url is not None and urlsplit(str(target_url).strip()).scheme.lower() != "https":
+                raise MTLSError(
+                    f"Plaintext or non-HTTPS target {target_url!r} is forbidden when WorkloadMTLSBundle is active"
+                )
             return self._mtls_bundle.verify_for_target(
                 target_url=target_url,
                 expected_trust_domain=expected_trust_domain,
                 expected_spiffe_id=expected_spiffe_id,
             )
-        return self._client_ssl_ctx if self._client_ssl_ctx is not None else True
+        if self._client_ssl_ctx is not None:
+            if target_url is not None and urlsplit(str(target_url).strip()).scheme.lower() != "https":
+                raise MTLSError(
+                    f"Plaintext or non-HTTPS target {target_url!r} is forbidden when client_ssl_context is active"
+                )
+            return self._client_ssl_ctx
+        return True
 
     def _verify_mtls_channel_binding(
         self,
@@ -985,6 +1159,23 @@ class LineageSidecar:
                 parsed_token.task_id, dict(body_json), sub=parsed_token.sub
             )
             return 200, {"accepted": True, "delivery_mode": "DIRECT_PARENT"}, {}
+
+        # Native inbound co-authorization consent handler (`[HIGH-M11-02]`):
+        # Keeps raw `user_oidc_token` and minted `compact_token` strictly inside `LineageSidecar`
+        # so zero raw wire tokens ever cross loopback into polyglot app containers (`server.mjs`).
+        if (
+            req.method == "POST"
+            and isinstance(body_json, Mapping)
+            and str(body_json.get("op") or "").strip() == "request_co_auth_consent"
+            and self._local_ca_url
+            and self._sa_token_path
+            and self.resource_owner_sub
+        ):
+            return self._handle_local_ca_consent_mint(
+                task_id=parsed_token.task_id,
+                requester_sub=parsed_token.sub,
+                body=body_json,
+            )
 
         # Register isolated per-request context & forward to local business server
         req_ctx = self.active_requests.register(
@@ -1482,6 +1673,8 @@ class LineageSidecar:
                             },
                         )
                     break
+                except MTLSError as exc:
+                    return 403, {"error": "PLAINTEXT_HTTP_FORBIDDEN_UNDER_MTLS", "detail": str(exc)}, {}
                 except httpx.HTTPError as exc:
                     last_exc = exc
                     continue
@@ -1598,6 +1791,8 @@ class LineageSidecar:
                             },
                         )
                     break
+                except MTLSError as exc:
+                    return 403, {"error": "PLAINTEXT_HTTP_FORBIDDEN_UNDER_MTLS", "detail": str(exc)}, {}
                 except httpx.HTTPError as exc:
                     last_del_exc = exc
                     if not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
@@ -1864,77 +2059,11 @@ class LineageSidecar:
             return 200, {"checkpoint": ckpt.to_dict()}, {}
 
         if action == "request_local_ca_consent":
-            if not self._local_ca_url or not self._sa_token_path or not self.resource_owner_sub:
-                return 503, {"error": "local_ca_consent_not_configured"}, {}
-            if not self._allowed_co_auth_tools:
-                return 403, {"error": "COAUTH_TOOL_NOT_PERMITTED", "detail": "No co-authorizable tools configured"}, {}
-            req_tools = [str(t).strip() for t in (body.get("tools") or ()) if str(t).strip()]
-            if not req_tools or not set(req_tools).issubset(self._allowed_co_auth_tools):
-                return (
-                    403,
-                    {
-                        "error": "COAUTH_TOOL_NOT_PERMITTED",
-                        "detail": f"Requested consent tools {req_tools!r} exceed allowed {sorted(self._allowed_co_auth_tools)!r}",
-                    },
-                    {},
-                )
-            user_oidc = str(body.get("user_oidc_token") or "").strip()
-            if not user_oidc:
-                return (
-                    401,
-                    {
-                        "error": "OWNER_CONSENT_PROOF_REQUIRED",
-                        "detail": "Cryptographic owner user_oidc_token is mandatory to mint consent",
-                    },
-                    {},
-                )
-            try:
-                with open(self._sa_token_path, "r", encoding="utf-8") as fh:
-                    sa_jwt = fh.read().strip()
-                ca_hdrs: Dict[str, str] = {"Authorization": f"Bearer {sa_jwt}"}
-                raw_nb = body.get("numeric_bounds")
-                raw_at = body.get("allowed_targets")
-                raw_pw = body.get("param_whitelist")
-                perms = PermissionLattice.create(
-                    tools=req_tools,
-                    numeric_bounds=(dict(raw_nb) if isinstance(raw_nb, Mapping) else None),
-                    allowed_targets=(list(raw_at) if isinstance(raw_at, (list, tuple, set, frozenset)) else None),
-                    param_whitelist=(dict(raw_pw) if isinstance(raw_pw, Mapping) else None),
-                    max_calls=max(1, min(int(body.get("max_calls", 4)), 8)),
-                )
-                hop_seg_c = str(body.get("hop_segment") or "OwnerConsent").strip() or "OwnerConsent"
-                ca_req_json: Dict[str, Any] = {
-                    "trust_domain": self.identity.trust_domain,
-                    "sub": self.resource_owner_sub,
-                    "task_id": str(body["task_id"]),
-                    "sender_jkt": self.identity.jkt,
-                    "first_hop_spiffe_id": str(body["delegate_spiffe_id"]),
-                    "first_hop_jkt": str(body["delegate_jkt"]),
-                    "hop_segment": hop_seg_c,
-                    "permissions": perms.to_dict(),
-                    "ttl_seconds": min(float(body.get("ttl_seconds", 120.0)), 300.0),
-                    "co_auth_consent": True,
-                    "requester_sub": str(body.get("requester_sub") or ""),
-                    "user_oidc_token": user_oidc,
-                }
-                r_ca = httpx.post(
-                    f"{self._local_ca_url}/v1/ca/mint-consent-token",
-                    json=ca_req_json,
-                    headers=ca_hdrs,
-                    timeout=10.0,
-                    trust_env=False,
-                )
-                ca_out = r_ca.json()
-                if r_ca.status_code == 200 and ca_out.get("compact_token") and ca_out.get("lineage_path"):
-                    with self._state_lock:
-                        if len(self._issued_consent_tokens) >= 2048:
-                            self._issued_consent_tokens.popitem(last=False)
-                        self._issued_consent_tokens[
-                            (str(body["task_id"]), str(ca_out["lineage_path"]))
-                        ] = str(ca_out["compact_token"])
-                return r_ca.status_code, ca_out, {}
-            except Exception as exc:
-                return 502, {"error": "local_ca_consent_failed", "detail": str(exc)}, {}
+            return self._handle_local_ca_consent_mint(
+                task_id=str(body.get("task_id") or ""),
+                requester_sub=str(body.get("requester_sub") or ""),
+                body=body,
+            )
 
         if action == "revoke_consent_prefix":
             if self.revocation_replica is None:
@@ -2210,6 +2339,8 @@ class LineageSidecar:
                             headers={"Authorization": f"DPoP {c_tok}", "DPoP": dpop_r},
                         )
                     break
+                except MTLSError as exc:
+                    return 403, {"error": "PLAINTEXT_HTTP_FORBIDDEN_UNDER_MTLS", "detail": str(exc)}, {}
                 except httpx.HTTPError as exc:
                     last_exc = exc
             if resp_rep is None:
@@ -2247,16 +2378,26 @@ class LineageSidecar:
                 {},
             )
 
-        if action == "list_skills":
+        if action in ("list_skills", "discover"):
             if self.directory_client is None:
                 return 500, {"error": "directory_client_not_configured"}, {}
-            cards = self.directory_client.discover(only_healthy=True)
+            sk_filter = (
+                str(body.get("skill") or body.get("required_skill") or "").strip() or None
+            )
+            td_filter = str(body.get("trust_domain") or "").strip() or None
+            only_healthy = bool(body.get("only_healthy", True))
+            cards = self.directory_client.discover(
+                skill=sk_filter,
+                trust_domain=td_filter,
+                only_healthy=only_healthy,
+            )
             catalog: List[Dict[str, Any]] = [
                 {
                     "spiffe_id": c.spiffe_id,
                     "trust_domain": c.trust_domain,
                     "name": c.name,
                     "skills": sorted(c.skills),
+                    "status": c.status.value,
                     "priority": c.priority,
                 }
                 for c in cards
@@ -2320,7 +2461,398 @@ class LineageSidecar:
                 return 404, {"error": "unknown_or_expired_request_id"}, {}
             active_tok = ctx.parsed_token
 
+        if action == "request_peer_consent":
+            if not isinstance(active_tok, LineageToken):
+                return 400, {"error": "co_authorization_requires_single_chain_requester"}, {}
+            if self.directory_client is None:
+                return 500, {"error": "directory_client_not_configured"}, {}
+            owner_oidc = str(
+                body.get("owner_oidc_token") or body.get("user_oidc_token") or ""
+            ).strip()
+            if not owner_oidc:
+                return (
+                    401,
+                    {
+                        "error": "OWNER_CONSENT_PROOF_REQUIRED",
+                        "detail": "owner_oidc_token is mandatory to request peer owner consent",
+                    },
+                    {},
+                )
+            req_tools_hs = [
+                str(t).strip() for t in (body.get("tools") or ()) if str(t).strip()
+            ]
+            if not req_tools_hs:
+                return 400, {"error": "missing_consent_tools"}, {}
+
+            # 1. Local 0-RTT lattice containment (`[HIGH-M11-01]`): never transmit OIDC bearer
+            #    when requested tools exceed the caller's active LCT PermissionLattice!
+            if not set(req_tools_hs).issubset(active_tok.leaf_permissions.tools):
+                return (
+                    403,
+                    {
+                        "error": "LATTICE_PERMISSION_DENIED",
+                        "detail": (
+                            f"Requested consent tools {req_tools_hs!r} are outside caller LCT allowed "
+                            f"tools {sorted(active_tok.leaf_permissions.tools)!r}"
+                        ),
+                    },
+                    {},
+                )
+            base_hs_perms = PermissionLattice.create(
+                tools=req_tools_hs, max_amount=100.0, max_calls=4
+            )
+            inter_hs = active_tok.leaf_permissions.intersect(base_hs_perms)
+            if inter_hs.is_empty():
+                return (
+                    403,
+                    {
+                        "error": "LATTICE_PERMISSION_DENIED",
+                        "detail": "Attenuated consent handshake permission lattice is empty",
+                    },
+                    {},
+                )
+
+            # 2. Parse `owner_oidc` & extract home trust domain BEFORE directory/network access (`[HIGH-M11-01]`)
+            try:
+                oidc_home_domain = self._extract_oidc_home_trust_domain(owner_oidc)
+            except Exception as exc:
+                return (
+                    401,
+                    {"error": "INVALID_OWNER_OIDC_TOKEN", "detail": str(exc)},
+                    {},
+                )
+            if not oidc_home_domain:
+                return (
+                    403,
+                    {
+                        "error": "CROSS_DOMAIN_OIDC_EXFILTRATION_BLOCKED",
+                        "detail": "Cannot verify home trust domain from owner_oidc_token claims",
+                    },
+                    {},
+                )
+
+            peer_spiffe_q = str(body.get("delegate_spiffe_id") or "").strip()
+            peer_skill_q = str(body.get("required_skill") or "").strip()
+            peer_td_q = (
+                str(body.get("trust_domain") or body.get("target_trust_domain") or "").strip()
+                or None
+            )
+            if peer_td_q and peer_td_q.lower() != oidc_home_domain:
+                return (
+                    403,
+                    {
+                        "error": "CROSS_DOMAIN_OIDC_EXFILTRATION_BLOCKED",
+                        "detail": (
+                            f"owner_oidc_token home domain {oidc_home_domain!r} != requested "
+                            f"trust_domain {peer_td_q!r}"
+                        ),
+                    },
+                    {},
+                )
+
+            peer_card: Optional[AgentCard] = None
+            if peer_spiffe_q:
+                peer_card = self.directory_client.get_agent(peer_spiffe_q)
+            if peer_card is None and peer_skill_q:
+                found_peers = self.directory_client.discover(
+                    skill=peer_skill_q,
+                    trust_domain=peer_td_q,
+                    exclude_spiffe_ids=set(active_tok.visited_subjects),
+                    only_healthy=True,
+                )
+                if found_peers:
+                    peer_card = found_peers[0]
+            if peer_card is None:
+                return 404, {"error": "no_candidate_for_skill"}, {}
+
+            if peer_card.trust_domain.lower() != oidc_home_domain:
+                return (
+                    403,
+                    {
+                        "error": "CROSS_DOMAIN_OIDC_EXFILTRATION_BLOCKED",
+                        "detail": (
+                            f"Resolved peer AgentCard trust_domain {peer_card.trust_domain!r} != "
+                            f"owner_oidc_token home domain {oidc_home_domain!r}"
+                        ),
+                    },
+                    {},
+                )
+
+            hs_perms = inter_hs
+            hs_hop_seg = (
+                str(body.get("handshake_hop_segment") or "ConsentHandshake").strip()
+                or "ConsentHandshake"
+            )
+            try:
+                hs_tok = active_tok.attenuate(
+                    issuer_identity=self.identity,
+                    delegate_spiffe_id=peer_card.spiffe_id,
+                    delegate_jkt=peer_card.jkt,
+                    permissions=hs_perms,
+                    hop_segment=hs_hop_seg,
+                    issuer_return_endpoint=self.inbound_url,
+                )
+            except TokenExpiredError as exc:
+                return 401, {"error": "TASK_AUTH_EXPIRED", "detail": str(exc)}, {}
+            except TokenError as exc:
+                return 403, {"error": "attenuation_rejected", "detail": str(exc)}, {}
+
+            hs_urls = [
+                _validate_outbound_target_url(
+                    f"{orig.rstrip('/')}/a2a/task", expected_origin=orig
+                )
+                for orig in peer_card.candidate_origins()
+            ]
+            if not hs_urls:
+                return 502, {"error": "peer_has_no_valid_locators"}, {}
+
+            hs_compact = hs_tok.encode_compact()
+            hs_primary_url = hs_urls[0]
+            if self.audit_emitter is not None:
+                self.audit_emitter.emit(
+                    event_type=AuditEventType.OUTBOUND_DELEGATE,
+                    task_id=hs_tok.task_id,
+                    sub=hs_tok.sub,
+                    lineage_path=hs_tok.lineage_path,
+                    hop_index=hs_tok.depth,
+                    epoch=hs_tok.current_epoch,
+                    root_block_hash=hs_tok.root_block_hash,
+                    parent_block_hash=hs_tok.parent_block_hash,
+                    current_block_hash=hs_tok.leaf_block_hash,
+                    permissions_summary=hs_tok.leaf_permissions.to_dict(),
+                    action_detail={
+                        "action": "request_peer_consent",
+                        "delegate_spiffe_id": peer_card.spiffe_id,
+                        "target_url": hs_primary_url,
+                        "resolved_peer_ip": _resolve_target_peer_ip(hs_primary_url),
+                        "requested_tools": req_tools_hs,
+                    },
+                    decision="ALLOW",
+                )
+
+            hs_payload: Dict[str, Any] = {
+                "op": "request_co_auth_consent",
+                "tools": req_tools_hs,
+                "delegate_spiffe_id": self.identity.spiffe_id,
+                "delegate_jkt": self.identity.jkt,
+                "user_oidc_token": owner_oidc,
+                "max_calls": max(1, min(int(body.get("max_calls", 6)), 8)),
+            }
+            if isinstance(body.get("numeric_bounds"), Mapping):
+                hs_payload["numeric_bounds"] = dict(body["numeric_bounds"])
+            if isinstance(body.get("allowed_targets"), (list, tuple, set, frozenset)):
+                hs_payload["allowed_targets"] = list(body["allowed_targets"])
+            if isinstance(body.get("param_whitelist"), Mapping):
+                hs_payload["param_whitelist"] = dict(body["param_whitelist"])
+            if body.get("consent_hop_segment"):
+                hs_payload["hop_segment"] = str(body["consent_hop_segment"])
+
+            timeout_hs = _require_finite_timeout(body.get("timeout"), 15.0)
+            resp_hs: Optional[httpx.Response] = None
+            last_hs_exc: Optional[Exception] = None
+            for idx_hs, hs_url in enumerate(hs_urls):
+                dpop_hs = create_dpop_proof(
+                    signer=self.identity,
+                    htm="POST",
+                    htu=hs_url,
+                    access_token=hs_compact,
+                )
+                eff_hs_to = (
+                    httpx.Timeout(connect=2.5, read=timeout_hs, write=10.0, pool=5.0)
+                    if idx_hs + 1 < len(hs_urls)
+                    else timeout_hs
+                )
+                try:
+                    with httpx.Client(
+                        verify=self._outbound_verify_kwarg(
+                            target_url=hs_url,
+                            expected_spiffe_id=peer_card.spiffe_id,
+                        ),
+                        timeout=eff_hs_to,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        resp_hs = client.post(
+                            hs_url,
+                            json=hs_payload,
+                            headers={
+                                "Authorization": f"DPoP {hs_compact}",
+                                "DPoP": dpop_hs,
+                            },
+                        )
+                    break
+                except MTLSError as exc:
+                    return 403, {"error": "PLAINTEXT_HTTP_FORBIDDEN_UNDER_MTLS", "detail": str(exc)}, {}
+                except httpx.HTTPError as exc:
+                    last_hs_exc = exc
+                    continue
+
+            if resp_hs is None:
+                return (
+                    502,
+                    {"error": "upstream_transport_error", "detail": str(last_hs_exc)},
+                    {},
+                )
+            try:
+                hs_up_body = resp_hs.json()
+            except Exception:
+                hs_up_body = {"raw": (resp_hs.text or "")[:256]}
+            if resp_hs.status_code != 200:
+                return (
+                    resp_hs.status_code,
+                    {
+                        "error": "peer_consent_rejected",
+                        "upstream_status": resp_hs.status_code,
+                        "upstream_body": redact_sensitive(hs_up_body),
+                    },
+                    {},
+                )
+            consent_compact = str(
+                (hs_up_body.get("compact_token") if isinstance(hs_up_body, Mapping) else None)
+                or (hs_up_body.get("token") if isinstance(hs_up_body, Mapping) else None)
+                or ""
+            ).strip()
+            if not consent_compact:
+                return (
+                    403,
+                    {
+                        "error": "missing_consent_token",
+                        "upstream_body": redact_sensitive(hs_up_body),
+                    },
+                    {},
+                )
+            try:
+                parsed_hs_consent = decode_token(consent_compact)
+                if not isinstance(parsed_hs_consent, LineageToken):
+                    raise TokenError("Peer returned non-single-chain consent token")
+                self.verifier.verify_single_chain_full(
+                    parsed_hs_consent, check_revocation=True
+                )
+                if parsed_hs_consent.task_id != active_tok.task_id:
+                    raise TokenError(
+                        f"Consent token task_id {parsed_hs_consent.task_id!r} != {active_tok.task_id!r}"
+                    )
+                if parsed_hs_consent.sub == active_tok.sub:
+                    raise TokenError("Consent token principal must differ from requester principal")
+                if not parsed_hs_consent.sub.lower().endswith(f"@{peer_card.trust_domain.lower()}"):
+                    raise TokenError(
+                        f"Consent token sub {parsed_hs_consent.sub!r} does not match peer trust domain {peer_card.trust_domain!r}"
+                    )
+                if parsed_hs_consent.root.issuer_trust_domain != peer_card.trust_domain:
+                    raise TokenError(
+                        f"Consent token issuer domain {parsed_hs_consent.root.issuer_trust_domain!r} != {peer_card.trust_domain!r}"
+                    )
+                if parsed_hs_consent.holder_spiffe_id != self.identity.spiffe_id:
+                    raise TokenError(
+                        f"Consent token holder_spiffe_id {parsed_hs_consent.holder_spiffe_id!r} != {self.identity.spiffe_id!r}"
+                    )
+                if parsed_hs_consent.holder_cnf_jkt != self.identity.jkt:
+                    raise TokenError("Consent token holder_cnf_jkt mismatch")
+                if not set(parsed_hs_consent.leaf_permissions.tools).issubset(set(req_tools_hs)):
+                    raise TokenError(
+                        f"Consent token tools {sorted(parsed_hs_consent.leaf_permissions.tools)!r} exceed requested {req_tools_hs!r}"
+                    )
+            except Exception as exc:
+                return (
+                    403,
+                    {"error": "invalid_peer_consent_token", "detail": str(exc)},
+                    {},
+                )
+
+            consent_handle = f"chdl-{secrets.token_hex(12)}"
+            self._wallet_put(
+                self._peer_consent_wallet,
+                consent_handle,
+                {
+                    "requester_sub": active_tok.sub,
+                    "task_id": active_tok.task_id,
+                    "owner_sub": parsed_hs_consent.sub,
+                    "tools": sorted(parsed_hs_consent.leaf_permissions.tools),
+                    "compact_token": consent_compact,
+                    "lineage_path": parsed_hs_consent.lineage_path,
+                    "peer_spiffe_id": peer_card.spiffe_id,
+                },
+            )
+            return (
+                200,
+                {
+                    "consent_handle": consent_handle,
+                    "owner_sub": parsed_hs_consent.sub,
+                    "requester_sub": active_tok.sub,
+                    "task_id": active_tok.task_id,
+                    "tools": sorted(parsed_hs_consent.leaf_permissions.tools),
+                    "peer_spiffe_id": peer_card.spiffe_id,
+                },
+                {},
+            )
+
+        raw_consent_handle = str(body.get("consent_handle") or "").strip()
+        if action in ("call_peer_coauth", "call_mcp_coauth") and not raw_consent_handle:
+            return 400, {"error": "missing_consent_handle"}, {}
+
+        used_opaque_consent = bool(raw_consent_handle)
+        payload_check = body.get("payload")
+        has_digest_handles = (
+            isinstance(payload_check, Mapping)
+            and payload_check.get("method") == "tools/call"
+            and isinstance(payload_check.get("params"), Mapping)
+            and isinstance(payload_check["params"].get("arguments"), Mapping)
+            and "digest_handles" in payload_check["params"]["arguments"]
+        )
+        if used_opaque_consent or has_digest_handles:
+            if str(body.get("target_url") or "").strip() or (
+                body.get("delegate_jkt") is not None and str(body.get("delegate_jkt") or "").strip()
+            ):
+                return (
+                    403,
+                    {
+                        "error": "UNVERIFIED_TARGET_URL_FORBIDDEN_FOR_OPAQUE_HANDLE",
+                        "detail": (
+                            "Caller-supplied target_url / delegate_jkt is forbidden when redeeming "
+                            "opaque consent_handle or digest_handles; CA-signed AgentCard resolution "
+                            "via directory_client is mandatory"
+                        ),
+                    },
+                    {},
+                )
+            if self.directory_client is None:
+                return 500, {"error": "directory_client_not_configured"}, {}
+
         raw_owner_consent = str(body.get("owner_consent_token") or "").strip()
+        if raw_consent_handle:
+            w_entry = self._wallet_get(self._peer_consent_wallet, raw_consent_handle)
+            if w_entry is None:
+                return (
+                    404,
+                    {
+                        "error": "CONSENT_HANDLE_NOT_FOUND",
+                        "consent_handle": raw_consent_handle,
+                    },
+                    {},
+                )
+            if (
+                w_entry.get("requester_sub") != active_tok.sub
+                or w_entry.get("task_id") != active_tok.task_id
+            ):
+                return (
+                    403,
+                    {
+                        "error": "CROSS_TENANT_OR_TASK_CONSENT_DENIED",
+                        "detail": (
+                            f"Consent handle {raw_consent_handle!r} is isolated to "
+                            f"({w_entry.get('requester_sub')!r}, {w_entry.get('task_id')!r}), "
+                            f"denied for ({active_tok.sub!r}, {active_tok.task_id!r})"
+                        ),
+                    },
+                    {},
+                )
+            raw_owner_consent = str(w_entry["compact_token"])
+
+        if action == "call_mcp_coauth":
+            action = "call_tool"
+        elif action == "call_peer_coauth":
+            action = "delegate_agent"
+
         if raw_owner_consent:
             if not isinstance(active_tok, LineageToken):
                 return 400, {"error": "co_authorization_requires_single_chain_requester"}, {}
@@ -2455,6 +2987,18 @@ class LineageSidecar:
                         },
                         {},
                     )
+                if eff_trust_domain and tool_card.trust_domain.lower() != eff_trust_domain.lower():
+                    return (
+                        403,
+                        {
+                            "error": "TARGET_TRUST_DOMAIN_MISMATCH",
+                            "detail": (
+                                f"Resolved AgentCard trust_domain {tool_card.trust_domain!r} != "
+                                f"expected {eff_trust_domain!r}"
+                            ),
+                        },
+                        {},
+                    )
                 eff_spiffe_id = tool_card.spiffe_id
                 eff_trust_domain = tool_card.trust_domain
                 for orig in tool_card.candidate_origins():
@@ -2469,6 +3013,52 @@ class LineageSidecar:
 
             timeout_val = _require_finite_timeout(body.get("timeout"), 60.0)
             payload = body.get("payload") or {}
+            if (
+                isinstance(payload, Mapping)
+                and payload.get("method") == "tools/call"
+                and isinstance(payload.get("params"), Mapping)
+                and isinstance(payload["params"].get("arguments"), Mapping)
+                and "digest_handles" in payload["params"]["arguments"]
+            ):
+                raw_dhdls = payload["params"]["arguments"].get("digest_handles")
+                if not isinstance(raw_dhdls, (list, tuple)) or not raw_dhdls:
+                    return 400, {"error": "invalid_digest_handles"}, {}
+                resolved_digests: List[Dict[str, Any]] = []
+                for dh_item in raw_dhdls:
+                    dh_key = str(dh_item or "").strip()
+                    dh_entry = self._wallet_get(self._cohort_digest_wallet, dh_key)
+                    if dh_entry is None:
+                        return (
+                            404,
+                            {
+                                "error": "COHORT_DIGEST_HANDLE_NOT_FOUND",
+                                "digest_handle": dh_key,
+                            },
+                            {},
+                        )
+                    if (
+                        dh_entry.get("requester_sub") != active_tok.sub
+                        or dh_entry.get("task_id") != active_tok.task_id
+                    ):
+                        return (
+                            403,
+                            {
+                                "error": "CROSS_TENANT_OR_TASK_DIGEST_DENIED",
+                                "detail": (
+                                    f"Cohort digest handle {dh_key!r} is isolated to "
+                                    f"({dh_entry.get('requester_sub')!r}, {dh_entry.get('task_id')!r}), "
+                                    f"denied for ({active_tok.sub!r}, {active_tok.task_id!r})"
+                                ),
+                            },
+                            {},
+                        )
+                    resolved_digests.append(dict(dh_entry["record"]))
+                new_args = dict(payload["params"]["arguments"])
+                new_args.pop("digest_handles", None)
+                new_args["cohort_digests"] = resolved_digests
+                new_params = dict(payload["params"])
+                new_params["arguments"] = new_args
+                payload = {**dict(payload), "params": new_params}
             compact_out = active_tok.encode_compact()
             if fault_injection_enabled and body.get("cache_token_under_key"):
                 ck_name = str(body["cache_token_under_key"]).strip()
@@ -2584,6 +3174,8 @@ class LineageSidecar:
                             headers=tool_hdrs,
                         )
                     break
+                except MTLSError as exc:
+                    return 403, {"error": "PLAINTEXT_HTTP_FORBIDDEN_UNDER_MTLS", "detail": str(exc)}, {}
                 except httpx.HTTPError as exc:
                     last_tool_exc = exc
                     continue
@@ -2602,6 +3194,26 @@ class LineageSidecar:
                     "status_code": resp.status_code,
                     "detail": (resp.text or "")[:256],
                 }
+            if resp.status_code == 200 and isinstance(parsed_up_body, dict):
+                res_blk = parsed_up_body.get("result")
+                if isinstance(res_blk, dict) and isinstance(res_blk.get("data"), dict):
+                    res_data = res_blk["data"]
+                    raw_djws = str(res_data.get("digest_jws") or "").strip()
+                    if raw_djws:
+                        dhdl = f"cdhdl-{secrets.token_hex(12)}"
+                        stored_rec = dict(res_data)
+                        self._wallet_put(
+                            self._cohort_digest_wallet,
+                            dhdl,
+                            {
+                                "requester_sub": active_tok.sub,
+                                "task_id": active_tok.task_id,
+                                "record": stored_rec,
+                            },
+                        )
+                        res_data["digest_handle"] = dhdl
+                        if used_opaque_consent or bool(body.get("redact_digest_jws", False)):
+                            res_data.pop("digest_jws", None)
             return (
                 resp.status_code,
                 {
@@ -2721,29 +3333,58 @@ class LineageSidecar:
 
             timeout_del = _require_finite_timeout(body.get("timeout"), 60.0)
             del_candidate_urls: List[str] = []
+            req_del_td = (
+                str(body.get("trust_domain") or body.get("target_trust_domain") or "").strip()
+                or None
+            )
+            excluded_visited: Set[str] = set()
+            if isinstance(active_tok, LineageToken):
+                excluded_visited = set(active_tok.visited_subjects)
+            else:
+                for ch in active_tok.parent_chains:
+                    excluded_visited.update(ch.visited_subjects)
             if (
-                "delegate_spiffe_id" in body
+                not used_opaque_consent
+                and "delegate_spiffe_id" in body
                 and "delegate_jkt" in body
                 and "target_url" in body
             ):
                 delegate_spiffe_id = str(body["delegate_spiffe_id"])
                 delegate_jkt = str(body["delegate_jkt"])
                 del_candidate_urls = [_validate_outbound_target_url(body["target_url"])]
-            elif "required_skill" in body and self.directory_client is not None:
-                excluded_visited: Set[str] = set()
-                if isinstance(active_tok, LineageToken):
-                    excluded_visited = set(active_tok.visited_subjects)
-                else:
-                    for ch in active_tok.parent_chains:
-                        excluded_visited.update(ch.visited_subjects)
-                cards = self.directory_client.discover(
-                    skill=str(body["required_skill"]),
-                    exclude_spiffe_ids=excluded_visited,
-                    only_healthy=True,
-                )
-                if not cards:
+            elif self.directory_client is not None and (
+                body.get("delegate_spiffe_id") or body.get("required_skill")
+            ):
+                chosen: Optional[AgentCard] = None
+                if body.get("delegate_spiffe_id"):
+                    cand_card = self.directory_client.get_agent(
+                        str(body["delegate_spiffe_id"]).strip()
+                    )
+                    if cand_card is not None and cand_card.spiffe_id not in excluded_visited:
+                        chosen = cand_card
+                if chosen is None and body.get("required_skill"):
+                    cards = self.directory_client.discover(
+                        skill=str(body["required_skill"]),
+                        trust_domain=req_del_td,
+                        exclude_spiffe_ids=excluded_visited,
+                        only_healthy=True,
+                    )
+                    if cards:
+                        chosen = cards[0]
+                if chosen is None:
                     return 404, {"error": "no_candidate_for_skill"}, {}
-                chosen = cards[0]
+                if req_del_td and chosen.trust_domain.lower() != req_del_td.lower():
+                    return (
+                        403,
+                        {
+                            "error": "TARGET_TRUST_DOMAIN_MISMATCH",
+                            "detail": (
+                                f"Resolved AgentCard trust_domain {chosen.trust_domain!r} != "
+                                f"expected {req_del_td!r}"
+                            ),
+                        },
+                        {},
+                    )
                 delegate_spiffe_id = chosen.spiffe_id
                 delegate_jkt = chosen.jkt
                 for orig in chosen.candidate_origins():
@@ -2886,6 +3527,8 @@ class LineageSidecar:
                             headers=del_headers,
                         )
                     break
+                except MTLSError as exc:
+                    return 403, {"error": "PLAINTEXT_HTTP_FORBIDDEN_UNDER_MTLS", "detail": str(exc)}, {}
                 except httpx.HTTPError as exc:
                     last_del_exc = exc
                     continue

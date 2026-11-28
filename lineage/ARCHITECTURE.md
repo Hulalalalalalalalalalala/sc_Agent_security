@@ -206,3 +206,19 @@ Milestone 10（`lineage/federation/user_gateway.py`、`lineage/workspace_agents/
    - `S6` 仅放行各机构工作负载 SVID 签名的带噪差分隐私摘要 `lct-cohort-digest+jwt`（`cohort_aggregate_stats`）汇聚至 `federated_cohort_aggregate`（强制验签 `>= 2` 个不同机构 SPIFFE ID 及双阶段 `JTIReplayCache` 防重放），在权限格、保护资源集与 CA 同意签发策略三层彻底封禁 `export_raw_patient_records`，并由 `task_id` 绑定阻断跨研究项目重放；
    - `S7` 在 4 跳审计链遭遇恶意文档间接提示词注入时，先拦截未授权高危动作，再由上游对第 2 跳子树执行级联吊销，使攻击者在吊销前预先签出缓存的第 3 跳子令牌立即失效（`403 LINEAGE_REVOKED`）；
    - `S8` 从 `org-beta`（Bob）对称发起跨三域任务，实测拦截被盗令牌跨身份重放（`403` DPoP `cnf.jkt` 失配 + mTLS 通道绑定拦截）与共享金库跨租户读取，并由 `org-beta` 视角启动 `DistributedAuditor` 完成 `100%` 因果图重构。
+
+---
+
+## 10. 真实开源智能体框架 `Pi`（`@mariozechner/pi-agent-core` + `qwen2.5:3b` / 云端 OpenAI 兼容接口）零侵入接入（Milestone 11）
+
+Milestone 11（`lineage/pi_agent/`、`lineage/sdk/node/lct_sdk.mjs`、`lineage/k8s/pi_case_study_e2e.py`）将真实第三方开源 Node.js ReAct 智能体运行时 **`@mariozechner/pi-agent-core` + `@mariozechner/pi-ai`** 直接部署在未修改协议内核的 Python `LineageSidecar` 之后（双容器 Pod `pi-assistant-alice`：`[app (Node.js 22), lct-sidecar (Python 3.12)]`），验证跨语言异构生产智能体的零信任治理边界：
+
+1. **严格环回隔离与不透明凭据句柄（Zero Raw Wire Tokens in LLM Space）**：
+   - `lineage/pi_agent/server.mjs` 仅绑定 `127.0.0.1:9001` 并以常量时间校验 `X-LCT-Loopback-Auth`，内部**不持有任何 CA 私钥、mTLS 证书、DPoP 密钥、原始 `lct1.`/`lctco1.` 令牌或原始 OIDC/`lct-cohort-digest+jwt` 字符串**；
+   - `LineageSidecar` 提供多语言友好的环回动作 `discover`、`request_peer_consent`、`call_mcp_coauth`、`call_peer_coauth`，在 Sidecar 内存按 `(requester_sub, task_id)` 严格隔离存储对端同意链与机构队列签名摘要（跨主体或跨任务复用句柄即返回 `403 CROSS_TENANT_OR_TASK_CONSENT_DENIED` / `403 CROSS_TENANT_OR_TASK_DIGEST_DENIED`），仅向 Node.js `Pi` 暴露短生命周期不透明句柄 `chdl-*` 与 `cdhdl-*`；
+   - `Pi` 实例严格禁用全部内置 Shell/文件系统工具（`shell_tools_exposed: false`），仅注册 6 个经 Sidecar 仲裁的跨组织协作工具。
+2. **通用 OpenAI 兼容模型推理与密钥零泄漏（本地轻量 `qwen2.5:3b` + 云端大模型 Cloud API）**：
+   - `lineage/agents/ollama_client.py` 与 `lineage/pi_agent/server.mjs` 统一支持 `LLM_BASE_URL`（回退 `OLLAMA_BASE_URL`）、`LLM_MODEL`（本地默认 `qwen2.5:3b` 以兼顾单机多集群内存开销，亦可零改代码切换云端大模型）与可选 `LLM_API_KEY` / `LLM_API_KEY_FILE`（支持 Kubernetes `Secret/lct-llm-api-key` 挂载），并在日志、异常与遥测输出层递归擦除 API Key 与紧凑令牌。
+3. **两大跨组织异构实证案例（`multihost.sh pi-demo`）**：
+   - **案例一（`pi_cs1_fin_prompt_injection`）**：Node.js `Pi`（`qwen2.5:3b` / OpenAI 兼容接口）自主排查金融风控故障 `INC-FIN-2026-42`，遭遇对端诊断日志中内嵌的间接提示词注入（诱导窃取 `hr_salary_read` 及超额划拨 `PRJ-ROGUE` `$9999`），两项越权调用均被对端与金库 Sidecar 密码学拦截（`403`），同时合法联合变更 `FIN-RULE-42`（`[alice, bob]` `CoAuthorizedToken`）成功提交；
+   - **案例二（`pi_cs2_heterogeneous_medical_federation`）**：Node.js `Pi`（`org-alpha.io`）跨语言协同 Python `assistant-bob`（`org-beta.io`）与 Python `assistant-carol` + `assistant-vault`（`org-payment.io`），拦截原始病历导出（`403`）、汇聚双院 SVID 签名差分隐私队列摘要（`200`），并由 `DistributedAuditor` 跨 Node.js 与 Python 异构节点完成 `100%` 无中心收集器因果 DAG 重构。

@@ -195,12 +195,17 @@ WORKSPACE_ROLE_SLOTS: Dict[str, Tuple[str, ...]] = {
 }
 
 
-def get_role_slot_names(role: str, topology: str = "travel") -> Tuple[str, ...]:
+def get_role_slot_names(
+    role: str, topology: str = "travel", with_pi_agent: bool = False
+) -> Tuple[str, ...]:
     if role not in ROLE_SPECS:
         raise ValueError(f"Unknown role: {role!r}")
     norm_top = (topology or "travel").strip().lower()
     if norm_top == "workspace":
-        return WORKSPACE_ROLE_SLOTS[role]
+        base_slots = WORKSPACE_ROLE_SLOTS[role]
+        if role == "alpha" and with_pi_agent:
+            return (*base_slots, "pi-assistant-alice")
+        return base_slots
     if norm_top == "travel":
         return ROLE_SPECS[role].slot_names
     raise ValueError(f"Unsupported topology {topology!r}; expected 'travel' or 'workspace'")
@@ -303,6 +308,7 @@ def allocate_role_ports(
     check_host_free: bool = False,
     reserved_ports: Iterable[int] = (),
     topology: str = "travel",
+    with_pi_agent: bool = False,
 ) -> Dict[str, int]:
     """Allocate per-machine local NodePorts for `role` without any global port convention.
 
@@ -313,7 +319,7 @@ def allocate_role_ports(
     if role not in ROLE_SPECS:
         raise ValueError(f"Unknown role: {role!r}")
     spec = ROLE_SPECS[role]
-    slots = get_role_slot_names(role, topology=topology)
+    slots = get_role_slot_names(role, topology=topology, with_pi_agent=with_pi_agent)
     start_port = int(spec.default_base_port if base_port is None else base_port)
     if start_port < NODEPORT_MIN or start_port > NODEPORT_MAX:
         raise ValueError(
@@ -364,7 +370,7 @@ def allocate_role_ports(
 
 
 def read_cluster_role_ports(
-    role: str, topology: Optional[str] = None
+    role: str, topology: Optional[str] = None, with_pi_agent: bool = False
 ) -> Optional[Dict[str, int]]:
     """Read persisted local NodePort map from `Namespace/lineage-<role>` if cluster exists."""
     if role not in ROLE_SPECS:
@@ -397,7 +403,9 @@ def read_cluster_role_ports(
             parsed = json.loads(raw_json)
             if isinstance(parsed, Mapping) and parsed:
                 if topology is not None:
-                    expected_slots = get_role_slot_names(role, topology=topology)
+                    expected_slots = get_role_slot_names(
+                        role, topology=topology, with_pi_agent=with_pi_agent
+                    )
                     if not all(s in parsed for s in expected_slots):
                         return None
                 return {str(k): int(v) for k, v in parsed.items()}
@@ -441,6 +449,7 @@ def render_kind_cluster_config(
     role: str,
     role_ports: Optional[Mapping[str, int]] = None,
     topology: str = "travel",
+    with_pi_agent: bool = False,
 ) -> str:
     """Generate Kind `v1alpha4` YAML with local `extraPortMappings` and disjoint CIDRs."""
     if role not in ROLE_SPECS:
@@ -449,14 +458,14 @@ def render_kind_cluster_config(
     ports_map = (
         dict(role_ports)
         if role_ports is not None
-        else allocate_role_ports(role, topology=topology)
+        else allocate_role_ports(role, topology=topology, with_pi_agent=with_pi_agent)
     )
     port_mappings = []
     seen_ports: Set[int] = set()
     slots = (
         list(ports_map.keys())
         if role_ports is not None
-        else list(get_role_slot_names(role, topology=topology))
+        else list(get_role_slot_names(role, topology=topology, with_pi_agent=with_pi_agent))
     )
     for slot in slots:
         if slot not in ports_map:
@@ -750,6 +759,9 @@ def _agent_or_tool_deployment_docs(
     registry_mode: str = "federated",
     audit_mode: Optional[str] = None,
     authorized_auditors: Optional[str] = None,
+    app_image: Optional[str] = None,
+    app_args: Optional[Sequence[str]] = None,
+    app_liveness_cmd: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     sa_doc = {
         "apiVersion": "v1",
@@ -767,6 +779,8 @@ def _agent_or_tool_deployment_docs(
         app_env.append({"name": "SPECIALIST_INSTANCE", "value": specialist_instance})
     if llm_url:
         app_env.append({"name": "OLLAMA_BASE_URL", "value": llm_url})
+        app_env.append({"name": "LLM_BASE_URL", "value": llm_url})
+        app_env.append({"name": "LLM_API_KEY_FILE", "value": "/var/run/lct-llm/api_key"})
     if llm_model:
         app_env.append({"name": "LLM_MODEL", "value": llm_model})
     if enable_fault_injection:
@@ -828,23 +842,27 @@ def _agent_or_tool_deployment_docs(
     if allowed_co_auth_tools:
         sidecar_env.append({"name": "ALLOWED_CO_AUTH_TOOLS", "value": allowed_co_auth_tools})
 
+    eff_liveness_cmd = (
+        list(app_liveness_cmd)
+        if app_liveness_cmd is not None
+        else [
+            "/app/.venv/bin/python3",
+            "-c",
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/healthz', timeout=4)",
+        ]
+    )
     app_container: Dict[str, Any] = {
         "name": "app",
-        "image": image,
+        "image": app_image or image,
         "imagePullPolicy": "Never",
-        "args": ["--role", app_role],
+        "args": list(app_args) if app_args is not None else ["--role", app_role],
         "env": app_env,
         "volumeMounts": [
-            {"name": "lct-loopback", "mountPath": "/var/run/lct-loopback", "readOnly": True}
+            {"name": "lct-loopback", "mountPath": "/var/run/lct-loopback", "readOnly": True},
+            {"name": "lct-llm-api-key", "mountPath": "/var/run/lct-llm", "readOnly": True},
         ],
         "livenessProbe": {
-            "exec": {
-                "command": [
-                    "/app/.venv/bin/python3",
-                    "-c",
-                    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/healthz', timeout=4)",
-                ]
-            },
+            "exec": {"command": eff_liveness_cmd},
             "initialDelaySeconds": 15,
             "periodSeconds": 10,
             "timeoutSeconds": 5,
@@ -870,6 +888,14 @@ def _agent_or_tool_deployment_docs(
                     "volumes": [
                         {"name": "lct-loopback", "emptyDir": {"medium": "Memory"}},
                         {"name": "lct-mtls-ram", "emptyDir": {"medium": "Memory"}},
+                        {
+                            "name": "lct-llm-api-key",
+                            "secret": {
+                                "secretName": "lct-llm-api-key",
+                                "defaultMode": 0o440,
+                                "optional": True,
+                            },
+                        },
                         {
                             "name": "lct-oauth-credentials",
                             "secret": {
@@ -1065,8 +1091,8 @@ def _oauth_sts_docs(
                         },
                         "initialDelaySeconds": 8,
                         "periodSeconds": 5,
-                        "timeoutSeconds": 5,
-                        "failureThreshold": 48,
+                        "timeoutSeconds": 10,
+                        "failureThreshold": 90,
                     },
                     "readinessProbe": {
                         "httpGet": {
@@ -1074,19 +1100,19 @@ def _oauth_sts_docs(
                             "port": 8095,
                         },
                         "initialDelaySeconds": 2,
-                        "periodSeconds": 3,
-                        "timeoutSeconds": 5,
-                        "failureThreshold": 6,
+                        "periodSeconds": 5,
+                        "timeoutSeconds": 10,
+                        "failureThreshold": 8,
                     },
                     "livenessProbe": {
                         "httpGet": {
                             "path": f"/realms/{DEFAULT_REALM_NAME}/.well-known/openid-configuration",
                             "port": 8095,
                         },
-                        "initialDelaySeconds": 10,
-                        "periodSeconds": 10,
-                        "timeoutSeconds": 5,
-                        "failureThreshold": 6,
+                        "initialDelaySeconds": 15,
+                        "periodSeconds": 12,
+                        "timeoutSeconds": 10,
+                        "failureThreshold": 8,
                     },
                 }
             ],
@@ -1722,6 +1748,9 @@ def render_role_k8s_manifests(
     topology: str = "travel",
     registry_mode: str = "federated",
     audit_mode: Optional[str] = None,
+    with_pi_agent: bool = False,
+    pi_agent_image: str = "lineage-pi-agent:m11",
+    pi_llm_model: str = "qwen2.5:3b",
 ) -> str:
     """Render complete multi-document YAML manifest for a single multi-host role (zero peer IPs/ports/FQDNs)."""
     if role not in ROLE_SPECS:
@@ -1747,7 +1776,7 @@ def render_role_k8s_manifests(
     ports = (
         dict(role_ports)
         if role_ports is not None
-        else allocate_role_ports(role, topology=norm_top)
+        else allocate_role_ports(role, topology=norm_top, with_pi_agent=with_pi_agent)
     )
     eff_sts_engine = (sts_engine or "lightweight").strip().lower()
     if eff_sts_engine not in ("keycloak", "lightweight", "none"):
@@ -2091,6 +2120,16 @@ def render_role_k8s_manifests(
                 require_pinned_anchors=require_pinned_anchors,
             )
         )
+        alpha_consent_policy: Optional[str] = None
+        if norm_top == "workspace":
+            alpha_consent_entries = [
+                "assistant-alice=user:alice@org-alpha.io:calendar_free_busy,gateway_config_read,commit_joint_change,cohort_aggregate_stats"
+            ]
+            if with_pi_agent:
+                alpha_consent_entries.append(
+                    "pi-assistant-alice=user:alice@org-alpha.io:calendar_free_busy,gateway_config_read,commit_joint_change,cohort_aggregate_stats"
+                )
+            alpha_consent_policy = ";".join(alpha_consent_entries)
         docs.extend(
             _domain_control_plane_docs(
                 spec=spec,
@@ -2106,11 +2145,7 @@ def render_role_k8s_manifests(
                 include_directory=True,
                 audit_mode=eff_audit_mode,
                 authorized_auditors=auditor_spiffe_csv,
-                consent_issuer_policy=(
-                    "assistant-alice=user:alice@org-alpha.io:calendar_free_busy,gateway_config_read,commit_joint_change,cohort_aggregate_stats"
-                    if norm_top == "workspace"
-                    else None
-                ),
+                consent_issuer_policy=alpha_consent_policy,
             )
         )
         if norm_top == "workspace":
@@ -2146,6 +2181,46 @@ def render_role_k8s_manifests(
                     authorized_auditors=auditor_spiffe_csv,
                 )
             )
+            if with_pi_agent:
+                docs.extend(
+                    _agent_or_tool_deployment_docs(
+                        namespace=ns,
+                        trust_domain=spec.trust_domain,
+                        name="pi-assistant-alice",
+                        image=image,
+                        app_image=pi_agent_image,
+                        app_role="pi-agent-node",
+                        app_args=["--port", "9001"],
+                        app_liveness_cmd=[
+                            "node",
+                            "-e",
+                            "fetch('http://127.0.0.1:9001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+                        ],
+                        local_ca_url=local_ca,
+                        dir_url=local_dir,
+                        rev_url=local_rev,
+                        node_port=ports["pi-assistant-alice"],
+                        svid_ttl_seconds=svid_ttl_seconds,
+                        require_pinned_anchors=require_pinned_anchors,
+                        llm_url=llm_url,
+                        llm_model=pi_llm_model,
+                        agent_skills="workspace.pi_orchestrate",
+                        supported_tools="hr_salary_read,calendar_write,calendar_free_busy,gateway_config_read,alice_private_roadmap,export_raw_patient_records",
+                        agent_priority=10,
+                        agent_display_name="Alice Pi Workspace Assistant (@mariozechner/pi-agent-core)",
+                        enable_fault_injection=True,
+                        delegation_mode=delegation_mode,
+                        local_sts_url=local_sts,
+                        peer_name="alice",
+                        peer_owner_sub="user:alice@org-alpha.io",
+                        resource_owner_sub="user:alice@org-alpha.io",
+                        owner_protected_tools="hr_salary_read,calendar_write,calendar_free_busy,gateway_config_read,alice_private_roadmap,export_raw_patient_records",
+                        allowed_co_auth_tools="calendar_free_busy,gateway_config_read,commit_joint_change,cohort_aggregate_stats",
+                        registry_mode=norm_reg,
+                        audit_mode=eff_audit_mode,
+                        authorized_auditors=auditor_spiffe_csv,
+                    )
+                )
         else:
             docs.extend(
                 _agent_or_tool_deployment_docs(
@@ -3187,11 +3262,13 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     p_alloc.add_argument("--port-override", action="append", default=[])
     p_alloc.add_argument("--check-host-free", action="store_true")
     p_alloc.add_argument("--topology", default="travel")
+    p_alloc.add_argument("--with-pi-agent", action="store_true")
 
     p_kind = sub.add_parser("kind-config")
     p_kind.add_argument("--role", required=True)
     p_kind.add_argument("--ports-json", default="")
     p_kind.add_argument("--topology", default="travel")
+    p_kind.add_argument("--with-pi-agent", action="store_true")
 
     p_dns = sub.add_parser("sanitize-coredns")
     p_dns.add_argument("--roles", required=True)
@@ -3221,6 +3298,9 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     p_man.add_argument("--topology", default="travel")
     p_man.add_argument("--registry-mode", default="federated")
     p_man.add_argument("--audit-mode", default="")
+    p_man.add_argument("--with-pi-agent", action="store_true")
+    p_man.add_argument("--pi-agent-image", default="lineage-pi-agent:m11")
+    p_man.add_argument("--pi-llm-model", default="qwen2.5:3b")
     p_man.add_argument(
         "--skip-configmap",
         action="store_true",
@@ -3243,7 +3323,9 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
         reserved: Set[int] = set()
         out_map: Dict[str, Dict[str, int]] = {}
         for idx, r in enumerate(roles):
-            existing = read_cluster_role_ports(r, topology=args.topology)
+            existing = read_cluster_role_ports(
+                r, topology=args.topology, with_pi_agent=bool(args.with_pi_agent)
+            )
             if existing is not None:
                 out_map[r] = existing
                 reserved.update(existing.values())
@@ -3256,6 +3338,7 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
                 check_host_free=args.check_host_free,
                 reserved_ports=reserved,
                 topology=args.topology,
+                with_pi_agent=bool(args.with_pi_agent),
             )
             out_map[r] = r_ports
             reserved.update(r_ports.values())
@@ -3265,7 +3348,12 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     if args.cmd == "kind-config":
         rp = json.loads(args.ports_json) if args.ports_json.strip() else None
         sys.stdout.write(
-            render_kind_cluster_config(args.role, role_ports=rp, topology=args.topology)
+            render_kind_cluster_config(
+                args.role,
+                role_ports=rp,
+                topology=args.topology,
+                with_pi_agent=bool(args.with_pi_agent),
+            )
         )
         return 0
 
@@ -3299,7 +3387,9 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
         rp = (
             json.loads(args.ports_json)
             if args.ports_json.strip()
-            else read_cluster_role_ports(args.role, topology=args.topology)
+            else read_cluster_role_ports(
+                args.role, topology=args.topology, with_pi_agent=bool(args.with_pi_agent)
+            )
         )
         seeds = [normalize_seed_endpoint(s) for s in (args.seed or []) if s and s.strip()]
         sys.stdout.write(
@@ -3319,6 +3409,9 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
                 topology=args.topology,
                 registry_mode=args.registry_mode,
                 audit_mode=(args.audit_mode.strip() or None),
+                with_pi_agent=bool(args.with_pi_agent),
+                pi_agent_image=args.pi_agent_image,
+                pi_llm_model=args.pi_llm_model,
             )
         )
         return 0
